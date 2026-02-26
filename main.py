@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.data import DataManager
 from src.strategy import create_strategy, STRATEGY_REGISTRY
 from src.backtest import BacktestEngine, BacktestConfig
-from src.trading import TradingEngine, SimulatedGateway
+from src.trading import TradingEngine, create_gateway
 from src.analysis import Analyzer
 
 
@@ -84,31 +84,38 @@ def run_live_trading(config: dict):
     logger.info("=" * 60)
     logger.info("开始实盘交易")
     logger.info("=" * 60)
-    
-    strategy = create_strategy(config['strategy']['name'], config['strategy'])
-    strategy.initial_capital = config['trading']['initial_capital']
-    
-    gateway = SimulatedGateway()
+
+    trading_config = config.get('trading', {})
+    gateway_type = trading_config.get('gateway', 'simulated')
+
+    logger.info(f"使用交易网关: {gateway_type}")
+
+    # 根据配置创建网关
+    gateway = create_gateway(gateway_type)
     trading_engine = TradingEngine(gateway)
+
+    strategy = create_strategy(config['strategy']['name'], config['strategy'])
+    strategy.initial_capital = trading_config.get('initial_capital', 1000000)
     trading_engine.set_strategy(strategy)
-    
-    success = trading_engine.start(config['trading'])
-    
+
+    success = trading_engine.start(trading_config)
+
     if success:
         logger.info("实盘交易启动成功")
-        
-        symbols = [config['strategy']['symbol']]
-        base_prices = {symbols[0]: 4000.0}
-        
-        gateway.start_quote_simulation(symbols, base_prices)
-        
+
+        # 如果是模拟网关，启动行情模拟
+        if gateway_type == 'simulated':
+            symbols = [config['strategy']['symbol']]
+            base_prices = {symbols[0]: 4000.0}
+            gateway.start_quote_simulation(symbols, base_prices)
+
         try:
             while True:
                 input("按 Enter 停止交易...")
                 break
         except KeyboardInterrupt:
             pass
-        
+
         trading_engine.stop()
     else:
         logger.error("实盘交易启动失败")

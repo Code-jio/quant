@@ -311,9 +311,26 @@ class SimulatedGateway(GatewayBase):
         self._tick_thread.start()
 
 
+# 导入 CTP 网关
+from .ctp_gateway import CTPGateway, create_ctp_gateway
+
+
+# 网关注册表
+GATEWAY_REGISTRY = {
+    "simulated": SimulatedGateway,
+    "ctp": CTPGateway,
+}
+
+
+def create_gateway(gateway_type: str = "simulated") -> GatewayBase:
+    """创建网关实例"""
+    gateway_class = GATEWAY_REGISTRY.get(gateway_type, SimulatedGateway)
+    return gateway_class()
+
+
 class TradingEngine:
     """实盘交易引擎"""
-    
+
     def __init__(self, gateway: GatewayBase = None):
         self.gateway = gateway or SimulatedGateway()
         self.strategy = None
