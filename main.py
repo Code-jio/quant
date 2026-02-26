@@ -1,0 +1,158 @@
+"""
+量化交易系统主入口
+"""
+
+import os
+import sys
+import json
+import logging
+from datetime import datetime
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from src.data import DataManager
+from src.strategy import create_strategy, STRATEGY_REGISTRY
+from src.backtest import BacktestEngine, BacktestConfig
+from src.trading import TradingEngine, SimulatedGateway
+from src.analysis import Analyzer
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+
+def load_config(config_path: str = "config/config.json") -> dict:
+    """加载配置文件"""
+    with open(config_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def run_backtest(config: dict):
+    """运行回测"""
+    logger.info("=" * 60)
+    logger.info("开始回测")
+    logger.info("=" * 60)
+    
+    bt_config = BacktestConfig(
+        start_date=config['backtest']['start_date'],
+        end_date=config['backtest']['end_date'],
+        initial_capital=config['backtest']['initial_capital'],
+        commission_rate=config['backtest']['commission_rate'],
+        slip_rate=config['backtest']['slip_rate'],
+        margin_rate=config['backtest']['margin_rate']
+    )
+    
+    data_manager = DataManager()
+    
+    symbol = config['strategy']['symbol']
+    logger.info(f"生成/加载 {symbol} 模拟数据...")
+    df = data_manager.generate_sample_data(symbol, days=500)
+    
+    strategy = create_strategy(config['strategy']['name'], config['strategy'])
+    
+    engine = BacktestEngine(bt_config)
+    engine.set_data_manager(data_manager)
+    engine.set_strategy(strategy)
+    
+    result = engine.run()
+    
+    logger.info("\n" + "=" * 60)
+    logger.info("回测结果")
+    logger.info("=" * 60)
+    logger.info(f"总收益率:   {result.total_return:.2%}")
+    logger.info(f"年化收益率: {result.annual_return:.2%}")
+    logger.info(f"夏普比率:   {result.sharpe_ratio:.2f}")
+    logger.info(f"最大回撤:   {result.max_drawdown_pct:.2%}")
+    logger.info(f"胜率:      {result.win_rate:.2%}")
+    logger.info(f"总交易次数: {result.total_trades}")
+    logger.info(f"盈利次数:   {result.winning_trades}")
+    logger.info(f"亏损次数:   {result.losing_trades}")
+    
+    analyzer = Analyzer(initial_capital=bt_config.initial_capital)
+    analyzer.set_data(engine.equity_curve.values(), result.trades)
+    report = analyzer.generate_report()
+    print(report)
+    
+    return result
+
+
+def run_live_trading(config: dict):
+    """运行实盘交易"""
+    logger.info("=" * 60)
+    logger.info("开始实盘交易")
+    logger.info("=" * 60)
+    
+    strategy = create_strategy(config['strategy']['name'], config['strategy'])
+    strategy.initial_capital = config['trading']['initial_capital']
+    
+    gateway = SimulatedGateway()
+    trading_engine = TradingEngine(gateway)
+    trading_engine.set_strategy(strategy)
+    
+    success = trading_engine.start(config['trading'])
+    
+    if success:
+        logger.info("实盘交易启动成功")
+        
+        symbols = [config['strategy']['symbol']]
+        base_prices = {symbols[0]: 4000.0}
+        
+        gateway.start_quote_simulation(symbols, base_prices)
+        
+        try:
+            while True:
+                input("按 Enter 停止交易...")
+                break
+        except KeyboardInterrupt:
+            pass
+        
+        trading_engine.stop()
+    else:
+        logger.error("实盘交易启动失败")
+
+
+def main():
+    """主函数"""
+    config_path = "config/config.json"
+    
+    if not os.path.exists(config_path):
+        logger.warning(f"配置文件不存在: {config_path}, 使用默认配置")
+        config = {
+            "backtest": {
+                "start_date": "2023-01-01",
+                "end_date": "2024-12-31",
+                "initial_capital": 1000000,
+                "commission_rate": 0.0003,
+                "slip_rate": 0.0001,
+                "margin_rate": 0.12
+            },
+            "strategy": {
+                "name": "ma_cross",
+                "symbol": "IF9999",
+                "fast_period": 10,
+                "slow_period": 20,
+                "position_ratio": 0.8
+            },
+            "trading": {
+                "gateway": "simulated",
+                "initial_capital": 1000000
+            }
+        }
+    else:
+        config = load_config(config_path)
+    
+    mode = config.get('mode', 'backtest')
+    
+    if mode == 'backtest':
+        run_backtest(config)
+    elif mode == 'live':
+        run_live_trading(config)
+    else:
+        logger.error(f"未知模式: {mode}")
+
+
+if __name__ == "__main__":
+    main()
