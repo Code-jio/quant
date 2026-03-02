@@ -108,11 +108,35 @@ def run_live_trading(config: dict):
             symbols = [config['strategy']['symbol']]
             base_prices = {symbols[0]: 4000.0}
             gateway.start_quote_simulation(symbols, base_prices)
+        # 如果是 TqSdk 网关，订阅行情
+        elif gateway_type == 'tqsdk':
+            symbols = [config['strategy']['symbol']]
+            gateway.subscribe_market_data(symbols)
 
         try:
-            while True:
-                input("按 Enter 停止交易...")
-                break
+            # TqSdk 需要 wait_update 来接收行情
+            if gateway_type == 'tqsdk':
+                logger.info("TqSdk 网关运行中，按 Ctrl+C 停止...")
+                while True:
+                    gateway.wait_update()
+
+                    # 获取并更新行情
+                    for symbol in [config['strategy']['symbol']]:
+                        tick = gateway.get_quote(symbol)
+                        if tick:
+                            strategy.on_bar({
+                                'symbol': symbol,
+                                'datetime': tick.timestamp,
+                                'open': tick.last_price,
+                                'high': tick.last_price,
+                                'low': tick.last_price,
+                                'close': tick.last_price,
+                                'volume': tick.volume
+                            })
+            else:
+                while True:
+                    input("按 Enter 停止交易...")
+                    break
         except KeyboardInterrupt:
             pass
 

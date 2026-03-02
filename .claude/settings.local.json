@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m src.common.exception_examples)",
+      "Bash(python test_position_trade.py)",
+      "Bash(python test_trading_position_trade.py)",
+      "Bash(python test_fund_management.py)",
+      "Bash(wsl:*)",
+      "Bash(claude status:*)",
+      "Bash(echo:*)"
+    ]
+  }
+}
