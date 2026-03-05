@@ -24,7 +24,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def load_config(config_path: str = "config/config.json") -> dict:
+def load_config(config_path: str = "config/config_simnow.json") -> dict:
     """加载配置文件"""
     with open(config_path, 'r', encoding='utf-8') as f:
         return json.load(f)

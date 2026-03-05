@@ -9,12 +9,13 @@ from datetime import datetime
 import threading
 
 try:
-    from tqsdk import TqApi, TqAuth, TqKq, TqSim
+    from tqsdk import TqApi, TqAuth, TqKq, TqSim, TqMultiAccount
 except ImportError:
     TqApi = None
     TqAuth = None
     TqKq = None
     TqSim = None
+    TqMultiAccount = None
 
 from . import GatewayBase, TradingStatus, AccountInfo, MarketData
 from ..strategy import Signal, Order, Trade, Direction, Position, OrderStatus
@@ -29,13 +30,16 @@ class TqSdkGateway(GatewayBase):
         super().__init__("TQSDK")
         self.api: Optional[TqApi] = None
         self.auth: Optional[TqAuth] = None
-        self.account_type: str = "sim"  # sim: 模拟, kq: 快期实盘
+        self.account_type: str = "sim"  # sim: 模拟, simnow: simnow仿真, kq: 快期实盘
 
         # TqSdk 账号信息
         self.username: str = ""
         self.password: str = ""
         self.app_id: str = ""
         self.auth_code: str = ""
+        self.broker_id: str = ""
+        self.td_server: str = ""
+        self.md_server: str = ""
 
         # 本地订单映射: TqSdk 订单号 -> Order
         self.order_map: Dict[str, Order] = {}
@@ -49,11 +53,14 @@ class TqSdkGateway(GatewayBase):
         logger.info("正在连接 TqSdk...")
 
         # 从配置中读取参数
-        self.account_type = config.get('account_type', 'sim')  # sim/kq
+        self.account_type = config.get('account_type', 'sim')  # sim/simnow/kq
         self.username = config.get('username', '')
         self.password = config.get('password', '')
         self.app_id = config.get('app_id', '')
         self.auth_code = config.get('auth_code', '')
+        self.broker_id = config.get('broker_id', '9999')  # 默认SimNow仿真Broker ID
+        self.td_server = config.get('td_server', 'tcp://180.168.146.187:10130')
+        self.md_server = config.get('md_server', 'tcp://180.168.146.187:10131')
 
         try:
             # 创建 TqApi 实例
@@ -61,9 +68,26 @@ class TqSdkGateway(GatewayBase):
                 # 快期实盘模式
                 logger.info(f"连接模式: 快期实盘 - {self.username}")
                 self.api = TqApi(TqKq(self.username, self.password), auth=TqAuth(self.app_id, self.auth_code))
+            elif self.account_type == 'simnow':
+                # SimNow仿真交易模式
+                logger.info(f"连接模式: SimNow仿真交易 - {self.username}")
+                from tqsdk import TqAccount
+                # 使用 td_url 参数
+                account_args = {
+                    'broker_id': self.broker_id,
+                    'account_id': self.username,
+                    'password': self.password,
+                }
+
+                # 只有当服务器地址非默认时才指定
+                if self.td_server and self.td_server != 'tcp://180.168.146.187:10130':
+                    # 只添加td_url参数
+                    account_args['td_url'] = self.td_server
+
+                self.api = TqApi(TqAccount(**account_args), auth=TqAuth(self.app_id, self.auth_code))
             else:
-                # 模拟模式 (SimNow)
-                logger.info("连接模式: 模拟交易 (SimNow)")
+                # 模拟模式 (TqSim)
+                logger.info("连接模式: 模拟交易 (TqSim)")
                 self.api = TqApi(TqSim())
 
             # 等待连接成功

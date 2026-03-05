@@ -393,6 +393,7 @@ class SimulatedGateway(GatewayBase):
 
 GATEWAY_REGISTRY = {
     "simulated": SimulatedGateway,
+    "tqsdk": lambda: __import__('src.trading.tqsdk_gateway', fromlist=['create_tqsdk_gateway']).create_tqsdk_gateway(),
 }
 
 
