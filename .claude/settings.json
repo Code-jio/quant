@@ -2,7 +2,18 @@
   "permissions": {
     "allow": [
       "Bash(ls -lah /d/quant/src/*/)",
-      "Bash(/d/quant/.gitignore:*)"
+      "Bash(/d/quant/.gitignore:*)",
+      "Bash(pip install:*)",
+      "Bash(python -c \"import dashboard; print\\(''dashboard.py 语法检查通过''\\)\")",
+      "Bash(timeout 8 python dashboard.py)",
+      "Bash(python -c \"from src.trading.ctp_plus_gateway import CtpPlusGateway; print\\(''OK''\\)\")",
+      "Bash(.venv/Scripts/python.exe -c \"from ctpplus import TdApi, MdApi, ApiStruct; print\\(''OK''\\)\")",
+      "Bash(.venv/Scripts/python.exe --version)",
+      "Bash(.venv/Scripts/python.exe -c \"from ctpplus.CTP import TdApi, MdApi, ApiStruct; print\\(''OK''\\)\")",
+      "Bash(.venv/Scripts/python.exe -c \"import sys; sys.path.insert\\(0, r''D:\\\\quant\\\\.venv\\\\Lib\\\\site-packages''\\); from ctpplus.CTP import TdApi; print\\(''OK''\\)\")",
+      "Bash(.venv/Scripts/python.exe -c \"import site; print\\(site.getsitepackages\\(\\)\\)\")",
+      "Bash(.venv/Scripts/python.exe -c \":*)",
+      "Bash(cat /d/quant/.venv/Lib/site-packages/CtpPlus/examples/*.py)"
     ]
   }
 }

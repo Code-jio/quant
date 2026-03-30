@@ -1,0 +1,12 @@
+{
+  "codingStyle": {
+    "language": "chinese",
+    "indentSize": 2,
+    "quoteStyle": "single"
+  },
+  "preferences": {
+    "generateComments": true,
+    "includeTypes": true,
+    "preferFunctional": true
+  }
+}

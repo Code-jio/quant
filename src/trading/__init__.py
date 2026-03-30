@@ -394,7 +394,6 @@ class SimulatedGateway(GatewayBase):
 GATEWAY_REGISTRY = {
     "simulated": SimulatedGateway,
     "ctp": lambda: __import__('src.trading.ctp_gateway', fromlist=['create_ctp_gateway']).create_ctp_gateway(),
-    "tqsdk": lambda: __import__('src.trading.tqsdk_gateway', fromlist=['create_tqsdk_gateway']).create_tqsdk_gateway(),
     "ctpplus": lambda: __import__('src.trading.ctp_plus_gateway', fromlist=['create_ctp_plus_gateway']).create_ctp_plus_gateway(),
 }
 
@@ -465,10 +464,13 @@ class TradingEngine:
             logger.info("交易引擎已启动")
             return True
 
+        except (ValueError, ImportError, ConnectionError, RuntimeError):
+            self.status = TradingStatus.ERROR
+            raise
         except Exception as e:
             logger.error(f"启动交易引擎失败: {e}\n{traceback.format_exc()}")
             self.status = TradingStatus.ERROR
-            return False
+            raise RuntimeError(f"启动交易引擎失败: {e}") from e
 
     def stop(self):
         """停止交易引擎"""
