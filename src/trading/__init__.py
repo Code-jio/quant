@@ -393,7 +393,9 @@ class SimulatedGateway(GatewayBase):
 
 GATEWAY_REGISTRY = {
     "simulated": SimulatedGateway,
+    "ctp": lambda: __import__('src.trading.ctp_gateway', fromlist=['create_ctp_gateway']).create_ctp_gateway(),
     "tqsdk": lambda: __import__('src.trading.tqsdk_gateway', fromlist=['create_tqsdk_gateway']).create_tqsdk_gateway(),
+    "ctpplus": lambda: __import__('src.trading.ctp_plus_gateway', fromlist=['create_ctp_plus_gateway']).create_ctp_plus_gateway(),
 }
 
 

@@ -147,7 +147,7 @@ def run_live_trading(config: dict):
 
 def main():
     """主函数"""
-    config_path = "config/config.json"
+    config_path = "config/config_ctp_plus_simnow.json"
     
     if not os.path.exists(config_path):
         logger.warning(f"配置文件不存在: {config_path}, 使用默认配置")
