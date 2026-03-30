@@ -467,10 +467,28 @@ class CtpPlusGateway(GatewayBase):
             self.md_api.OnRspError = self._on_rsp_error
 
     def _on_front_connected(self):
-        """交易前置连接成功"""
-        logger.info("CTPPlus 交易前置连接成功")
+        """交易前置连接成功，先发起客户端认证"""
+        logger.info("CTPPlus 交易前置连接成功，发起认证...")
 
-        # 发起登录
+        req = ApiStruct.ReqAuthenticateField()
+        req.BrokerID = self.broker_id.encode('utf-8')
+        req.UserID = self.username.encode('utf-8')
+        req.AppID = self.app_id.encode('utf-8')
+        req.AuthCode = self.auth_code.encode('utf-8')
+
+        with self.req_lock:
+            self.request_id += 1
+            self.td_api.ReqAuthenticate(req, self.request_id)
+
+    def _on_rsp_authenticate(self, pRspAuthenticate: ApiStruct.RspAuthenticateField, pRspInfo: ApiStruct.RspInfoField, nRequestID: int, bIsLast: bool):
+        """客户端认证应答，成功后发起登录"""
+        if pRspInfo and pRspInfo.ErrorID != 0:
+            error_msg = pRspInfo.ErrorMsg.decode('gbk') if hasattr(pRspInfo.ErrorMsg, 'decode') else str(pRspInfo.ErrorMsg)
+            logger.error(f"客户端认证失败: [{pRspInfo.ErrorID}] {error_msg}")
+            self.status = TradingStatus.ERROR
+            return
+
+        logger.info("客户端认证成功，发起登录...")
         req = ApiStruct.ReqUserLoginField()
         req.BrokerID = self.broker_id.encode('utf-8')
         req.UserID = self.username.encode('utf-8')
@@ -713,21 +731,30 @@ class CtpPlusGateway(GatewayBase):
             logger.error(f"处理行情数据失败: {e}")
 
     def _get_exchange_by_product(self, instrument_id: str) -> str:
-        """根据合约代码推断交易所"""
-        # 根据合约代码首字母判断交易所
-        if instrument_id[:2].upper() in ['IF', 'IC', 'IH', 'T', 'TF', 'TS']:
+        """根据合约代码推断交易所（按品种前缀从长到短匹配）"""
+        prefix = ''.join(c for c in instrument_id if c.isalpha()).upper()
+
+        CFFEX = {'IF', 'IC', 'IH', 'IM', 'T', 'TF', 'TS'}
+        # 上期所（优先于 INE）
+        SHFE = {'CU', 'AL', 'ZN', 'PB', 'NI', 'SN', 'AU', 'AG', 'RB', 'WR', 'HC', 'FU', 'BU', 'RU', 'SS', 'SP', 'AO', 'BR', 'BC'}
+        # 能源中心
+        INE = {'SC', 'NR', 'LU', 'BC'}
+        # 大商所
+        DCE = {'A', 'B', 'C', 'CS', 'EB', 'EG', 'I', 'J', 'JD', 'JM', 'L', 'LH', 'M', 'P', 'PG', 'PP', 'RR', 'V', 'Y', 'FB', 'BB', 'PF'}
+        # 郑商所
+        CZCE = {'AP', 'CF', 'CJ', 'CY', 'FG', 'JR', 'LR', 'MA', 'OI', 'PF', 'PK', 'PM', 'RI', 'RM', 'RS', 'SA', 'SF', 'SM', 'SR', 'TA', 'UR', 'WH', 'ZC'}
+
+        if prefix in CFFEX:
             return 'CFFEX'
-        elif instrument_id[:1].upper() in ['M', 'A', 'Y', 'C', 'P', 'J', 'JM', 'I', 'L', 'V', 'PP', 'EG', 'EB', 'PG']:
-            return 'DCE'
-        elif instrument_id[:2].upper() in ['CU', 'AL', 'ZN', 'PB', 'NI', 'SN', 'AU', 'AG', 'RB', 'WR', 'HC', 'FU', 'SC', 'BU', 'RU', 'NR', 'SS', 'SP']:
-            return 'SHFE'
-        elif instrument_id[:2].upper() in ['TA', 'MA', 'EG', 'PF', 'SA', 'UR', 'RM', 'SR', 'CF', 'CY', 'AP', 'CJ', 'FX', 'RI', 'LR', 'SF', 'SM', 'SP', 'UR']:
-            return 'CZCE'
-        elif instrument_id[:2].upper() in ['SC', 'NR']:
+        if prefix in INE:
             return 'INE'
-        else:
-            # 默认上海期货交易所
+        if prefix in SHFE:
             return 'SHFE'
+        if prefix in DCE:
+            return 'DCE'
+        if prefix in CZCE:
+            return 'CZCE'
+        return 'SHFE'
 
     def _get_contract_multiplier(self, instrument_id: str) -> float:
         """获取合约乘数"""
@@ -800,13 +827,6 @@ class CtpPlusGateway(GatewayBase):
         if pRspInfo and pRspInfo.ErrorID != 0:
             error_msg = pRspInfo.ErrorMsg.decode('gbk') if hasattr(pRspInfo.ErrorMsg, 'decode') else str(pRspInfo.ErrorMsg)
             logger.error(f"收到错误应答: [{pRspInfo.ErrorID}] {error_msg}")
-
-    def _on_rsp_authenticate(self, pRspAuthenticateField, pRspInfo, nRequestID, bIsLast):
-        """客户端认证应答"""
-        if pRspInfo and pRspInfo.ErrorID != 0:
-            logger.error(f"客户端认证失败: {pRspInfo.ErrorMsg.decode('gbk') if hasattr(pRspInfo.ErrorMsg, 'decode') else str(pRspInfo.ErrorMsg)}")
-        else:
-            logger.info("客户端认证成功")
 
     def _on_rsp_sub_market_data(self, pSpecificInstrument, pRspInfo, nRequestID, bIsLast):
         """订阅行情应答"""

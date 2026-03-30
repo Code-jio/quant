@@ -6,6 +6,7 @@ import os
 import sys
 import json
 import logging
+import argparse
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -147,8 +148,13 @@ def run_live_trading(config: dict):
 
 def main():
     """主函数"""
-    config_path = "config/config_ctp_plus_simnow.json"
-    
+    parser = argparse.ArgumentParser(description='量化交易系统')
+    parser.add_argument('--config', '-c', default='config/config_ctp_plus_simnow.json', help='配置文件路径')
+    parser.add_argument('--mode', '-m', choices=['backtest', 'live'], help='运行模式（覆盖配置文件中的设置）')
+    args = parser.parse_args()
+
+    config_path = args.config
+
     if not os.path.exists(config_path):
         logger.warning(f"配置文件不存在: {config_path}, 使用默认配置")
         config = {
@@ -174,7 +180,10 @@ def main():
         }
     else:
         config = load_config(config_path)
-    
+
+    if args.mode:
+        config['mode'] = args.mode
+
     mode = config.get('mode', 'backtest')
     
     if mode == 'backtest':

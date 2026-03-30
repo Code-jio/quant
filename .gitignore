@@ -1,1 +1,29 @@
-config/*
+# 含凭据的配置文件 - 不要提交到版本控制
+config/config_ctp_plus_simnow.json
+config/config_simnow.json
+config/config_real.json
+config/config_production.json
+
+# 数据文件
+data/historical/*.db
+data/factors/
+
+# 日志
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.env
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# CTP 流文件
+*.con
+TRADE_*/
+MD_*/
