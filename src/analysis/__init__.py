@@ -123,7 +123,7 @@ class RiskAnalyzer:
         metrics.sharpe_ratio = RiskAnalyzer.calculate_sharpe_ratio(returns)
         metrics.sortino_ratio = RiskAnalyzer.calculate_sortino_ratio(returns)
         
-        annual_return = (1 + equity_curve.iloc[-1] / equity_curve.iloc[0]) ** (252 / len(equity_curve)) - 1 if len(equity_curve) > 0 else 0
+        annual_return = (equity_curve.iloc[-1] / equity_curve.iloc[0]) ** (252 / len(equity_curve)) - 1 if len(equity_curve) > 0 else 0
         metrics.calmar_ratio = RiskAnalyzer.calculate_calmar_ratio(annual_return, metrics.max_drawdown)
         
         downside_returns = returns[returns < 0]

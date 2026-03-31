@@ -108,6 +108,7 @@ class Trade:
     price: float
     volume: int
     commission: float = 0.0
+    pnl: float = 0.0
     trade_time: datetime = field(default_factory=datetime.now)
 
 

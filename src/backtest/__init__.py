@@ -283,6 +283,7 @@ class BacktestEngine:
         
         margin = 0
         pos = self.positions.get(symbol)
+        entry_price = pos.price if pos else price
         if pos:
             margin = abs(pos.price) * abs(pos.volume) * self.config.margin_rate
         
@@ -290,6 +291,12 @@ class BacktestEngine:
         
         close_direction = Direction.SHORT if direction == Direction.LONG else Direction.LONG
         trade = self._create_trade(symbol, price, volume, close_direction, commission)
+
+        if direction == Direction.LONG:
+            trade.pnl = (price - entry_price) * volume - commission
+        else:
+            trade.pnl = (entry_price - price) * volume - commission
+
         self.trades.append(trade)
         
         if pos:

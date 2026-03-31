@@ -1,8 +1,7 @@
 # 含凭据的配置文件 - 不要提交到版本控制
-config/config_ctp_plus_simnow.json
-config/config_simnow.json
-config/config_real.json
 config/config_production.json
+config/config_real.json
+config/config_example.json
 
 # 数据文件
 data/historical/*.db

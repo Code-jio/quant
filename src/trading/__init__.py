@@ -393,15 +393,17 @@ class SimulatedGateway(GatewayBase):
 
 GATEWAY_REGISTRY = {
     "simulated": SimulatedGateway,
-    "ctp": lambda: __import__('src.trading.ctp_gateway', fromlist=['create_ctp_gateway']).create_ctp_gateway(),
-    "ctpplus": lambda: __import__('src.trading.ctp_plus_gateway', fromlist=['create_ctp_plus_gateway']).create_ctp_plus_gateway(),
+    "ctp": lambda: __import__(
+        'src.trading.ctp_native_gateway',
+        fromlist=['create_ctp_native_gateway']
+    ).create_ctp_native_gateway(),
 }
 
 
 def create_gateway(gateway_type: str = "simulated") -> GatewayBase:
     """创建网关实例"""
     if gateway_type not in GATEWAY_REGISTRY:
-        logger.warning(f"未知网关类型: {gateway_type}, 使用模拟网关")
+        logger.warning(f"未知网关类型: {gateway_type}，使用模拟网关")
         gateway_type = "simulated"
     return GATEWAY_REGISTRY[gateway_type]()
 
@@ -541,6 +543,28 @@ class TradingEngine:
             self.order_manager.update_market_data(symbol, data)
         except Exception as e:
             logger.error(f"更新市场数据失败: {e}")
+
+    def on_tick(self, tick: "MarketData"):
+        """行情推送 → 转为 pd.Series 传给策略"""
+        if not self.strategy:
+            return
+        try:
+            import pandas as pd
+            bar = pd.Series({
+                'symbol': tick.symbol,
+                'datetime': tick.timestamp,
+                'open': tick.last_price,
+                'high': tick.last_price,
+                'low': tick.last_price,
+                'close': tick.last_price,
+                'volume': tick.volume,
+                'bid': tick.bid_price_1,
+                'ask': tick.ask_price_1,
+            })
+            self.strategy.current_date = tick.timestamp
+            self.strategy.on_bar(bar)
+        except Exception as e:
+            logger.error(f"处理行情数据失败: {e}")
 
     def get_account(self) -> AccountInfo:
         """获取账户信息"""
