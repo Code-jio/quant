@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>量化交易系统 · WebSocket 监控</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --panel: #161b22;
+      --border: #30363d;
+      --text: #c9d1d9;
+      --muted: #8b949e;
+      --green: #3fb950;
+      --red: #f85149;
+      --yellow: #d29922;
+      --blue: #58a6ff;
+      --accent: #1f6feb;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Consolas', 'Menlo', monospace;
+      font-size: 13px;
+      min-height: 100vh;
+    }
+
+    header {
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    header h1 { font-size: 16px; color: var(--blue); letter-spacing: .5px; }
+    header .version { color: var(--muted); font-size: 11px; }
+
+    .config-bar {
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .config-bar label { color: var(--muted); }
+    .config-bar input {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      padding: 4px 10px;
+      width: 220px;
+      font-family: inherit;
+      font-size: 12px;
+    }
+    .config-bar button {
+      padding: 5px 16px;
+      border-radius: 4px;
+      border: none;
+      cursor: pointer;
+      font-size: 12px;
+      font-family: inherit;
+      transition: opacity .15s;
+    }
+    .config-bar button:hover { opacity: .85; }
+    #btn-connect    { background: var(--accent); color: #fff; }
+    #btn-disconnect { background: #21262d; color: var(--text); border: 1px solid var(--border); }
+
+    .status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+      margin-right: 5px;
+      background: var(--muted);
+    }
+    .status-dot.connected { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .status-dot.error     { background: var(--red); }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      padding: 16px 24px;
+    }
+    @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .panel-header {
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .panel-header .title { font-weight: 600; color: var(--blue); }
+    .panel-header .meta  { color: var(--muted); font-size: 11px; }
+
+    /* ── 系统状态卡片 ── */
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 1px;
+      background: var(--border);
+    }
+    .stat-cell {
+      background: var(--panel);
+      padding: 14px 16px;
+    }
+    .stat-cell .label { color: var(--muted); font-size: 11px; margin-bottom: 4px; }
+    .stat-cell .value { font-size: 18px; font-weight: 700; }
+    .stat-cell .value.up   { color: var(--green); }
+    .stat-cell .value.down { color: var(--red); }
+    .stat-cell .value.neutral { color: var(--text); }
+
+    /* 行情连接状态横幅 */
+    .conn-banner {
+      padding: 8px 16px;
+      font-size: 12px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      gap: 24px;
+      flex-wrap: wrap;
+    }
+    .conn-banner span { color: var(--muted); }
+    .conn-banner b    { color: var(--text); }
+
+    /* 进度条 */
+    .bar-wrap {
+      padding: 12px 16px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .bar-row { display: flex; align-items: center; gap: 10px; }
+    .bar-row .bar-label { color: var(--muted); font-size: 11px; width: 60px; }
+    .bar-row .bar-track {
+      flex: 1;
+      height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .bar-row .bar-fill {
+      height: 100%;
+      border-radius: 3px;
+      background: var(--blue);
+      transition: width .4s ease;
+    }
+    .bar-row .bar-pct { color: var(--text); font-size: 11px; width: 36px; text-align: right; }
+
+    /* ── 订单消息流 ── */
+    #orders-list {
+      max-height: 520px;
+      overflow-y: auto;
+      padding: 0;
+    }
+    .order-item {
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      display: grid;
+      grid-template-columns: 120px 70px 60px 70px 80px 80px 1fr;
+      gap: 8px;
+      align-items: center;
+      animation: fadeIn .25s ease;
+    }
+    .order-item:last-child { border-bottom: none; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; } }
+
+    .order-item .ts    { color: var(--muted); font-size: 11px; }
+    .order-item .sym   { color: var(--yellow); font-weight: 600; }
+    .order-item .dir   { }
+    .dir.long  { color: var(--green); }
+    .dir.short { color: var(--red); }
+    .order-item .price { color: var(--text); }
+    .order-item .vol   { color: var(--muted); }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .badge.filled    { background: #1a3a28; color: var(--green); }
+    .badge.submitted { background: #1a2a3a; color: var(--blue); }
+    .badge.cancelled { background: #2a2a2a; color: var(--muted); }
+    .badge.rejected  { background: #3a1a1a; color: var(--red); }
+    .badge.partfilled{ background: #2a2a1a; color: var(--yellow); }
+    .badge.submitting{ background: #1a1a2a; color: #7c8cf8; }
+
+    .order-hdr {
+      padding: 7px 16px;
+      border-bottom: 1px solid var(--border);
+      display: grid;
+      grid-template-columns: 120px 70px 60px 70px 80px 80px 1fr;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 11px;
+      background: #0d1117;
+    }
+
+    .empty-hint {
+      padding: 32px;
+      text-align: center;
+      color: var(--muted);
+    }
+
+    /* ── 日志面板 ── */
+    .log-panel {
+      grid-column: 1 / -1;
+    }
+    #log-list {
+      max-height: 200px;
+      overflow-y: auto;
+      padding: 8px 0;
+    }
+    .log-item {
+      padding: 3px 16px;
+      font-size: 11px;
+      color: var(--muted);
+      border-left: 3px solid transparent;
+    }
+    .log-item.info  { border-color: var(--blue); }
+    .log-item.warn  { border-color: var(--yellow); color: var(--yellow); }
+    .log-item.error { border-color: var(--red);    color: var(--red); }
+  </style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>⚡ 量化交易系统 · 实时监控</h1>
+  </div>
+  <span class="version">WebSocket Demo</span>
+</header>
+
+<div class="config-bar">
+  <label>API 地址：</label>
+  <input id="host-input" value="localhost:8000" placeholder="host:port" />
+  <button id="btn-connect">连接</button>
+  <button id="btn-disconnect">断开</button>
+  <span>
+    <span class="status-dot" id="dot-system"></span>
+    <span id="lbl-system" style="color:var(--muted)">系统频道：未连接</span>
+  </span>
+  <span>
+    <span class="status-dot" id="dot-orders"></span>
+    <span id="lbl-orders" style="color:var(--muted)">订单频道：未连接</span>
+  </span>
+</div>
+
+<div class="grid">
+
+  <!-- ── 系统状态面板 ── -->
+  <div class="panel">
+    <div class="panel-header">
+      <span class="title">🖥 系统状态</span>
+      <span class="meta" id="sys-ts">--</span>
+    </div>
+    <div class="conn-banner" id="conn-banner">
+      <span>网关：<b id="gw-name">--</b></span>
+      <span>状态：<b id="gw-status">--</b></span>
+      <span>行情：<b id="mkt-conn">--</b></span>
+      <span>活跃策略：<b id="active-strats">--</b></span>
+    </div>
+    <div class="stat-grid">
+      <div class="stat-cell">
+        <div class="label">总盈亏 (¥)</div>
+        <div class="value neutral" id="total-pnl">--</div>
+      </div>
+      <div class="stat-cell">
+        <div class="label">收益率</div>
+        <div class="value neutral" id="return-rate">--</div>
+      </div>
+      <div class="stat-cell">
+        <div class="label">账户余额 (¥)</div>
+        <div class="value neutral" id="balance">--</div>
+      </div>
+      <div class="stat-cell">
+        <div class="label">活跃策略数</div>
+        <div class="value neutral" id="strat-count">--</div>
+      </div>
+    </div>
+    <div class="bar-wrap">
+      <div class="bar-row">
+        <span class="bar-label">CPU</span>
+        <div class="bar-track"><div class="bar-fill" id="bar-cpu" style="width:0%"></div></div>
+        <span class="bar-pct" id="pct-cpu">0%</span>
+      </div>
+      <div class="bar-row">
+        <span class="bar-label">内存</span>
+        <div class="bar-track"><div class="bar-fill" id="bar-mem" style="width:0%"></div></div>
+        <span class="bar-pct" id="pct-mem">0%</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 订单消息面板 ── -->
+  <div class="panel">
+    <div class="panel-header">
+      <span class="title">📋 订单事件流</span>
+      <span class="meta" id="order-count">0 条</span>
+    </div>
+    <div class="order-hdr">
+      <span>时间</span>
+      <span>合约</span>
+      <span>方向</span>
+      <span>价格</span>
+      <span>数量/成交</span>
+      <span>状态</span>
+      <span>订单号</span>
+    </div>
+    <div id="orders-list">
+      <div class="empty-hint">等待订单事件推送…</div>
+    </div>
+  </div>
+
+  <!-- ── 连接日志面板 ── -->
+  <div class="panel log-panel">
+    <div class="panel-header">
+      <span class="title">📝 连接日志</span>
+      <span class="meta" style="cursor:pointer;color:var(--muted)" onclick="clearLog()">清空</span>
+    </div>
+    <div id="log-list"></div>
+  </div>
+
+</div>
+
+<script>
+  // ── 状态 ─────────────────────────────────────────────
+  let wsSys = null, wsOrd = null;
+  let orderCount = 0;
+  const MAX_ORDERS = 200;
+
+  // ── 工具函数 ──────────────────────────────────────────
+  function ts() {
+    return new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  }
+
+  function addLog(msg, level = 'info') {
+    const el = document.getElementById('log-list');
+    const div = document.createElement('div');
+    div.className = `log-item ${level}`;
+    div.textContent = `[${ts()}] ${msg}`;
+    el.prepend(div);
+    // 最多保留 100 条日志
+    while (el.children.length > 100) el.removeChild(el.lastChild);
+  }
+
+  function clearLog() {
+    document.getElementById('log-list').innerHTML = '';
+  }
+
+  function setDot(id, state) {
+    const d = document.getElementById(id);
+    d.className = 'status-dot ' + state;
+  }
+
+  function fmtNum(n, decimals = 2) {
+    if (n === undefined || n === null || n === '--') return '--';
+    return Number(n).toLocaleString('zh-CN', {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals
+    });
+  }
+
+  // ── 系统状态渲染 ──────────────────────────────────────
+  function renderSystem(d) {
+    document.getElementById('sys-ts').textContent = d.timestamp
+      ? new Date(d.timestamp).toLocaleTimeString('zh-CN', { hour12: false })
+      : '--';
+
+    document.getElementById('gw-name').textContent   = d.gateway_name   ?? '--';
+    document.getElementById('gw-status').textContent = d.gateway_status ?? '--';
+    document.getElementById('mkt-conn').textContent  = d.market_connected ? '✔ 已连接' : '✘ 断开';
+    document.getElementById('mkt-conn').style.color  = d.market_connected
+      ? 'var(--green)' : 'var(--red)';
+    document.getElementById('active-strats').textContent = d.active_strategies ?? '--';
+
+    // 盈亏
+    const pnl = d.total_pnl ?? 0;
+    const pnlEl = document.getElementById('total-pnl');
+    pnlEl.textContent = (pnl >= 0 ? '+' : '') + fmtNum(pnl);
+    pnlEl.className = 'value ' + (pnl > 0 ? 'up' : pnl < 0 ? 'down' : 'neutral');
+
+    const rate = d.return_rate ?? 0;
+    const rateEl = document.getElementById('return-rate');
+    rateEl.textContent = (rate >= 0 ? '+' : '') + fmtNum(rate, 4) + '%';
+    rateEl.className = 'value ' + (rate > 0 ? 'up' : rate < 0 ? 'down' : 'neutral');
+
+    document.getElementById('balance').textContent = fmtNum(d.balance ?? 0, 0);
+    document.getElementById('strat-count').textContent = d.active_strategies ?? 0;
+
+    // CPU / 内存进度条
+    const cpu = d.cpu_percent ?? 0;
+    const mem = d.memory_percent ?? 0;
+    document.getElementById('bar-cpu').style.width = cpu + '%';
+    document.getElementById('pct-cpu').textContent = cpu.toFixed(1) + '%';
+    document.getElementById('bar-mem').style.width = mem + '%';
+    document.getElementById('pct-mem').textContent = mem.toFixed(1) + '%';
+
+    // 进度条颜色
+    document.getElementById('bar-cpu').style.background =
+      cpu > 80 ? 'var(--red)' : cpu > 60 ? 'var(--yellow)' : 'var(--blue)';
+    document.getElementById('bar-mem').style.background =
+      mem > 85 ? 'var(--red)' : mem > 70 ? 'var(--yellow)' : 'var(--blue)';
+  }
+
+  // ── 订单事件渲染 ──────────────────────────────────────
+  function renderOrder(d) {
+    const list = document.getElementById('orders-list');
+
+    // 清除空提示
+    const hint = list.querySelector('.empty-hint');
+    if (hint) hint.remove();
+
+    const status  = (d.status || '').toLowerCase();
+    const dir     = (d.direction || '').toLowerCase();
+    const dirText = dir === 'long' ? '买多' : dir === 'short' ? '卖空' : dir;
+
+    const timeStr = d.timestamp
+      ? new Date(d.timestamp).toLocaleTimeString('zh-CN', { hour12: false })
+      : '--';
+
+    const item = document.createElement('div');
+    item.className = 'order-item';
+    item.innerHTML = `
+      <span class="ts">${timeStr}</span>
+      <span class="sym">${d.symbol ?? '--'}</span>
+      <span class="dir ${dir}">${dirText}</span>
+      <span class="price">${fmtNum(d.price)}</span>
+      <span class="vol">${d.volume ?? 0} / ${d.traded_volume ?? 0}</span>
+      <span><span class="badge ${status}">${status}</span></span>
+      <span class="ts">${d.order_id ?? '--'}</span>
+    `;
+
+    list.prepend(item);
+    orderCount++;
+    document.getElementById('order-count').textContent = orderCount + ' 条';
+
+    // 超出限制时移除末尾旧数据
+    while (list.children.length > MAX_ORDERS) list.removeChild(list.lastChild);
+  }
+
+  // ── WebSocket 连接 ────────────────────────────────────
+  function getBase() {
+    const host = document.getElementById('host-input').value.trim() || 'localhost:8000';
+    return `ws://${host}`;
+  }
+
+  function connectSystem(base) {
+    wsSys = new WebSocket(`${base}/ws/system`);
+
+    wsSys.onopen = () => {
+      setDot('dot-system', 'connected');
+      document.getElementById('lbl-system').textContent = '系统频道：已连接';
+      document.getElementById('lbl-system').style.color = 'var(--green)';
+      addLog('系统状态频道 已连接', 'info');
+    };
+
+    wsSys.onmessage = (e) => {
+      try {
+        const d = JSON.parse(e.data);
+        if (d.type === 'system_status') renderSystem(d);
+      } catch (_) {}
+    };
+
+    wsSys.onerror = () => {
+      addLog('系统状态频道 连接错误', 'error');
+    };
+
+    wsSys.onclose = (e) => {
+      setDot('dot-system', 'error');
+      document.getElementById('lbl-system').textContent = '系统频道：已断开';
+      document.getElementById('lbl-system').style.color = 'var(--muted)';
+      addLog(`系统状态频道 断开 (code=${e.code})`, 'warn');
+    };
+  }
+
+  function connectOrders(base) {
+    wsOrd = new WebSocket(`${base}/ws/orders`);
+
+    wsOrd.onopen = () => {
+      setDot('dot-orders', 'connected');
+      document.getElementById('lbl-orders').textContent = '订单频道：已连接';
+      document.getElementById('lbl-orders').style.color = 'var(--green)';
+      addLog('订单事件频道 已连接', 'info');
+    };
+
+    wsOrd.onmessage = (e) => {
+      try {
+        const d = JSON.parse(e.data);
+        if (d.type === 'order_update') renderOrder(d);
+      } catch (_) {}
+    };
+
+    wsOrd.onerror = () => {
+      addLog('订单事件频道 连接错误', 'error');
+    };
+
+    wsOrd.onclose = (e) => {
+      setDot('dot-orders', 'error');
+      document.getElementById('lbl-orders').textContent = '订单频道：已断开';
+      document.getElementById('lbl-orders').style.color = 'var(--muted)';
+      addLog(`订单事件频道 断开 (code=${e.code})`, 'warn');
+    };
+  }
+
+  function disconnect() {
+    if (wsSys) { wsSys.close(); wsSys = null; }
+    if (wsOrd) { wsOrd.close(); wsOrd = null; }
+    addLog('已主动断开所有连接', 'warn');
+  }
+
+  // ── 按钮事件 ──────────────────────────────────────────
+  document.getElementById('btn-connect').addEventListener('click', () => {
+    disconnect();
+    const base = getBase();
+    addLog(`正在连接 ${base} …`, 'info');
+    connectSystem(base);
+    connectOrders(base);
+  });
+
+  document.getElementById('btn-disconnect').addEventListener('click', disconnect);
+
+  // ── 心跳（每 30s 向服务端发送 ping 防止超时）─────────
+  setInterval(() => {
+    if (wsSys && wsSys.readyState === WebSocket.OPEN) wsSys.send('ping');
+    if (wsOrd && wsOrd.readyState === WebSocket.OPEN) wsOrd.send('ping');
+  }, 30000);
+
+  // ── 页面加载后自动尝试连接 ─────────────────────────────
+  window.addEventListener('load', () => {
+    addLog('演示页面已加载，点击「连接」开始监控', 'info');
+  });
+</script>
+</body>
+</html>

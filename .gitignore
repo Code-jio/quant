@@ -1,28 +1,78 @@
-# 含凭据的配置文件 - 不要提交到版本控制
-config/config_production.json
-config/config_real.json
-config/config_example.json
+# ============================================================
+# 量化交易系统 .gitignore
+# 项目结构: back_end/ (Python FastAPI) + front_end/ (Vue3+Vite)
+# ============================================================
 
-# 数据文件
-data/historical/*.db
-data/factors/
+# ── 含凭据的配置文件（绝对不提交）────────────────────────────
+back_end/config/config_production.json
+back_end/config/config_real.json
+# 提交示例配置供参考，但真实账户信息必须排除
 
-# 日志
+# ── 后端数据文件 ─────────────────────────────────────────────
+back_end/data/historical/*.db
+back_end/data/factors/
+back_end/data/cache/
+
+# ── 日志 ─────────────────────────────────────────────────────
 logs/
+back_end/logs/
+*.log
 
-# Python
+# ── CTP 流文件 ───────────────────────────────────────────────
+*.con
+back_end/logs/ctp_flow_td/
+back_end/logs/ctp_flow_md/
+TRADE_*/
+MD_*/
+
+# ── Python ──────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
-.env
-venv/
-.venv/
+*.pyd
+*.egg
 *.egg-info/
+.eggs/
 dist/
 build/
+.venv/
+venv/
+env/
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
 
-# CTP 流文件
-*.con
-TRADE_*/
-MD_*/
+# ── 环境变量 ─────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ── 前端 Node.js ─────────────────────────────────────────────
+front_end/node_modules/
+front_end/dist/
+front_end/.env.local
+front_end/.env.*.local
+
+# ── Vite 构建产物 ────────────────────────────────────────────
+front_end/.vite/
+front_end/dist-ssr/
+
+# ── 编辑器 / IDE ─────────────────────────────────────────────
+.vscode/settings.json
+.vscode/launch.json
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── 测试 / 覆盖率 ────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# ── 系统 ─────────────────────────────────────────────────────
+desktop.ini

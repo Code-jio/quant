@@ -1,0 +1,70 @@
+/* ── 全局 CSS 变量（与后端 ws_demo.html 保持一致的暗色金融风格） ── */
+:root {
+  --q-bg: #0d1117;
+  --q-panel: #161b22;
+  --q-border: #30363d;
+  --q-text: #c9d1d9;
+  --q-muted: #8b949e;
+  --q-green: #3fb950;
+  --q-red: #f85149;
+  --q-yellow: #d29922;
+  --q-blue: #58a6ff;
+  --q-accent: #1f6feb;
+  --q-font-mono: 'Consolas', 'Menlo', 'Courier New', monospace;
+}
+
+/* ── Element Plus 暗色变量覆盖 ── */
+html.dark {
+  --el-bg-color: var(--q-panel);
+  --el-bg-color-page: var(--q-bg);
+  --el-bg-color-overlay: #1c2128;
+  --el-border-color: var(--q-border);
+  --el-border-color-light: #21262d;
+  --el-text-color-primary: var(--q-text);
+  --el-text-color-regular: #adbac7;
+  --el-text-color-secondary: var(--q-muted);
+  --el-fill-color-blank: var(--q-panel);
+  --el-fill-color: #1c2128;
+  --el-fill-color-light: #21262d;
+  --el-table-bg-color: var(--q-panel);
+  --el-table-tr-bg-color: var(--q-panel);
+  --el-table-header-bg-color: #0d1117;
+  --el-table-row-hover-bg-color: #1c2128;
+  --el-table-border-color: var(--q-border);
+  --el-color-primary: var(--q-blue);
+}
+
+/* ── 全局重置 ── */
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--q-bg);
+  color: var(--q-text);
+  font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 14px;
+  min-height: 100vh;
+}
+
+/* ── 表格强化 ── */
+.el-table {
+  background: transparent !important;
+  color: var(--q-text) !important;
+}
+.el-table th.el-table__cell {
+  background: #0d1117 !important;
+  color: var(--q-muted) !important;
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.4px;
+}
+.el-table td.el-table__cell {
+  border-bottom-color: var(--q-border) !important;
+}
+
+/* ── 滚动条 ── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--q-bg); }
+::-webkit-scrollbar-thumb { background: var(--q-border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #484f58; }
