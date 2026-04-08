@@ -284,6 +284,7 @@ import { useKlineData, INTERVALS } from '@/composables/useKlineData.js'
 import { useWatchStore, useChartStore, useIndicatorStore, useHistoryStore } from '@/stores/index.js'
 import { useHotkeys, KLINE_SHORTCUTS } from '@/composables/useHotkeys.js'
 import { useIndicatorWorker } from '@/composables/useIndicatorWorker.js'
+import { useWatchWs } from '@/composables/useWatchWs.js'
 import KlineSkeleton from '@/components/KlineSkeleton.vue'
 
 // ── Props ────────────────────────────────────────────────────────────────
@@ -346,6 +347,7 @@ const {
 } = useKlineData()
 
 const indicatorWorker = useIndicatorWorker()
+const watchWs = useWatchWs()
 
 // 快捷键帮助面板
 const showShortcutsHelp = ref(false)
@@ -1119,12 +1121,15 @@ onMounted(async () => {
   setupResizeObserver()
   if (props.symbol) {
     await reload()
-    // 恢复历史访问记录
     historyStore.addVisit({ symbol: props.symbol, name: props.name }, currentInterval.value)
+    watchWs.subscribe(props.symbol, [`kline_${currentInterval.value}`])
   }
 })
 
 onUnmounted(() => {
+  if (props.symbol) {
+    watchWs.unsubscribe(props.symbol)
+  }
   resizeObserver?.disconnect()
   chart?.dispose()
   chart = null
@@ -1148,7 +1153,34 @@ watch(() => props.symbol, async (val, oldVal) => {
 // 周期变化时同步写入历史
 watch(currentInterval, (iv) => {
   if (props.symbol) historyStore.addVisit({ symbol: props.symbol, name: props.name }, iv)
+  if (props.symbol) {
+    watchWs.unsubscribe(props.symbol)
+    watchWs.subscribe(props.symbol, [`kline_${iv}`])
+  }
 })
+
+// 实时K线更新：监听WebSocket推送的kline_update，更新最后一根K线
+watch(() => watchWs.getCurrentBar(props.symbol, currentInterval.value), (newBar) => {
+  if (!newBar || !bars.value.length || !chart) return
+  const lastBar = bars.value[bars.value.length - 1]
+  if (lastBar.time !== newBar.time && newBar.time) {
+    bars.value.push({
+      time: newBar.time,
+      open: newBar.open,
+      high: newBar.high,
+      low: newBar.low,
+      close: newBar.close,
+      volume: newBar.volume,
+    })
+  } else {
+    lastBar.open = newBar.open || lastBar.open
+    lastBar.high = Math.max(lastBar.high, newBar.high || lastBar.high)
+    lastBar.low = Math.min(lastBar.low, newBar.low || lastBar.low)
+    lastBar.close = newBar.close || lastBar.close
+    lastBar.volume = newBar.volume || lastBar.volume
+  }
+  chart.setOption(buildOption(), { notMerge: false, silent: true })
+}, { deep: true })
 
 // ── 快捷键（仅在图表区域存在时生效） ──────────────────────────────────────
 useHotkeys([
