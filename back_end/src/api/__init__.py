@@ -1252,15 +1252,16 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         try:
             gateway = create_gateway("ctp")
             loop    = asyncio.get_running_loop()
-            trading_state.add_log("正在连接，请稍候（最长 35 秒）…")
+            trading_state.add_log("正在连接，请稍候（最长 10 秒）…")
 
             # 在线程池中运行阻塞的 connect()
             success = await asyncio.wait_for(
                 loop.run_in_executor(None, gateway.connect, config),
-                timeout=35,
+                timeout=10,
             )
         except asyncio.TimeoutError:
-            trading_state.add_log("✘ 连接超时（35s）")
+            trading_state.add_log("✘ 连接超时（10s）")
+            logger.error("[API] 登录超时（10s），请检查网络和服务器地址")
             raise HTTPException(status_code=408, detail="连接超时，请检查服务器地址或网络")
         except Exception as exc:
             trading_state.add_log(f"✘ 连接异常: {exc}")

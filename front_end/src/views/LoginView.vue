@@ -1,153 +1,3 @@
-<script setup>
- 
-import { ref, reactive, computed, onUnmounted } from 'vue'
-import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import { useAuthStore } from '@/stores/auth.js'
-import { login, fetchAuthStatus, fetchServers } from '@/api/index.js'
-
-const router    = useRouter()
-const authStore = useAuthStore()
-
-// ── 预设服务器（本地备用，会从后端覆盖） ──────────────────────────────────
-const TD_SERVERS_DEFAULT = [
-  { label: '电信1', value: 'tcp://114.94.128.1:42205'   },
-  { label: '联通1', value: 'tcp://140.206.34.161:42205' },
-  { label: '电信2', value: 'tcp://114.94.128.5:42205'   },
-  { label: '联通2', value: 'tcp://140.206.34.165:42205' },
-  { label: '电信3', value: 'tcp://114.94.128.6:42205'   },
-  { label: '联通3', value: 'tcp://140.206.34.166:42205' },
-]
-const MD_SERVERS_DEFAULT = TD_SERVERS_DEFAULT.map(s => ({
-  label: s.label,
-  value: s.value.replace(':42205', ':42213'),
-}))
-
-const tdServers = ref([...TD_SERVERS_DEFAULT])
-const mdServers = ref([...MD_SERVERS_DEFAULT])
-
-// 加载服务器预设
-fetchServers().then(data => {
-  if (data.td_servers?.length) tdServers.value = data.td_servers
-  if (data.md_servers?.length) mdServers.value = data.md_servers
-}).catch(() => {/* 用本地默认值 */})
-
-// ── 表单数据 ──────────────────────────────────────────────────────────────
-const form = reactive({
-  username:  '',
-  password:  '',
-  broker_id: '2071',
-  td_server: 'tcp://114.94.128.1:42205',
-  md_server: 'tcp://114.94.128.1:42213',
-  app_id:    'client_TraderMaster_v1.0.0',
-  auth_code: '20260324LHJYMHBG',
-  td_custom: false,
-  md_custom: false,
-})
-
-const formRef         = ref(null)
-const showAdvanced    = ref(false)
-const connecting      = ref(false)
-const errorMsg        = ref('')
-const connectLog      = ref([])
-const logContainer    = ref(null)
-
-// ── 表单校验规则 ──────────────────────────────────────────────────────────
-const rules = {
-  username:  [{ required: true, message: '请输入投资者账号', trigger: 'blur' }],
-  password:  [{ required: true, message: '请输入密码',       trigger: 'blur' }],
-  broker_id: [{ required: true, message: '请输入经纪商ID',   trigger: 'blur' }],
-}
-
-// 服务器地址（支持自定义）
-const tdValue = computed({
-  get: () => form.td_custom ? form.td_server : form.td_server,
-  set: (v) => { form.td_server = v },
-})
-const mdValue = computed({
-  get: () => form.md_custom ? form.md_server : form.md_server,
-  set: (v) => { form.md_server = v },
-})
-
-function onTdSelect(v) {
-  if (v === '__custom__') { form.td_custom = true }
-  else { form.td_custom = false; form.td_server = v }
-}
-function onMdSelect(v) {
-  if (v === '__custom__') { form.md_custom = true }
-  else { form.md_custom = false; form.md_server = v }
-}
-
-// ── 轮询连接日志 ──────────────────────────────────────────────────────────
-let pollTimer = null
-
-function startPolling() {
-  pollTimer = setInterval(async () => {
-    try {
-      const status = await fetchAuthStatus()
-      if (status.connect_log?.length) {
-        connectLog.value = status.connect_log
-        // 自动滚到底部
-        setTimeout(() => {
-          if (logContainer.value) {
-            logContainer.value.scrollTop = logContainer.value.scrollHeight
-          }
-        }, 50)
-      }
-    } catch { /* 静默 */ }
-  }, 2000)
-}
-
-function stopPolling() {
-  clearInterval(pollTimer)
-  pollTimer = null
-}
-
-onUnmounted(stopPolling)
-
-// ── 登录处理 ──────────────────────────────────────────────────────────────
-async function handleLogin() {
-  try {
-    await formRef.value.validate()
-  } catch {
-    return
-  }
-
-  connecting.value  = true
-  errorMsg.value    = ''
-  connectLog.value  = ['[--:--:--] 正在初始化连接…']
-  startPolling()
-
-  try {
-    const res = await login({
-      username:  form.username,
-      password:  form.password,
-      broker_id: form.broker_id,
-      td_server: form.td_server,
-      md_server: form.md_server,
-      app_id:    form.app_id,
-      auth_code: form.auth_code,
-    })
-
-    authStore.setAuth({
-      token:     res.token,
-      accountId: res.account_id,
-      balance:   res.balance,
-    })
-
-    ElMessage.success(`登录成功，账户：${res.account_id}`)
-    router.push({ name: 'Dashboard' })
-
-  } catch (err) {
-    errorMsg.value = err.message ?? '连接失败，请检查账户信息或网络'
-    connectLog.value.push(`[错误] ${errorMsg.value}`)
-  } finally {
-    connecting.value = false
-    stopPolling()
-  }
-}
-</script>
-
 <template>
   <div class="login-page">
 
@@ -342,6 +192,164 @@ async function handleLogin() {
     </div>
   </div>
 </template>
+
+<script setup>
+ 
+import { ref, reactive, computed, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
+import { ElMessage } from 'element-plus'
+import { useAuthStore } from '@/stores/auth.js'
+import { login, fetchAuthStatus, fetchServers } from '@/api/index.js'
+
+const router    = useRouter()
+const authStore = useAuthStore()
+
+// ── 预设服务器（本地备用，会从后端覆盖） ──────────────────────────────────
+const TD_SERVERS_DEFAULT = [
+  { label: '电信1', value: 'tcp://114.94.128.1:42205'   },
+  { label: '联通1', value: 'tcp://140.206.34.161:42205' },
+  { label: '电信2', value: 'tcp://114.94.128.5:42205'   },
+  { label: '联通2', value: 'tcp://140.206.34.165:42205' },
+  { label: '电信3', value: 'tcp://114.94.128.6:42205'   },
+  { label: '联通3', value: 'tcp://140.206.34.166:42205' },
+]
+const MD_SERVERS_DEFAULT = TD_SERVERS_DEFAULT.map(s => ({
+  label: s.label,
+  value: s.value.replace(':42205', ':42213'),
+}))
+
+const tdServers = ref([...TD_SERVERS_DEFAULT])
+const mdServers = ref([...MD_SERVERS_DEFAULT])
+
+// 加载服务器预设
+fetchServers().then(data => {
+  if (data.td_servers?.length) tdServers.value = data.td_servers
+  if (data.md_servers?.length) mdServers.value = data.md_servers
+}).catch(() => {/* 用本地默认值 */})
+
+// ── 表单数据 ──────────────────────────────────────────────────────────────
+const form = reactive({
+  username:  '',
+  password:  '',
+  broker_id: '2071',
+  td_server: 'tcp://114.94.128.1:42205',
+  md_server: 'tcp://114.94.128.1:42213',
+  app_id:    'client_TraderMaster_v1.0.0',
+  auth_code: '20260324LHJYMHBG',
+  td_custom: false,
+  md_custom: false,
+})
+
+const formRef         = ref(null)
+const showAdvanced    = ref(false)
+const connecting      = ref(false)
+const errorMsg        = ref('')
+const connectLog      = ref([])
+const logContainer    = ref(null)
+
+// ── 表单校验规则 ──────────────────────────────────────────────────────────
+const rules = {
+  username:  [{ required: true, message: '请输入投资者账号', trigger: 'blur' }],
+  password:  [{ required: true, message: '请输入密码',       trigger: 'blur' }],
+  broker_id: [{ required: true, message: '请输入经纪商ID',   trigger: 'blur' }],
+}
+
+// 服务器地址（支持自定义）
+const tdValue = computed({
+  get: () => form.td_custom ? form.td_server : form.td_server,
+  set: (v) => { form.td_server = v },
+})
+const mdValue = computed({
+  get: () => form.md_custom ? form.md_server : form.md_server,
+  set: (v) => { form.md_server = v },
+})
+
+function onTdSelect(v) {
+  if (v === '__custom__') { form.td_custom = true }
+  else { form.td_custom = false; form.td_server = v }
+}
+function onMdSelect(v) {
+  if (v === '__custom__') { form.md_custom = true }
+  else { form.md_custom = false; form.md_server = v }
+}
+
+// ── 轮询连接日志 ──────────────────────────────────────────────────────────
+let pollTimer = null
+
+function startPolling() {
+  pollTimer = setInterval(async () => {
+    try {
+      const status = await fetchAuthStatus()
+      if (status.connect_log?.length) {
+        connectLog.value = status.connect_log
+        // 自动滚到底部
+        setTimeout(() => {
+          if (logContainer.value) {
+            logContainer.value.scrollTop = logContainer.value.scrollHeight
+          }
+        }, 50)
+      }
+    } catch { /* 静默 */ }
+  }, 2000)
+}
+
+function stopPolling() {
+  clearInterval(pollTimer)
+  pollTimer = null
+}
+
+onUnmounted(stopPolling)
+
+// ── 登录处理 ──────────────────────────────────────────────────────────────
+const LOGIN_TIMEOUT = 10_000
+
+async function handleLogin() {
+  try {
+    await formRef.value.validate()
+  } catch {
+    return
+  }
+
+  connecting.value  = true
+  errorMsg.value    = ''
+  connectLog.value  = ['[--:--:--] 正在初始化连接…']
+  startPolling()
+
+  try {
+    const loginPromise = login({
+      username:  form.username,
+      password:  form.password,
+      broker_id: form.broker_id,
+      td_server: form.td_server,
+      md_server: form.md_server,
+      app_id:    form.app_id,
+      auth_code: form.auth_code,
+    })
+
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('登录超时（10s），请检查网络和服务器地址')), LOGIN_TIMEOUT)
+    })
+
+    const res = await Promise.race([loginPromise, timeoutPromise])
+
+    authStore.setAuth({
+      token:     res.token,
+      accountId: res.account_id,
+      balance:   res.balance,
+    })
+
+    ElMessage.success(`登录成功，账户：${res.account_id}`)
+    router.push({ name: 'Dashboard' })
+
+  } catch (err) {
+    errorMsg.value = err.message ?? '连接失败，请检查账户信息或网络'
+    connectLog.value.push(`[错误] ${errorMsg.value}`)
+  } finally {
+    connecting.value = false
+    stopPolling()
+  }
+}
+</script>
 
 <style scoped>
 /* ── 全屏背景 ── */

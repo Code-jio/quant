@@ -376,10 +376,10 @@ class CTPNativeGateway(GatewayBase):
         logger.info(f"[TD] 正在连接: {self.td_server}")
         self._log(f"正在连接交易前置: {self.td_server}")
 
-        # 等待登录完成（最多 15 秒）
-        if not self._login_event.wait(timeout=15):
-            logger.error("[TD] 登录超时（15s）")
-            self._log("登录超时，请检查网络和服务器地址")
+        # 等待登录完成（最多 10 秒）
+        if not self._login_event.wait(timeout=10):
+            logger.error("[TD] 登录超时（10s）")
+            self._log("登录超时（10s），请检查网络和服务器地址")
             self.status = TradingStatus.ERROR
             return False
 
