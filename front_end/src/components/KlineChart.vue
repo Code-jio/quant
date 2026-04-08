@@ -504,19 +504,35 @@ function buildOption() {
   const candleData = bars.value.map(b => [b.open, b.close, b.low, b.high])
   const volData    = bars.value.map((b) => {
     const up = b.close >= b.open
-    return { value: b.volume, itemStyle: { color: up ? cfg.upColor : cfg.downColor } }
+    // 成交量柱用半透明色，避免视觉抢占主图
+    const color = up ? (cfg.upColor + 'aa') : (cfg.downColor + 'aa')
+    return { value: b.volume, itemStyle: { color } }
   })
 
-  // 布局比例
-  const isMob = isMobile.value
-  const mainH  = isMob ? '55%' : '58%'
-  const volH   = isMob ? '14%' : '14%'
-  const indH   = isMob ? '14%' : '14%'
-  const zoomH  = '6%'
+  // ── 布局参数 ─────────────────────────────────────────────────────────────
+  // ECharts grid 不支持 CSS calc()，所以全部用纯百分比/像素定位。
+  // 垂直分区（从上到下）：
+  //   [主图 K线]  →  [成交量副图]  →  [技术指标副图]  →  [DataZoom 滑块]
+  //
+  //  Desktop: 主图 ~58% / 成交量 ~14% / 指标 ~14% / DataZoom ~8% / gaps 2% each
+  //  Mobile : 主图 ~52% / 成交量 ~14% / 指标 ~14% / DataZoom ~9% / gaps 2% each
+  //
+  // 坐标系说明：
+  //   top    = 距容器顶部距离（像素或百分比）
+  //   bottom = 距容器底部距离（像素或百分比）
+  //   各区域 bottom edge = 100% - top - height
 
-  const mainBottom  = isMob ? '38%' : '34%'
-  const volBottom   = isMob ? '22%' : '19%'
-  const indBottom   = isMob ? '7%'  : '8%'
+  const isMob = isMobile.value
+
+  // grid[0] 主图：top=8px，bottom=40%（桌面）/ 46%（移动端）
+  // grid[1] 成交量：top=62%（桌面）/ 56%（移动端），bottom=24% / 29%
+  // grid[2] 指标：top=78%（桌面）/ 73%（移动端），bottom=8% / 9%
+  const g0Top    = 8
+  const g0Bottom = isMob ? '46%' : '40%'
+  const g1Top    = isMob ? '56%' : '62%'
+  const g1Bottom = isMob ? '29%' : '24%'
+  const g2Top    = isMob ? '73%' : '78%'
+  const g2Bottom = isMob ?  '9%' :  '8%'
 
   // 均线系列
   const maSeries = maConfig.value
@@ -583,9 +599,12 @@ function buildOption() {
       link: [{ xAxisIndex: 'all' }],
     },
     grid: [
-      { left: 60, right: 60, top: 8, bottom: mainBottom },
-      { left: 60, right: 60, top: `calc(${mainH} + 8px)`, bottom: volBottom },
-      { left: 60, right: 60, top: `calc(${mainH} + ${volH} + 8px)`, bottom: indBottom },
+      // 主图 K 线区
+      { left: 54, right: 64, top: g0Top,    bottom: g0Bottom, containLabel: false },
+      // 成交量副图
+      { left: 54, right: 64, top: g1Top,    bottom: g1Bottom, containLabel: false },
+      // 技术指标副图
+      { left: 54, right: 64, top: g2Top,    bottom: g2Bottom, containLabel: false },
     ],
     xAxis: [0, 1, 2].map(i => ({
       type:       'category',
@@ -612,73 +631,103 @@ function buildOption() {
       boundaryGap: true,
     })),
     yAxis: [
-      // 主图价格轴
+      // ── 主图价格轴（右侧显示） ─────────────────────────────────────────────
       {
-        scale:      true,
-        gridIndex:  0,
+        scale:       true,
+        gridIndex:   0,
+        position:    'right',
+        axisLine:    { show: false },
+        axisTick:    { show: false },
+        axisLabel:   {
+          color:    '#999',
+          fontSize:  11,
+          margin:    6,
+          formatter: (v) => v.toFixed(v >= 1000 ? 0 : v >= 100 ? 1 : 2),
+        },
+        splitLine:   { lineStyle: { color: '#1e1e30', type: 'solid' } },
+        splitNumber: 5,
+        min: 'dataMin',
+        max: 'dataMax',
+      },
+      // ── 主图左侧隐藏轴（让左右 left/right 对称，否则 left 侧有空白）──────────
+      {
+        scale:     true,
+        gridIndex: 0,
+        position:  'left',
+        axisLine:  { show: false },
+        axisTick:  { show: false },
+        axisLabel: { show: false },
+        splitLine: { show: false },
+        min: 'dataMin',
+        max: 'dataMax',
+      },
+      // ── 成交量轴（右侧，标签简化为 万/亿） ─────────────────────────────────
+      {
+        scale:      false,    // 从 0 开始
+        gridIndex:  1,
         position:   'right',
         axisLine:   { show: false },
         axisTick:   { show: false },
-        axisLabel:  { color: '#888', fontSize: 11 },
-        splitLine:  { lineStyle: { color: '#222', type: 'dashed' } },
+        axisLabel:  {
+          color:     '#666',
+          fontSize:  10,
+          margin:    6,
+          formatter: (v) => {
+            if (v === 0) return ''
+            if (v >= 1e8) return (v / 1e8).toFixed(1) + '亿'
+            if (v >= 1e4) return (v / 1e4).toFixed(0) + '万'
+            return String(v)
+          },
+        },
+        splitLine:   { lineStyle: { color: '#1a1a28', type: 'solid' } },
+        splitNumber: 2,
+        min: 0,
       },
-      // 价格轴左侧（镜像，不显示标签）
+      // ── 技术指标轴 ─────────────────────────────────────────────────────────
       {
         scale:      true,
-        gridIndex:  0,
-        position:   'left',
+        gridIndex:  2,
+        position:   'right',
         axisLine:   { show: false },
         axisTick:   { show: false },
-        axisLabel:  { show: false },
-        splitLine:  { show: false },
-      },
-      // 成交量轴
-      {
-        scale:     true,
-        gridIndex: 1,
-        position:  'right',
-        axisLine:  { show: false },
-        axisTick:  { show: false },
-        axisLabel: { color: '#666', fontSize: 10 },
-        splitLine: { lineStyle: { color: '#222', type: 'dashed' } },
-        splitNumber: 2,
-      },
-      // 指标轴
-      {
-        scale:     true,
-        gridIndex: 2,
-        position:  'right',
-        axisLine:  { show: false },
-        axisTick:  { show: false },
-        axisLabel: { color: '#666', fontSize: 10 },
-        splitLine: { lineStyle: { color: '#222', type: 'dashed' } },
+        axisLabel:  {
+          color:    '#666',
+          fontSize:  10,
+          margin:    6,
+          formatter: (v) => v.toFixed(2),
+        },
+        splitLine:   { lineStyle: { color: '#1a1a28', type: 'solid' } },
         splitNumber: 3,
       },
     ],
     dataZoom: [
       {
-        type:       'inside',
-        xAxisIndex: [0, 1, 2],
-        start:      Math.max(0, 100 - Math.round(150 / bars.value.length * 100)),
-        end:        100,
-        filterMode: 'filter',
+        type:             'inside',
+        xAxisIndex:       [0, 1, 2],
+        start:            Math.max(0, 100 - Math.round(150 / bars.value.length * 100)),
+        end:              100,
+        filterMode:       'filter',
         zoomOnMouseWheel: true,
         moveOnMouseMove:  true,
       },
       {
         type:       'slider',
         xAxisIndex: [0, 1, 2],
-        bottom:     4,
-        height:     20,
+        // 滑块位于指标区下方，用 bottom=2 贴底，不覆盖任何 grid
+        bottom:     2,
+        height:     22,
+        left:       54,
+        right:      64,
         start:      Math.max(0, 100 - Math.round(150 / bars.value.length * 100)),
         end:        100,
         handleIcon: 'path://M10.7,11.9v-1.3H9.3v1.3c-4.9,0.3-8.8,4.4-8.8,9.4c0,5,3.9,9.1,8.8,9.4v1.3h1.3v-1.3c4.9-0.3,8.8-4.4,8.8-9.4C19.5,16.3,15.6,12.2,10.7,11.9z M13.3,24.4H6.7V23h6.6V24.4z M13.3,19.6H6.7v-1.4h6.6V19.6z',
-        handleSize: '80%',
-        handleStyle: { color: '#555' },
-        textStyle:   { color: '#777' },
-        borderColor: '#333',
-        fillerColor: 'rgba(100,100,180,0.15)',
-        backgroundColor: '#1a1a2a',
+        handleSize:      '80%',
+        handleStyle:     { color: '#444' },
+        textStyle:       { color: '#555', fontSize: 10 },
+        borderColor:     '#2a2a3a',
+        fillerColor:     'rgba(99,102,241,0.12)',
+        backgroundColor: '#13131f',
+        showDetail:      false,
       },
     ],
     series: [
@@ -698,11 +747,13 @@ function buildOption() {
       },
       // 成交量
       {
-        name: '成交量',
-        type: 'bar',
-        data: volData,
+        name:       '成交量',
+        type:       'bar',
+        data:       volData,
         xAxisIndex: 1, yAxisIndex: 2,
-        barMaxWidth: 8,
+        barMaxWidth: 6,
+        barMinWidth: 1,
+        barCategoryGap: '20%',
         z: 2,
       },
       ...maSeries,

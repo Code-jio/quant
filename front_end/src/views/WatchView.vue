@@ -243,9 +243,16 @@ useHotkeys([
 ])
 
 onMounted(() => {
-  // 恢复上次查看的品种
   if (!currentContract.value && historyStore.recentSymbols.length) {
     watchStore.setSymbol(historyStore.recentSymbols[0])
+  }
+  const symbolsToSubscribe = [
+    ...watchStore.watchList.map(c => c.symbol),
+    ...historyStore.recentSymbols.map(c => c.symbol),
+  ]
+  const uniqueSymbols = [...new Set(symbolsToSubscribe)]
+  if (uniqueSymbols.length) {
+    watchWs.subscribe(uniqueSymbols, ['tick'])
   }
 })
 onUnmounted(() => {})
@@ -306,6 +313,24 @@ watch(
     }
   },
   { immediate: true }
+)
+
+watch(
+  () => watchStore.watchList,
+  (newList) => {
+    const symbols = newList.map(c => c.symbol)
+    watchWs.subscribe(symbols, ['tick'])
+  },
+  { deep: true }
+)
+
+watch(
+  () => historyStore.recentSymbols,
+  (newList) => {
+    const symbols = newList.map(c => c.symbol)
+    watchWs.subscribe(symbols, ['tick'])
+  },
+  { deep: true }
 )
 
 // ── 合约选择 ──────────────────────────────────────────────────────────────

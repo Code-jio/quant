@@ -149,8 +149,8 @@ const priceDir = computed(() => {
 })
 
 // ── 交易所标签类型 ────────────────────────────────────────────────────────
-const EXCH_TAG_MAP = { SHFE: 'danger', DCE: 'warning', CZCE: 'success', CFFEX: '', INE: 'info', GFEX: 'primary' }
-const exchTagType = computed(() => EXCH_TAG_MAP[props.contract?.exchange] ?? '')
+const EXCH_TAG_MAP = { SHFE: 'danger', DCE: 'warning', CZCE: 'success', CFFEX: 'primary', INE: 'info', GFEX: 'info' }
+const exchTagType = computed(() => EXCH_TAG_MAP[props.contract?.exchange] ?? 'info')
 
 // ── 5 档深度计算 ──────────────────────────────────────────────────────────
 function buildLevels(priceKeys, volKeys) {

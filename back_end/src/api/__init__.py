@@ -1780,10 +1780,19 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
                 return base_prices[symbol]
             try:
                 from ..watch.kline import get_kline
-                result = get_kline(symbol=symbol, interval="1d", limit=1, indicators="")
-                bars = result.get("data", {}).get("bars", [])
-                price = float(bars[-1]["close"]) if bars else 3000.0
-            except Exception:
+                result = get_kline(symbol=symbol, interval="1d", limit=2, indicators="")
+                data = result.get("data", [])
+                # 新格式：data 是扁平记录数组
+                if isinstance(data, list) and data:
+                    price = float(data[-1].get("close", 3000.0))
+                # 旧格式兼容：data 是含 bars 字段的字典
+                elif isinstance(data, dict):
+                    raw_bars = data.get("bars", [])
+                    price = float(raw_bars[-1]["close"]) if raw_bars else 3000.0
+                else:
+                    price = 3000.0
+            except Exception as e:
+                logger.debug(f"[WS:watch] _get_base_price({symbol}) 失败: {e}")
                 price = 3000.0
             base_prices[symbol] = price
             return price

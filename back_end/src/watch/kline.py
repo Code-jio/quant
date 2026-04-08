@@ -144,8 +144,9 @@ def _brownian_path(
     """生成 n+1 个价格点（首 = open，末 = close），约束在 [low, high]。"""
     t     = np.linspace(0, 1, n + 1)
     drift = open_ + (close_ - open_) * t
+    # 增大噪声系数，使每根分钟 K 线的 open/close 有足够的价差，避免大量十字星
     sigma = (high - low) / 4
-    noise = rng.normal(0, sigma * 0.25, n + 1)
+    noise = rng.normal(0, sigma * 0.55, n + 1)
     noise[0] = noise[-1] = 0
     path  = np.clip(drift + noise, low * 0.9995, high * 1.0005)
     path[0], path[-1] = open_, close_
@@ -193,17 +194,25 @@ def _synthesize_intraday(
         vol_dist   = _volume_profile(bars_per_day)
         vol_bars   = np.maximum((d_vol * vol_dist).astype(int), 0)
 
+        # 根据价格量级决定小数位，避免过度取整导致 open==close 十字星
+        _price_decimals = 2 if d_close < 50 else (1 if d_close < 500 else 0)
+
         for i in range(bars_per_day):
             ts   = base_dt + timedelta(minutes=i * interval_minutes)
             o, c = prices[i], prices[i + 1]
-            h    = min(max(o, c) * (1 + rng.exponential(0.0003)), d_high * 1.001)
-            l    = max(min(o, c) * (1 - rng.exponential(0.0003)), d_low  * 0.999)
+            h    = min(max(o, c) * (1 + rng.exponential(0.0008)), d_high * 1.001)
+            l    = max(min(o, c) * (1 - rng.exponential(0.0008)), d_low  * 0.999)
+            # 确保 open != close，至少差一个最小精度单位
+            o_r, c_r = round(o, _price_decimals), round(c, _price_decimals)
+            if o_r == c_r:
+                tick = 10 ** (-_price_decimals)
+                c_r  = c_r + tick if c > o else c_r - tick
             all_bars.append({
                 "datetime": ts,
-                "open":     round(o, 2),
-                "high":     round(h, 2),
-                "low":      round(l, 2),
-                "close":    round(c, 2),
+                "open":     o_r,
+                "high":     round(h, _price_decimals),
+                "low":      round(l, _price_decimals),
+                "close":    c_r,
                 "volume":   int(vol_bars[i]),
             })
 

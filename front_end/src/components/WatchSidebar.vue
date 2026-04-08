@@ -197,7 +197,7 @@ const EXCH_TAG_MAP = {
   INE:   'info',
   GFEX:  'info',
 }
-function exchType(exch) { return EXCH_TAG_MAP[exch] ?? undefined }
+function exchType(exch) { return EXCH_TAG_MAP[exch] ?? 'info' }
 </script>
 
 <style scoped>
