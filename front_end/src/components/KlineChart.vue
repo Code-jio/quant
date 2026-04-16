@@ -1122,14 +1122,11 @@ onMounted(async () => {
   if (props.symbol) {
     await reload()
     historyStore.addVisit({ symbol: props.symbol, name: props.name }, currentInterval.value)
-    watchWs.subscribe(props.symbol, [`kline_${currentInterval.value}`])
   }
 })
 
 onUnmounted(() => {
-  if (props.symbol) {
-    watchWs.unsubscribe(props.symbol)
-  }
+  clearTimeout(_loadMoreDebounceTimer)
   resizeObserver?.disconnect()
   chart?.dispose()
   chart = null
@@ -1147,15 +1144,6 @@ watch(() => props.symbol, async (val, oldVal) => {
   } else {
     bars.value = []
     chart?.clear()
-  }
-})
-
-// 周期变化时同步写入历史
-watch(currentInterval, (iv) => {
-  if (props.symbol) historyStore.addVisit({ symbol: props.symbol, name: props.name }, iv)
-  if (props.symbol) {
-    watchWs.unsubscribe(props.symbol)
-    watchWs.subscribe(props.symbol, [`kline_${iv}`])
   }
 })
 
@@ -1179,7 +1167,16 @@ watch(() => watchWs.getCurrentBar(props.symbol, currentInterval.value), (newBar)
     lastBar.close = newBar.close || lastBar.close
     lastBar.volume = newBar.volume || lastBar.volume
   }
-  chart.setOption(buildOption(), { notMerge: false, silent: true })
+  chart.setOption({
+    series: [
+      { data: bars.value.map(b => [b.open, b.close, b.low, b.high]) },
+      { data: bars.value.map((b) => {
+        const up = b.close >= b.open
+        const cfg = chartStore.resolvedConfig(props.symbol)
+        return { value: b.volume, itemStyle: { color: up ? (cfg.upColor + 'aa') : (cfg.downColor + 'aa') } }
+      })},
+    ]
+  }, { notMerge: false, silent: true })
 }, { deep: true })
 
 // ── 快捷键（仅在图表区域存在时生效） ──────────────────────────────────────

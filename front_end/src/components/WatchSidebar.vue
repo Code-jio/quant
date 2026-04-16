@@ -36,7 +36,7 @@
               {{ getTick(c.symbol).last }}
             </span>
             <span class="row-chg" :class="tickDir(c.symbol)">
-              {{ fmtChg(getTick(c.symbol).changeRate) }}
+              {{ fmtChg(getTick(c.symbol).change_rate) }}
             </span>
           </template>
           <span v-else class="row-price dim">--</span>
@@ -74,7 +74,7 @@
               {{ getTick(c.symbol).last }}
             </span>
             <span class="row-chg" :class="tickDir(c.symbol)">
-              {{ fmtChg(getTick(c.symbol).changeRate) }}
+              {{ fmtChg(getTick(c.symbol).change_rate) }}
             </span>
           </template>
           <span v-else class="row-price dim">--</span>
@@ -121,7 +121,7 @@
               {{ getTick(c.symbol).last }}
             </span>
             <span class="row-chg" :class="tickDir(c.symbol)">
-              {{ fmtChg(getTick(c.symbol).changeRate) }}
+              {{ fmtChg(getTick(c.symbol).change_rate) }}
             </span>
           </template>
           <span v-else class="row-price dim">--</span>
@@ -137,12 +137,13 @@
 </template>
 
 <script setup>
-import { ref, computed, inject } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { Star, StarFilled, Clock } from '@element-plus/icons-vue'
 import { useWatchStore } from '@/stores/watch.js'
 import { useHistoryStore } from '@/stores/history.js'
 import { HOT_CONTRACTS, EXCH_COLOR } from '@/composables/useContractSearch.js'
+import { fetchTicks } from '@/api/index.js'
 
 // ── Emits ─────────────────────────────────────────────────────────────────
 const emit = defineEmits(['select'])
@@ -153,10 +154,39 @@ const historyStore = useHistoryStore()
 const { currentSymbol, watchList } = storeToRefs(watchStore)
 const { recentSymbols, visitCounts } = storeToRefs(historyStore)
 
-// ── WS（从父组件注入） ─────────────────────────────────────────────────────
-const watchWs = inject('watchWs')
+// ── 轮询行情（试点：替代 WebSocket）──────────────────────────────────────
+const polledTicks = ref({})
+let pollTimer = null
+
+async function pollTicks() {
+  const syms = HOT_CONTRACTS.map(c => c.symbol)
+  try {
+    const res = await fetchTicks(syms)
+    if (res.code === 0 && res.ticks) {
+      polledTicks.value = res.ticks
+    }
+  } catch (e) {
+    console.error('[WatchSidebar] pollTicks error:', e.message)
+  }
+}
+
+function startPolling() {
+  pollTicks()
+  pollTimer = setInterval(pollTicks, 1000)
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+onMounted(() => startPolling())
+onUnmounted(() => stopPolling())
+
 function getTick(symbol) {
-  return watchWs?.getTick(symbol) ?? { last: 0, changeRate: 0 }
+  return polledTicks.value[symbol] ?? { last: 0, changeRate: 0 }
 }
 
 // ── Tab 状态 ──────────────────────────────────────────────────────────────
@@ -180,13 +210,13 @@ const sectorContracts = computed(() =>
 
 // ── 辅助函数 ──────────────────────────────────────────────────────────────
 function tickDir(symbol) {
-  const r = getTick(symbol).changeRate ?? 0
+  const r = getTick(symbol).change_rate ?? 0
   return r > 0 ? 'up' : r < 0 ? 'down' : ''
 }
 
 function fmtChg(rate) {
   if (rate == null) return '--'
-  return `${rate >= 0 ? '+' : ''}${rate.toFixed(2)}%`
+  return `${rate >= 0 ? '+' : ''}${(rate ?? 0).toFixed(2)}%`
 }
 
 const EXCH_TAG_MAP = {

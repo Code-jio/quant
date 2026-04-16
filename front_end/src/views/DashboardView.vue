@@ -35,7 +35,8 @@ async function loadStrategies() {
     strategies.value = await fetchStrategies()
     isMockMode.value = false
   } catch (err) {
-    if (err.message?.includes('401')) return   // 已由 api/index.js 重定向
+    if (err.message?.includes('401')) return
+    ElMessage.warning('无法连接后端服务，当前显示模拟数据')
     strategies.value = MOCK_STRATEGIES
     isMockMode.value = true
   } finally {

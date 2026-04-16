@@ -64,6 +64,7 @@ _OPEN_PATHS = {
     "/backtest/strategies",   # 策略列表无需登录
     "/watch/search",           # 品种搜索无需登录
     "/watch/kline",           # K线数据无需登录
+    "/watch/tick",            # 实时tick无需登录（轮询专用）
 }
 
 
@@ -1222,6 +1223,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         """
         接受 CTP 账户配置，连接交易前置和行情前置。
         连接过程最长等待 35 秒。成功后返回会话 token。
+        若用户名为 '模拟' 或 'simulate'，则使用模拟网关快速登录。
         """
         from ..trading import create_gateway
 
@@ -1233,8 +1235,16 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             trading_state.add_log("检测到已有连接，正在断开…")
             trading_state.clear_main()
 
+        # 检测是否模拟登录
+        is_simulate = body.username in ("模拟", "simulate", "模拟登录")
+        if is_simulate:
+            trading_state.add_log("使用模拟网关登录")
+            gateway_type = "simulated"
+        else:
+            gateway_type = "ctp"
+
         config = {
-            "gateway":   "ctp",
+            "gateway":   gateway_type,
             "username":  body.username,
             "password":  body.password,
             "broker_id": body.broker_id,
@@ -1242,7 +1252,6 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             "md_server": body.md_server,
             "app_id":    body.app_id,
             "auth_code": body.auth_code,
-            # initial_capital 登录成功后由查询账户余额填充，此处先占位
             "initial_capital": 0.0,
         }
 
@@ -1250,18 +1259,17 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         trading_state.add_log(f"行情前置: {body.md_server}")
 
         try:
-            gateway = create_gateway("ctp")
+            gateway = create_gateway(gateway_type)
             loop    = asyncio.get_running_loop()
-            trading_state.add_log("正在连接，请稍候（最长 10 秒）…")
+            trading_state.add_log("正在连接，请稍候（最长 30 秒）…")
 
-            # 在线程池中运行阻塞的 connect()
             success = await asyncio.wait_for(
                 loop.run_in_executor(None, gateway.connect, config),
-                timeout=10,
+                timeout=30,
             )
         except asyncio.TimeoutError:
-            trading_state.add_log("✘ 连接超时（10s）")
-            logger.error("[API] 登录超时（10s），请检查网络和服务器地址")
+            trading_state.add_log("✘ 连接超时（30s）")
+            logger.error("[API] 登录超时（30s），请检查网络和服务器地址")
             raise HTTPException(status_code=408, detail="连接超时，请检查服务器地址或网络")
         except Exception as exc:
             trading_state.add_log(f"✘ 连接异常: {exc}")
@@ -1741,6 +1749,81 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         prefix = f"kline:{symbol}" if symbol else "kline:"
         n = kline_cache.invalidate(prefix)
         return JSONResponse({"code": 0, "cleared": n})
+
+    # ── /watch/tick — 批量查询实时行情（REST轮询） ────────────────────────────
+    #
+    # 参数：symbols - 逗号分隔的合约代码，如 "IF2506,IC2506,rb2601"
+    # 响应：{ code, ticks: { symbol: { ...tick_data } } }
+    #
+    @app.get("/watch/tick", summary="批量查询实时行情", tags=["行情"])
+    async def get_ticks(symbols: str = ""):
+        """批量查询多个合约的实时 tick 数据，用于前端轮询。"""
+        import random
+        sym_list = [s.strip() for s in symbols.split(",") if s.strip()]
+        if not sym_list:
+            return JSONResponse({"code": 1, "msg": "请提供 symbols 参数"}, status_code=400)
+
+        ticks_result = {}
+        rng = random.Random()
+
+        for sym in sym_list:
+            ref_price = 3000.0
+            try:
+                from ..watch.kline import get_kline
+                result = get_kline(symbol=sym, interval="1d", limit=2, indicators="")
+                data = result.get("data", [])
+                if isinstance(data, list) and data:
+                    ref_price = float(data[-1].get("close", 3000.0))
+                elif isinstance(data, dict):
+                    bars = data.get("bars", [])
+                    if bars:
+                        ref_price = float(bars[-1].get("close", 3000.0))
+            except Exception:
+                pass
+
+            ref_price = round(ref_price * (1 + rng.gauss(0, 0.0001)), 4)
+            tick_size = max(round(ref_price * 0.0002, 2), 0.01)
+            drift = rng.gauss(0, tick_size)
+            last = round(ref_price + drift, 2)
+            spread = tick_size * rng.uniform(1, 3)
+            bid1 = round(last - spread * 0.5, 2)
+            ask1 = round(last + spread * 0.5, 2)
+            bids, asks = [], []
+            b, a = bid1, ask1
+            for i in range(5):
+                bids.append(round(b - tick_size * i * rng.uniform(0.5, 1.5), 2))
+                asks.append(round(a + tick_size * i * rng.uniform(0.5, 1.5), 2))
+            bid_vols = [rng.randint(1, 200) for _ in range(5)]
+            ask_vols = [rng.randint(1, 200) for _ in range(5)]
+            pre_close = round(last * rng.uniform(0.99, 1.01), 2)
+            open_p = round(pre_close * rng.uniform(0.998, 1.002), 2)
+            high_p = round(max(open_p, last) * rng.uniform(1.0, 1.005), 2)
+            low_p = round(min(open_p, last) * rng.uniform(0.995, 1.0), 2)
+            volume = rng.randint(100, 5000)
+            turnover = round(last * volume * rng.uniform(0.9, 1.1), 0)
+            oi = rng.randint(10000, 500000)
+            change = round(last - pre_close, 2)
+            chg_rate = round(change / pre_close * 100, 3) if pre_close else 0.0
+
+            ticks_result[sym] = {
+                "symbol": sym,
+                "last": last,
+                "open": open_p,
+                "high": high_p,
+                "low": low_p,
+                "pre_close": pre_close,
+                "volume": volume,
+                "turnover": turnover,
+                "open_interest": oi,
+                "bid1": bid1, "bid2": bids[1], "bid3": bids[2], "bid4": bids[3], "bid5": bids[4],
+                "ask1": ask1, "ask2": asks[1], "ask3": asks[2], "ask4": asks[3], "ask5": asks[4],
+                "bid1_vol": bid_vols[0], "bid2_vol": bid_vols[1], "bid3_vol": bid_vols[2], "bid4_vol": bid_vols[3], "bid5_vol": bid_vols[4],
+                "ask1_vol": ask_vols[0], "ask2_vol": ask_vols[1], "ask3_vol": ask_vols[2], "ask4_vol": ask_vols[3], "ask5_vol": ask_vols[4],
+                "change": change,
+                "change_rate": chg_rate,
+            }
+
+        return JSONResponse({"code": 0, "ticks": ticks_result})
 
     # ── /ws/watch — 盯盘系统实时行情 WebSocket ────────────────────────────────
     #

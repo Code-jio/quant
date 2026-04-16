@@ -43,10 +43,10 @@ export const HOT_CONTRACTS = [
   { symbol: 'ag2506',  name: '白银 2506',     exchange: 'SHFE',  product_type: '贵金属' },
   { symbol: 'cu2506',  name: '铜 2506',       exchange: 'SHFE',  product_type: '有色' },
   { symbol: 'i2509',   name: '铁矿石 2509',   exchange: 'DCE',   product_type: '黑色' },
-  { symbol: 'MA509',   name: '甲醇 509',      exchange: 'CZCE',  product_type: '化工' },
+  { symbol: 'MA2509',  name: '甲醇 2509',     exchange: 'CZCE',  product_type: '化工' },
   { symbol: 'sc2506',  name: '原油 2506',     exchange: 'INE',   product_type: '能源' },
   { symbol: 'c2509',   name: '玉米 2509',     exchange: 'DCE',   product_type: '农产品' },
-  { symbol: 'SR509',   name: '白糖 509',      exchange: 'CZCE',  product_type: '农产品' },
+  { symbol: 'SR2509',  name: '白糖 2509',     exchange: 'CZCE',  product_type: '农产品' },
   { symbol: 'si2506',  name: '工业硅 2506',   exchange: 'GFEX',  product_type: '化工' },
 ]
 

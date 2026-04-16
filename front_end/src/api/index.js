@@ -60,6 +60,11 @@ export const login = (body) =>
 export const logout = () =>
   request('/auth/logout', { method: 'POST' })
 
+// ── 行情 ──────────────────────────────────────────────────────────────────
+/** 批量查询实时 tick（轮询接口） */
+export const fetchTicks = (symbols) =>
+  request(`/watch/tick?symbols=${encodeURIComponent(symbols.join(','))}`)
+
 // ── 系统 ──────────────────────────────────────────────────────────────────
 export const fetchSystemStatus = () => request('/system/status')
 
