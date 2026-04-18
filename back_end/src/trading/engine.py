@@ -106,9 +106,11 @@ class TradingEngine:
     def send_signal(self, signal: 'Signal') -> str:
         """发送交易信号"""
         from ..strategy import Signal as SignalClass
-        if self.status != TradingStatus.TRADING:
-            logger.warning("交易引擎未在运行")
-            return ""
+        if self.status not in (TradingStatus.TRADING, TradingStatus.CONNECTED):
+            # 也检查网关状态，允许网关已连接但引擎未正式 start 的场景（手动交易）
+            if self.gateway.status not in (TradingStatus.CONNECTED, TradingStatus.TRADING):
+                logger.warning("交易引擎未在运行")
+                return ""
 
         try:
             order_id = self.order_manager.submit_order(signal)

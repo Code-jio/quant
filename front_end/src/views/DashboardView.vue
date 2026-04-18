@@ -5,6 +5,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import GlobalDashboard from '@/components/GlobalDashboard.vue'
 import StrategyPanel    from '@/components/StrategyPanel.vue'
 import OrderBook        from '@/components/OrderBook.vue'
+import TradingPanel     from '@/components/TradingPanel.vue'
 import { useAuthStore } from '@/stores/auth.js'
 import { fetchStrategies, logout } from '@/api/index.js'
 
@@ -182,6 +183,17 @@ async function handleLogout() {
           :loading="loadingStrategies"
           @refresh="loadStrategies"
         />
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <h2 class="section-title">
+            <el-icon><Sell /></el-icon>
+            手动交易
+            <span class="section-hint">下单 · 撤单 · 快捷平仓</span>
+          </h2>
+        </div>
+        <TradingPanel />
       </section>
 
       <section class="section">

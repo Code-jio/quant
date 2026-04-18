@@ -111,6 +111,35 @@ export const fetchTrades = () => request('/trades')
 export const cancelOrder = (orderId) =>
   request(`/orders/${orderId}`, { method: 'DELETE' })
 
+// ── 手动交易 ──────────────────────────────────────────────────────────────
+/**
+ * 手动下单
+ * @param {object} body
+ * @param {string} body.symbol     合约代码
+ * @param {string} body.direction  "long" | "short"
+ * @param {string} body.offset     "open" | "close" | "close_today" | "close_yesterday"
+ * @param {number} body.price      委托价（0 = 市价）
+ * @param {number} body.volume     数量
+ * @param {string} body.order_type "market" | "limit"
+ */
+export const placeOrder = (body) =>
+  request('/orders', { method: 'POST', body: JSON.stringify(body) })
+
+/** 一键撤销所有活跃委托 */
+export const cancelAllOrders = () =>
+  request('/orders/cancel-all', { method: 'POST' })
+
+/**
+ * 快捷平仓指定合约
+ * @param {string} symbol 合约代码
+ * @param {object} body   { volume: 0(全部), price: 0(市价) }
+ */
+export const closePosition = (symbol, body = {}) =>
+  request(`/positions/${encodeURIComponent(symbol)}/close`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+
 // ── 持仓 ──────────────────────────────────────────────────────────────────
 export const fetchPositions = () => request('/positions')
 

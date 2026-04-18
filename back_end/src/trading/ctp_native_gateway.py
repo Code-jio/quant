@@ -17,7 +17,7 @@ from openctp_ctp import thostmduserapi as mdapi
 from . import (
     GatewayBase, TradingStatus, AccountInfo, MarketData,
 )
-from ..strategy import Signal, Order, Trade, Direction, Position, OrderType, OrderStatus
+from ..strategy import Signal, Order, Trade, Direction, Position, OrderType, OrderStatus, OffsetFlag
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +141,17 @@ class _TraderSpi(tdapi.CThostFtdcTraderSpi):
         }
         status = status_map.get(pOrder.OrderStatus, OrderStatus.SUBMITTED)
         direction = Direction.LONG if pOrder.Direction == tdapi.THOST_FTDC_D_Buy else Direction.SHORT
+
+        # 解析开平仓标志
+        offset_char = pOrder.CombOffsetFlag[0] if hasattr(pOrder, 'CombOffsetFlag') and pOrder.CombOffsetFlag else '0'
+        offset_map = {
+            tdapi.THOST_FTDC_OF_Open: OffsetFlag.OPEN,
+            tdapi.THOST_FTDC_OF_Close: OffsetFlag.CLOSE,
+            tdapi.THOST_FTDC_OF_CloseToday: OffsetFlag.CLOSE_TODAY,
+            tdapi.THOST_FTDC_OF_CloseYesterday: OffsetFlag.CLOSE_YESTERDAY,
+        }
+        offset = offset_map.get(offset_char, OffsetFlag.OPEN)
+
         order = Order(
             order_id=order_id,
             symbol=pOrder.InstrumentID,
@@ -150,6 +161,7 @@ class _TraderSpi(tdapi.CThostFtdcTraderSpi):
             volume=pOrder.VolumeTotalOriginal,
             traded_volume=pOrder.VolumeTraded,
             status=status,
+            offset=offset,
         )
         self.gw.orders[order_id] = order
         self.gw.on_order(order)
@@ -534,7 +546,18 @@ class CTPNativeGateway(GatewayBase):
             req.VolumeCondition = tdapi.THOST_FTDC_VC_AV
 
         req.VolumeTotalOriginal = signal.volume
-        req.CombOffsetFlag = tdapi.THOST_FTDC_OF_Open
+
+        # 开平仓标志
+        offset = getattr(signal, 'offset', OffsetFlag.OPEN)
+        if offset == OffsetFlag.CLOSE:
+            req.CombOffsetFlag = tdapi.THOST_FTDC_OF_Close
+        elif offset == OffsetFlag.CLOSE_TODAY:
+            req.CombOffsetFlag = tdapi.THOST_FTDC_OF_CloseToday
+        elif offset == OffsetFlag.CLOSE_YESTERDAY:
+            req.CombOffsetFlag = tdapi.THOST_FTDC_OF_CloseYesterday
+        else:
+            req.CombOffsetFlag = tdapi.THOST_FTDC_OF_Open
+
         req.CombHedgeFlag = tdapi.THOST_FTDC_HF_Speculation
         req.ContingentCondition = tdapi.THOST_FTDC_CC_Immediately
         req.ForceCloseReason = tdapi.THOST_FTDC_FCC_NotForceClose
@@ -554,9 +577,10 @@ class CTPNativeGateway(GatewayBase):
             price=signal.price,
             volume=signal.volume,
             status=OrderStatus.SUBMITTING,
+            offset=getattr(signal, 'offset', OffsetFlag.OPEN),
         )
         self.orders[order_id] = order
-        logger.info(f"[TD] 已发送委托: {signal.symbol} {signal.direction.value} {signal.volume}@{signal.price}")
+        logger.info(f"[TD] 已发送委托: {signal.symbol} {signal.direction.value} {offset.value} {signal.volume}@{signal.price}")
         return order_id
 
     def cancel_order(self, order_id: str) -> bool:

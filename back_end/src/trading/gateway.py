@@ -174,7 +174,7 @@ class SimulatedGateway(GatewayBase):
             logger.error(f"断开连接失败: {e}")
 
     def send_order(self, signal: 'Signal') -> str:
-        from ..strategy import OrderStatus, Order
+        from ..strategy import OrderStatus, Order, OffsetFlag
         try:
             with self._lock:
                 self.order_id_counter += 1
@@ -187,7 +187,8 @@ class SimulatedGateway(GatewayBase):
                     order_type=signal.order_type,
                     price=signal.price,
                     volume=signal.volume,
-                    status=OrderStatus.SUBMITTED
+                    status=OrderStatus.SUBMITTED,
+                    offset=getattr(signal, 'offset', OffsetFlag.OPEN),
                 )
 
                 self.orders[order_id] = order
@@ -202,7 +203,7 @@ class SimulatedGateway(GatewayBase):
             raise GatewayError(f"发送订单失败: {e}")
 
     def _simulate_fill(self, order: 'Order', signal: 'Signal'):
-        from ..strategy import Direction, OrderStatus, Trade
+        from ..strategy import Direction, OrderStatus, Trade, OffsetFlag
         try:
             time.sleep(0.1)
 
@@ -234,7 +235,8 @@ class SimulatedGateway(GatewayBase):
                     trade_time=time.time()
                 )
 
-            self._update_position(trade)
+            offset = getattr(order, 'offset', OffsetFlag.OPEN)
+            self._update_position(trade, offset)
             self.on_trade(trade)
 
         except Exception as e:
@@ -243,8 +245,10 @@ class SimulatedGateway(GatewayBase):
             order.error_msg = str(e)
             self.on_order(order)
 
-    def _update_position(self, trade: 'Trade'):
-        from ..strategy import Direction, Position
+    def _update_position(self, trade: 'Trade', offset=None):
+        from ..strategy import Direction, Position, OffsetFlag
+        if offset is None:
+            offset = OffsetFlag.OPEN
         with self._lock:
             if trade.symbol not in self.positions:
                 self.positions[trade.symbol] = Position(
@@ -255,11 +259,26 @@ class SimulatedGateway(GatewayBase):
 
             pos = self.positions[trade.symbol]
 
-            if trade.direction == Direction.LONG:
-                if pos.volume >= 0:
-                    pos.direction = Direction.LONG
+            is_close = offset in (OffsetFlag.CLOSE, OffsetFlag.CLOSE_TODAY, OffsetFlag.CLOSE_YESTERDAY)
+
+            if is_close:
+                # 平仓：减少持仓
+                if trade.direction == Direction.LONG:
+                    # 买入平空 → 空头减仓
                     pos.volume += trade.volume
                 else:
+                    # 卖出平多 → 多头减仓
+                    pos.volume -= trade.volume
+
+                if pos.volume > 0:
+                    pos.direction = Direction.LONG
+                elif pos.volume < 0:
+                    pos.direction = Direction.SHORT
+                else:
+                    pos.direction = Direction.NET
+            else:
+                # 开仓
+                if trade.direction == Direction.LONG:
                     pos.volume += trade.volume
                     if pos.volume > 0:
                         pos.direction = Direction.LONG
@@ -267,10 +286,6 @@ class SimulatedGateway(GatewayBase):
                         pos.direction = Direction.SHORT
                     else:
                         pos.direction = Direction.NET
-            else:
-                if pos.volume <= 0:
-                    pos.direction = Direction.SHORT
-                    pos.volume -= trade.volume
                 else:
                     pos.volume -= trade.volume
                     if pos.volume > 0:

@@ -11,7 +11,7 @@ from enum import Enum
 import uuid
 from dataclasses import dataclass, field
 
-from ..strategy import Signal, Order, Trade, Direction, OrderType, OrderStatus
+from ..strategy import Signal, Order, Trade, Direction, OrderType, OrderStatus, OffsetFlag
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +89,8 @@ class OrderManager:
                     order_type=signal.order_type,
                     price=signal.price,
                     volume=signal.volume,
-                    status=OrderStatus.SUBMITTED
+                    status=OrderStatus.SUBMITTED,
+                    offset=getattr(signal, 'offset', OffsetFlag.OPEN),
                 )
                 self.active_orders[order_id] = order
 

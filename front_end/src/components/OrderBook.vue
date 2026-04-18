@@ -69,6 +69,11 @@ function commentCn(c) {
   return MAP[c] ?? c
 }
 
+const OFFSET_LABELS = { open: '开', close: '平', close_today: '平今', close_yesterday: '平昨' }
+const OFFSET_TYPES  = { open: 'primary', close: 'warning', close_today: 'warning', close_yesterday: 'warning' }
+function offsetLabel(v) { return OFFSET_LABELS[v] || '' }
+function offsetType(v)  { return OFFSET_TYPES[v]  || 'info' }
+
 // ── 撤单 ─────────────────────────────────────────────────────────────────────
 const cancelLoading = ref({})
 
@@ -186,9 +191,27 @@ function tradeRowClass({ row }) {
           <el-table-column label="方向/类型" width="90" align="center">
             <template #default="{ row }">
               <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
-                <el-tag :type="dirType(row.direction)" size="small" effect="dark">
-                  {{ dirLabel(row.direction) }}
-                </el-tag>
+                <div style="display:flex;align-items:center;gap:3px">
+                  <el-tag :type="dirType(row.direction)" size="small" effect="dark">
+                    {{ dirLabel(row.direction) }}
+                  </el-tag>
+                  <el-tag
+                    v-if="row.offset && row.offset !== 'open'"
+                    :type="offsetType(row.offset)"
+                    size="small"
+                    effect="plain"
+                  >
+                    {{ offsetLabel(row.offset) }}
+                  </el-tag>
+                  <el-tag
+                    v-else-if="row.offset === 'open'"
+                    type="primary"
+                    size="small"
+                    effect="plain"
+                  >
+                    开
+                  </el-tag>
+                </div>
                 <span class="c-muted" style="font-size:10px">{{ commentCn(row.order_type) }}</span>
               </div>
             </template>

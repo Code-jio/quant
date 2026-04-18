@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 import pandas as pd
-from .types import Direction, OrderType, Signal, Order, Trade, Position
+from .types import Direction, OrderType, OffsetFlag, Signal, Order, Trade, Position
 from .errors import StrategyError
 
 
@@ -114,6 +114,7 @@ class StrategyBase(ABC):
                 price=price,
                 volume=volume,
                 order_type=order_type,
+                offset=OffsetFlag.CLOSE,
                 comment="sell_close"
             )
 
@@ -172,6 +173,7 @@ class StrategyBase(ABC):
                 price=price,
                 volume=volume,
                 order_type=order_type,
+                offset=OffsetFlag.CLOSE,
                 comment="cover_close"
             )
 

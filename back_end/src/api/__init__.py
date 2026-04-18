@@ -12,7 +12,10 @@ REST API 模块 - FastAPI + WebSocket + 身份认证
   GET  /dashboard/metrics     — 全局仪表盘指标（PnL/收益率/夏普/回撤/仓位）
   GET  /orders                — 全部委托单列表（最近500条）
   GET  /trades                — 全部成交记录（最近500条）
+  POST /orders                — 手动下单（开仓/平仓）
   DELETE /orders/{id}         — 撤销委托单
+  POST /orders/cancel-all     — 一键撤销所有活跃委托
+  POST /positions/{sym}/close — 快捷平仓指定合约
   POST /strategy/{id}/action  — 启停策略
   GET  /backtest/strategies   — 可用策略列表
   POST /backtest/run          — 运行回测，返回资金曲线/标记/指标/热力图
@@ -46,6 +49,7 @@ from pydantic import BaseModel
 
 from ..strategy import Direction, StrategyBase
 from ..trading import AccountInfo, GatewayBase, TradingEngine, TradingStatus
+from ..strategy import Signal, OrderType, OffsetFlag
 
 logger = logging.getLogger(__name__)
 
@@ -204,6 +208,22 @@ class BacktestRunRequest(BaseModel):
     slip_rate:       float          = 0.0001
     margin_rate:     float          = 0.12
     sample_days:     int            = 700   # 模拟数据天数
+
+
+class ManualOrderRequest(BaseModel):
+    """手动下单请求"""
+    symbol:     str
+    direction:  str         # "long" | "short"
+    offset:     str = "open"  # "open" | "close" | "close_today" | "close_yesterday"
+    price:      float = 0   # 0 = 市价
+    volume:     int = 1
+    order_type: str = "market"  # "market" | "limit"
+
+
+class ClosePositionRequest(BaseModel):
+    """快捷平仓请求"""
+    volume: int = 0         # 0 = 全部平仓
+    price:  float = 0       # 0 = 市价
 
 
 # ---------------------------------------------------------------------------
@@ -442,6 +462,7 @@ def _order_to_dict(order) -> dict:
         "symbol":        order.symbol,
         "direction":     order.direction.value if hasattr(order.direction, "value") else str(order.direction),
         "order_type":    order.order_type.value if hasattr(order.order_type, "value") else str(order.order_type),
+        "offset":        order.offset.value if hasattr(order, "offset") and hasattr(order.offset, "value") else "open",
         "price":         order.price,
         "volume":        order.volume,
         "traded_volume": order.traded_volume,
@@ -1515,6 +1536,167 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             return {"success": bool(success), "order_id": order_id}
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"撤单失败: {exc}")
+
+    # ── 手动交易端点 ──────────────────────────────────────────────────────────
+
+    @app.post("/orders", summary="手动下单", tags=["手动交易"])
+    def place_manual_order(body: ManualOrderRequest):
+        """
+        手动下达交易指令（开仓/平仓）。
+
+        - direction: "long"（买入）或 "short"（卖出）
+        - offset: "open"（开仓）、"close"（平仓）、"close_today"（平今）、"close_yesterday"（平昨）
+        - price: 0 表示市价单
+        - order_type: "market" 或 "limit"
+        """
+        engine = trading_state.primary_engine()
+        if engine is None:
+            raise HTTPException(status_code=503, detail="交易引擎未连接")
+
+        # 解析方向
+        dir_map = {"long": Direction.LONG, "short": Direction.SHORT}
+        direction = dir_map.get(body.direction.lower())
+        if direction is None:
+            raise HTTPException(status_code=400, detail=f"无效方向: {body.direction}")
+
+        # 解析开平
+        offset_map = {
+            "open": OffsetFlag.OPEN,
+            "close": OffsetFlag.CLOSE,
+            "close_today": OffsetFlag.CLOSE_TODAY,
+            "close_yesterday": OffsetFlag.CLOSE_YESTERDAY,
+        }
+        offset = offset_map.get(body.offset.lower(), OffsetFlag.OPEN)
+
+        # 解析订单类型
+        ot = OrderType.MARKET if body.order_type.lower() == "market" else OrderType.LIMIT
+        price = body.price if ot == OrderType.LIMIT else body.price
+
+        signal = Signal(
+            symbol=body.symbol,
+            datetime=datetime.now(),
+            direction=direction,
+            price=price,
+            volume=body.volume,
+            order_type=ot,
+            offset=offset,
+            comment=f"manual_{body.offset}",
+        )
+
+        try:
+            order_id = engine.send_signal(signal)
+            if not order_id:
+                raise HTTPException(status_code=500, detail="下单失败，引擎未返回订单号")
+            return {
+                "success": True,
+                "order_id": order_id,
+                "symbol": body.symbol,
+                "direction": body.direction,
+                "offset": body.offset,
+                "price": price,
+                "volume": body.volume,
+            }
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"下单失败: {exc}")
+
+    @app.post("/orders/cancel-all", summary="一键撤销所有活跃委托", tags=["手动交易"])
+    def cancel_all_orders():
+        """撤销所有活跃状态的委托单。"""
+        engine = trading_state.primary_engine()
+        if engine is None:
+            raise HTTPException(status_code=503, detail="交易引擎未连接")
+
+        cancelled = 0
+        failed = 0
+
+        # 主引擎订单
+        for oid, order in list(engine.gateway.orders.items()):
+            if order.is_active():
+                try:
+                    if engine.gateway.cancel_order(oid):
+                        cancelled += 1
+                    else:
+                        failed += 1
+                except Exception:
+                    failed += 1
+
+        # 各策略引擎订单
+        for entry in trading_state.all_entries():
+            for oid, order in list(entry.engine.gateway.orders.items()):
+                if order.is_active():
+                    try:
+                        if entry.engine.gateway.cancel_order(oid):
+                            cancelled += 1
+                        else:
+                            failed += 1
+                    except Exception:
+                        failed += 1
+
+        return {"success": True, "cancelled": cancelled, "failed": failed}
+
+    @app.post("/positions/{symbol}/close", summary="快捷平仓", tags=["手动交易"])
+    def close_position(symbol: str, body: ClosePositionRequest = ClosePositionRequest()):
+        """
+        快捷平仓指定合约。自动推断持仓方向和数量。
+
+        - volume: 0 表示全部平仓
+        - price: 0 表示市价
+        """
+        engine = trading_state.primary_engine()
+        if engine is None:
+            raise HTTPException(status_code=503, detail="交易引擎未连接")
+
+        # 查找持仓
+        pos = None
+        for key, p in engine.gateway.positions.items():
+            if p.symbol == symbol and abs(p.volume) > 0:
+                pos = p
+                break
+
+        if pos is None:
+            raise HTTPException(status_code=404, detail=f"未找到 {symbol} 的持仓")
+
+        close_volume = body.volume if body.volume > 0 else abs(pos.volume)
+        if close_volume > abs(pos.volume):
+            close_volume = abs(pos.volume)
+
+        # 平仓方向：持多则卖出，持空则买入
+        if pos.direction == Direction.LONG or pos.volume > 0:
+            close_direction = Direction.SHORT
+        else:
+            close_direction = Direction.LONG
+
+        ot = OrderType.MARKET if body.price == 0 else OrderType.LIMIT
+
+        signal = Signal(
+            symbol=symbol,
+            datetime=datetime.now(),
+            direction=close_direction,
+            price=body.price,
+            volume=close_volume,
+            order_type=ot,
+            offset=OffsetFlag.CLOSE,
+            comment="manual_close_position",
+        )
+
+        try:
+            order_id = engine.send_signal(signal)
+            if not order_id:
+                raise HTTPException(status_code=500, detail="平仓下单失败")
+            return {
+                "success": True,
+                "order_id": order_id,
+                "symbol": symbol,
+                "direction": close_direction.value,
+                "volume": close_volume,
+                "price": body.price,
+            }
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"平仓失败: {exc}")
 
     @app.post(
         "/strategy/{strategy_id}/action",

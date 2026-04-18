@@ -20,6 +20,13 @@ class OrderType(Enum):
     STOP = "stop"
 
 
+class OffsetFlag(Enum):
+    OPEN = "open"
+    CLOSE = "close"
+    CLOSE_TODAY = "close_today"
+    CLOSE_YESTERDAY = "close_yesterday"
+
+
 class OrderStatus(Enum):
     SUBMITTING = "submitting"
     SUBMITTED = "submitted"
@@ -38,6 +45,7 @@ class Signal:
     price: float
     volume: int
     order_type: OrderType = OrderType.MARKET
+    offset: OffsetFlag = OffsetFlag.OPEN
     stop_price: Optional[float] = None
     comment: str = ""
 
@@ -45,13 +53,11 @@ class Signal:
         """验证信号有效性"""
         if not self.symbol:
             return False
-        if self.price <= 0:
+        if self.order_type != OrderType.MARKET and self.price <= 0:
             return False
         if self.volume <= 0:
             return False
         return True
-
-
 @dataclass
 class Order:
     """订单"""
@@ -63,6 +69,7 @@ class Order:
     volume: int
     traded_volume: int = 0
     status: OrderStatus = OrderStatus.SUBMITTING
+    offset: OffsetFlag = OffsetFlag.OPEN
     create_time: datetime = field(default_factory=datetime.now)
     update_time: datetime = field(default_factory=datetime.now)
     error_msg: str = ""
