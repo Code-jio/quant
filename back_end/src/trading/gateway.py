@@ -368,6 +368,14 @@ GATEWAY_REGISTRY = {
         'src.trading.ctp_native_gateway',
         fromlist=['create_ctp_native_gateway']
     ).create_ctp_native_gateway(),
+    "wondertrader": lambda: __import__(
+        'src.trading.wt_gateway',
+        fromlist=['create_wt_gateway']
+    ).create_wt_gateway(),
+    "wt": lambda: __import__(
+        'src.trading.wt_gateway',
+        fromlist=['create_wt_gateway']
+    ).create_wt_gateway(),
 }
 
 

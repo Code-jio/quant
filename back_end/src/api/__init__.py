@@ -95,14 +95,18 @@ def _revoke(token: str):
 # ---------------------------------------------------------------------------
 
 class LoginRequest(BaseModel):
-    username:  str
-    password:  str
-    broker_id: str = "2071"
-    td_server: str = "tcp://114.94.128.1:42205"
-    md_server: str = "tcp://114.94.128.1:42213"
-    app_id:    str = "client_TraderMaster_v1.0.0"
-    auth_code: str = ""
-    # initial_capital 不再由前端传入，由登录后查询真实账户余额决定
+    username:   str
+    password:   str
+    broker_id:  str = "2071"
+    td_server:  str = "tcp://114.94.128.1:42205"
+    md_server:  str = "tcp://114.94.128.1:42213"
+    app_id:     str = "client_TraderMaster_v1.0.0"
+    auth_code:  str = ""
+    # WonderTrader 专用字段（使用 gateway_type="wondertrader" 时生效）
+    gateway_type: str = "ctp"   # "ctp" | "wondertrader" | "simulated"
+    td_cfg:     str = ""        # wtpy 交易通道配置文件路径
+    env_cfg:    str = ""        # wtpy 环境配置文件路径
+    account_id: str = ""        # wtpy 账户 ID（可选，默认取 username）
 
 
 class LoginResponse(BaseModel):
@@ -1256,28 +1260,38 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             trading_state.add_log("检测到已有连接，正在断开…")
             trading_state.clear_main()
 
-        # 检测是否模拟登录
+        # 确定网关类型
         is_simulate = body.username in ("模拟", "simulate", "模拟登录")
         if is_simulate:
             trading_state.add_log("使用模拟网关登录")
             gateway_type = "simulated"
+        elif body.gateway_type in ("wondertrader", "wt"):
+            trading_state.add_log("使用 WonderTrader 网关登录")
+            gateway_type = "wondertrader"
         else:
             gateway_type = "ctp"
 
-        config = {
-            "gateway":   gateway_type,
-            "username":  body.username,
-            "password":  body.password,
-            "broker_id": body.broker_id,
-            "td_server": body.td_server,
-            "md_server": body.md_server,
-            "app_id":    body.app_id,
-            "auth_code": body.auth_code,
+        config: Dict[str, Any] = {
+            "gateway":    gateway_type,
+            "username":   body.username,
+            "password":   body.password,
+            "broker_id":  body.broker_id,
+            "td_server":  body.td_server,
+            "md_server":  body.md_server,
+            "app_id":     body.app_id,
+            "auth_code":  body.auth_code,
             "initial_capital": 0.0,
         }
 
-        trading_state.add_log(f"交易前置: {body.td_server}")
-        trading_state.add_log(f"行情前置: {body.md_server}")
+        # WonderTrader 专用配置
+        if gateway_type == "wondertrader":
+            config["account_id"] = body.account_id or body.username
+            config["td_cfg"]     = body.td_cfg  or "config/wt/tdcfg.yaml"
+            config["env_cfg"]    = body.env_cfg or "config/wt/env.yaml"
+            trading_state.add_log(f"WonderTrader 交易配置: {config['td_cfg']}")
+        else:
+            trading_state.add_log(f"交易前置: {body.td_server}")
+            trading_state.add_log(f"行情前置: {body.md_server}")
 
         try:
             gateway = create_gateway(gateway_type)

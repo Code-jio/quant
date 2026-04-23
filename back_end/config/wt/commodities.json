@@ -1,0 +1,143 @@
+{
+  "_comment": "WonderTrader 品种信息示例，完整数据请从 wtpy 官方获取",
+  "CFFEX": {
+    "IF": {
+      "name": "沪深300股指期货",
+      "exchg": "CFFEX",
+      "session": "SD0930",
+      "holiday": "CHINA",
+      "price": 0.2,
+      "volscale": 300,
+      "minlots": 1,
+      "lotsize": 1,
+      "category": 1,
+      "precision": 1
+    },
+    "IC": {
+      "name": "中证500股指期货",
+      "exchg": "CFFEX",
+      "session": "SD0930",
+      "holiday": "CHINA",
+      "price": 0.2,
+      "volscale": 200,
+      "minlots": 1,
+      "lotsize": 1,
+      "category": 1,
+      "precision": 1
+    },
+    "IH": {
+      "name": "上证50股指期货",
+      "exchg": "CFFEX",
+      "session": "SD0930",
+      "holiday": "CHINA",
+      "price": 0.2,
+      "volscale": 300,
+      "minlots": 1,
+      "lotsize": 1,
+      "category": 1,
+      "precision": 1
+    },
+    "IM": {
+      "name": "中证1000股指期货",
+      "exchg": "CFFEX",
+      "session": "SD0930",
+      "holiday": "CHINA",
+      "price": 0.2,
+      "volscale": 200,
+      "minlots": 1,
+      "lotsize": 1,
+      "category": 1,
+      "precision": 1
+    }
+  },
+  "SHFE": {
+    "rb": {
+      "name": "螺纹钢",
+      "exchg": "SHFE",
+      "session": "SD0900",
+      "holiday": "CHINA",
+      "price": 1.0,
+      "volscale": 10,
+      "minlots": 1,
+      "lotsize": 1,
+      "category": 1,
+      "precision": 0
+    },
+    "au": {
+      "name": "黄金",
+      "exchg": "SHFE",
+      "session": "SD0900",
+      "holiday": "CHINA",
+      "price": 0.02,
+      "volscale": 1000,
+      "minlots": 1,
+      "lotsize": 1,
+      "category": 1,
+      "precision": 2
+    },
+    "cu": {
+      "name": "铜",
+      "exchg": "SHFE",
+      "session": "SD0900",
+      "holiday": "CHINA",
+      "price": 10.0,
+      "volscale": 5,
+      "minlots": 1,
+      "lotsize": 1,
+      "category": 1,
+      "precision": 0
+    }
+  },
+  "DCE": {
+    "m": {
+      "name": "豆粕",
+      "exchg": "DCE",
+      "session": "SD0900",
+      "holiday": "CHINA",
+      "price": 1.0,
+      "volscale": 10,
+      "minlots": 1,
+      "lotsize": 1,
+      "category": 1,
+      "precision": 0
+    },
+    "i": {
+      "name": "铁矿石",
+      "exchg": "DCE",
+      "session": "SD0900",
+      "holiday": "CHINA",
+      "price": 0.5,
+      "volscale": 100,
+      "minlots": 1,
+      "lotsize": 1,
+      "category": 1,
+      "precision": 1
+    }
+  },
+  "CZCE": {
+    "MA": {
+      "name": "甲醇",
+      "exchg": "CZCE",
+      "session": "SD0900",
+      "holiday": "CHINA",
+      "price": 1.0,
+      "volscale": 10,
+      "minlots": 1,
+      "lotsize": 1,
+      "category": 1,
+      "precision": 0
+    },
+    "TA": {
+      "name": "PTA",
+      "exchg": "CZCE",
+      "session": "SD0900",
+      "holiday": "CHINA",
+      "price": 2.0,
+      "volscale": 5,
+      "minlots": 1,
+      "lotsize": 1,
+      "category": 1,
+      "precision": 0
+    }
+  }
+}

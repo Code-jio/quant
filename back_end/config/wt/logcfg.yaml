@@ -1,0 +1,12 @@
+# WonderTrader 日志配置
+defs:
+  async: true
+  level: info
+
+sinks:
+  - type: console
+    level: info
+  - type: daily_file
+    filename: logs/wt/wt.log
+    level: info
+    truncate: false

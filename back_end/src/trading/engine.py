@@ -33,6 +33,7 @@ class TradingEngine:
         self.order_manager = OrderManager(self.gateway)
         self.gateway.on_order_callback = self._on_order
         self.gateway.on_trade_callback = self._on_trade
+        self.gateway.on_tick_callback = self._on_tick
         self.gateway.on_error_callback = self._on_gateway_error
 
         self.order_manager.on_order_callback = self._on_order
@@ -157,21 +158,30 @@ class TradingEngine:
             logger.error(f"更新市场数据失败: {e}")
 
     def on_tick(self, tick: MarketData):
-        """行情推送"""
+        """行情推送（外部主动调用，兼容旧接口）"""
+        self._on_tick(tick)
+
+    def _on_tick(self, tick: MarketData):
+        """行情推送内部处理，同时更新预埋单市场数据"""
+        self.order_manager.update_market_data(tick.symbol, {
+            "last_price": tick.last_price,
+            "bid_price_1": tick.bid_price_1,
+            "ask_price_1": tick.ask_price_1,
+        })
         if not self.strategy:
             return
         try:
             import pandas as pd
             bar = pd.Series({
-                'symbol': tick.symbol,
+                'symbol':   tick.symbol,
                 'datetime': tick.timestamp,
-                'open': tick.last_price,
-                'high': tick.last_price,
-                'low': tick.last_price,
-                'close': tick.last_price,
-                'volume': tick.volume,
-                'bid': tick.bid_price_1,
-                'ask': tick.ask_price_1,
+                'open':     tick.last_price,
+                'high':     tick.last_price,
+                'low':      tick.last_price,
+                'close':    tick.last_price,
+                'volume':   tick.volume,
+                'bid':      tick.bid_price_1,
+                'ask':      tick.ask_price_1,
             })
             self.strategy.current_date = tick.timestamp
             self.strategy.on_bar(bar)

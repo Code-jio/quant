@@ -9,7 +9,10 @@
       "Bash(claude status:*)",
       "Bash(echo:*)",
       "WebSearch",
-      "WebFetch(domain:docs.anthropic.com)"
+      "WebFetch(domain:docs.anthropic.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(python -c ' *)"
     ]
   }
 }
