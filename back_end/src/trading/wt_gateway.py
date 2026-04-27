@@ -1,26 +1,26 @@
 """
 WonderTrader (wtpy) 交易网关适配层
 
-架构说明：
-  wtpy 的 WtEngine 本身是事件驱动的，它通过 BaseCtaStrategy / BaseSelStrategy
-  等回调驱动策略。本适配层不使用 wtpy 的策略基类，而是把 wtpy 的底层
-  TraderAdapter（交易通道）直接包装成与现有 GatewayBase 兼容的接口，
-  使上层 TradingEngine / API 层无需改动。
-
-依赖：
-  pip install wtpy          # 安装后 WtCore.dll 等核心库随包附带
-  wtpy >= 0.9.x
+实现方式：
+  用 BaseHftStrategy 包装一个内部"代理策略"，通过 HftContext 的
+  stra_buy / stra_sell / stra_cancel 完成下单/撤单，
+  并将 on_order / on_trade / on_position / on_channel_ready 等回调
+  转发给 GatewayBase 的标准回调链，使上层 TradingEngine / API 无需改动。
 
 连接流程：
-  1. 读取 config 中的 td_cfg / md_cfg（wtpy 标准 json 配置路径）
-  2. 初始化 WtEngine，注册交易通道
-  3. 登录完成后触发 on_account / on_position 回调
-  4. 后续通过 send_order / cancel_order 操作
+  1. WtEngine.init(cfgfile)  — 加载品种/合约/时段/节假日等基础数据
+  2. WtEngine.addTrader(id, params)  — 注册 CTP 交易通道
+  3. WtEngine.add_hft_strategy(proxy, trader=id)  — 注册代理策略
+  4. WtEngine.run(bAsync=True)  — 后台启动
+  5. on_channel_ready 回调触发 → 标记 CONNECTED，解除 connect() 阻塞
+
+依赖：
+  pip install wtpy --no-deps
+  pip install chardet pyyaml
 """
 
 import logging
 import threading
-import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -28,79 +28,69 @@ from .gateway import GatewayBase
 from .types import AccountInfo, MarketData, TradingStatus
 from .errors import GatewayError
 from ..strategy.types import (
-    Direction,
-    OffsetFlag,
-    Order,
-    OrderStatus,
-    OrderType,
-    Position,
-    Signal,
-    Trade,
+    Direction, OffsetFlag, Order, OrderStatus, OrderType, Position, Signal, Trade,
 )
 
 logger = logging.getLogger(__name__)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# wtpy 延迟导入（安装后才可用）
+# 内部代理 HFT 策略（持有 WtGateway 引用，转发所有回调）
 # ──────────────────────────────────────────────────────────────────────────────
 
-
-def _import_wtpy():
-    try:
-        from wtpy import WtEngine, EngineType
-        from wtpy.TraderDefs import BaseTraderSpi
-
-        return WtEngine, EngineType, BaseTraderSpi
-    except ImportError as e:
-        raise ImportError("wtpy 未安装，请先执行: pip install wtpy\n" f"原始错误: {e}")
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 内部 SPI 回调实现
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-class _WtTraderSpi:
+class _GatewayHftProxy:
     """
-    实现 wtpy TraderSpi 回调，将 wtpy 事件转换为 GatewayBase 回调。
-    wtpy 的 TraderSpi 是鸭子类型接口，直接定义同名方法即可。
+    伪装成 BaseHftStrategy 的代理对象。
+    wtpy 通过鸭子类型调用 on_* 方法，无需真正继承。
     """
 
-    def __init__(self, gateway: "WtGateway"):
+    def __init__(self, gateway: "WtGateway", strategy_name: str = "__wt_gw_proxy__"):
+        self._name = strategy_name
         self._gw = gateway
+        self._ctx = None   # HftContext，在 on_init 后赋值
 
-    # ── 连接 ──────────────────────────────────────────────────────────────────
+    def name(self) -> str:
+        return self._name
 
-    def on_login(self, trader_id: str, code: int, msg: str):
-        if code == 0:
-            logger.info(f"[WT] 登录成功: {trader_id}")
-            self._gw.status = TradingStatus.CONNECTED
-            self._gw._login_event.set()
-        else:
-            logger.error(f"[WT] 登录失败 [{code}]: {msg}")
-            self._gw.status = TradingStatus.ERROR
-            self._gw._login_event.set()
+    # ── 生命周期 ───────────────────────────────────────────────────────────────
 
-    def on_logout(self, trader_id: str):
-        logger.info(f"[WT] 已登出: {trader_id}")
-        self._gw.status = TradingStatus.STOPPED
+    def on_init(self, context):
+        self._ctx = context
+        logger.info("[WT] HFT 代理策略初始化完成")
 
-    # ── 订单回报 ───────────────────────────────────────────────────────────────
+    def on_session_begin(self, context, curTDate: int):
+        logger.info(f"[WT] 交易日开始: {curTDate}")
 
-    def on_order(
-        self,
-        localid: int,
-        code: str,
-        isBuy: bool,
-        totalQty: float,
-        leftQty: float,
-        price: float,
-        isCanceled: bool,
-        userTag: str,
-        orderTime: int,
-        oidx: int = -1,
-    ):
+    def on_session_end(self, context, curTDate: int):
+        logger.info(f"[WT] 交易日结束: {curTDate}")
+
+    # ── 通道就绪（登录成功的信号）─────────────────────────────────────────────
+
+    def on_channel_ready(self, context):
+        logger.info("[WT] 交易通道就绪")
+        self._gw.status = TradingStatus.CONNECTED
+        self._gw._login_event.set()
+
+    def on_channel_lost(self, context):
+        logger.warning("[WT] 交易通道断开")
+        self._gw.status = TradingStatus.ERROR
+
+    # ── 委托回报 ───────────────────────────────────────────────────────────────
+
+    def on_entrust(self, context, localid: int, stdCode: str,
+                   bSucc: bool, msg: str, userTag: str):
+        if not bSucc:
+            logger.error(f"[WT] 委托失败 localid={localid} code={stdCode} msg={msg}")
+            order = self._gw.orders.get(str(localid))
+            if order:
+                order.status = OrderStatus.REJECTED
+                order.error_msg = msg
+                order.update_time = datetime.now()
+                self._gw.on_order(order)
+
+    def on_order(self, context, localid: int, stdCode: str, isBuy: bool,
+                 totalQty: float, leftQty: float, price: float,
+                 isCanceled: bool, userTag: str):
         order_id = str(localid)
         if isCanceled:
             status = OrderStatus.CANCELLED
@@ -118,7 +108,7 @@ class _WtTraderSpi:
         if order is None:
             order = Order(
                 order_id=order_id,
-                symbol=code,
+                symbol=stdCode,
                 direction=direction,
                 order_type=OrderType.LIMIT,
                 price=price,
@@ -136,22 +126,13 @@ class _WtTraderSpi:
 
     # ── 成交回报 ───────────────────────────────────────────────────────────────
 
-    def on_trade(
-        self,
-        localid: int,
-        code: str,
-        isBuy: bool,
-        qty: float,
-        price: float,
-        userTag: str,
-        tradeTime: int,
-        oidx: int = -1,
-    ):
+    def on_trade(self, context, localid: int, stdCode: str, isBuy: bool,
+                 qty: float, price: float, userTag: str):
         direction = Direction.LONG if isBuy else Direction.SHORT
         trade = Trade(
-            trade_id=f"WT_{localid}_{tradeTime}",
+            trade_id=f"WT_{localid}_{int(datetime.now().timestamp()*1000)}",
             order_id=str(localid),
-            symbol=code,
+            symbol=stdCode,
             direction=direction,
             price=price,
             volume=int(qty),
@@ -161,91 +142,63 @@ class _WtTraderSpi:
 
     # ── 持仓回报 ───────────────────────────────────────────────────────────────
 
-    def on_position(
-        self,
-        code: str,
-        isLong: bool,
-        volume: float,
-        holdPrice: float,
-        rawHoldPrice: float,
-        profit: float,
-        frozen: float,
-        oidx: int = -1,
-    ):
+    def on_position(self, context, stdCode: str, isLong: bool,
+                    prevol: float, preavail: float, newvol: float, newavail: float):
         direction = Direction.LONG if isLong else Direction.SHORT
         pos = Position(
-            symbol=code,
+            symbol=stdCode,
             direction=direction,
-            volume=int(volume),
-            frozen=int(frozen),
-            price=holdPrice,
-            cost=holdPrice * volume,
-            pnl=profit,
+            volume=int(newvol),
+            frozen=int(newvol - newavail),
+            price=0.0,
+            cost=0.0,
+            pnl=0.0,
         )
-        key = f"{code}_{'long' if isLong else 'short'}"
+        key = f"{stdCode}_{'long' if isLong else 'short'}"
         self._gw.positions[key] = pos
         self._gw.on_position(pos)
 
-    # ── 账户回报 ───────────────────────────────────────────────────────────────
+    # ── tick 回报（转发给 TradingEngine）──────────────────────────────────────
 
-    def on_account(
-        self,
-        currency: str,
-        prebalance: float,
-        balance: float,
-        dynbalance: float,
-        avaliable: float,
-        closeprofit: float,
-        dynprofit: float,
-        margin: float,
-        fee: float,
-        deposit: float,
-        withdraw: float,
-        oidx: int = -1,
-    ):
-        account = AccountInfo(
-            account_id=self._gw._account_id,
-            balance=balance,
-            available=avaliable,
-            margin=margin,
-            commission=fee,
-            position_pnl=dynprofit,
-            total_pnl=closeprofit + dynprofit,
-        )
-        self._gw.account = account
-        self._gw.on_account(account)
+    def on_tick(self, context, stdCode: str, newTick: dict):
+        try:
+            tick = MarketData(
+                symbol=stdCode,
+                last_price=newTick.get("price", 0.0),
+                bid_price_1=newTick.get("bid_price_1", 0.0),
+                ask_price_1=newTick.get("ask_price_1", 0.0),
+                bid_volume_1=int(newTick.get("bid_qty_1", 0)),
+                ask_volume_1=int(newTick.get("ask_qty_1", 0)),
+                volume=int(newTick.get("volume", 0)),
+                turnover=newTick.get("turnover", 0.0),
+                timestamp=datetime.now(),
+            )
+            self._gw.latest_ticks[stdCode] = tick
+            self._gw.on_tick(tick)
+        except Exception as e:
+            logger.debug(f"[WT] tick 处理异常 {stdCode}: {e}")
 
-    # ── 错误回报 ───────────────────────────────────────────────────────────────
+    # ── 其他必须实现的空方法 ───────────────────────────────────────────────────
 
-    def on_error(self, code: int, msg: str, oidx: int = -1):
-        logger.error(f"[WT] 错误 [{code}]: {msg}")
-        self._gw.on_error(GatewayError(msg), f"code={code}")
+    def on_bar(self, context, stdCode: str, period: str, newBar: dict):
+        pass
 
-    # ── 撤单回报 ───────────────────────────────────────────────────────────────
+    def on_order_queue(self, context, stdCode: str, newOrdQue: dict):
+        pass
 
-    def on_cancel(
-        self,
-        localid: int,
-        code: str,
-        isBuy: bool,
-        leftQty: float,
-        price: float,
-        userTag: str,
-        orderTime: int,
-        oidx: int = -1,
-    ):
-        order_id = str(localid)
-        order = self._gw.orders.get(order_id)
-        if order:
-            order.status = OrderStatus.CANCELLED
-            order.update_time = datetime.now()
-            self._gw.on_order(order)
+    def on_order_detail(self, context, stdCode: str, newOrdDtl: dict):
+        pass
+
+    def on_transaction(self, context, stdCode: str, newTrans: dict):
+        pass
+
+    def on_backtest_end(self, context):
+        pass
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 主网关类
 # ──────────────────────────────────────────────────────────────────────────────
-
 
 class WtGateway(GatewayBase):
     """
@@ -254,59 +207,71 @@ class WtGateway(GatewayBase):
     config 字段：
       trader_id   str   交易通道 ID，默认 "CTP"
       account_id  str   账户 ID（用于日志/账户信息）
-      td_cfg      str   wtpy 交易通道配置文件路径，如 "config/tdcfg.yaml"
-      md_cfg      str   wtpy 行情通道配置文件路径（可选）
-      env_cfg     str   wtpy 环境配置文件路径，如 "config/env.yaml"
-      hot_cfg     str   主力合约映射文件路径（可选）
+      cfg_file    str   wtpy 主配置文件路径（json/yaml），默认 "config/wt/config.json"
+      cfg_folder  str   基础数据文件目录，默认 "config/wt/"
+      td_module   str   交易模块名，默认 "TraderCTP"
+      td_front    str   CTP 交易前置地址
+      broker_id   str   经纪商 ID
+      username    str   账户
+      password    str   密码
+      app_id      str   AppID（可选）
+      auth_code   str   AuthCode（可选）
     """
 
     def __init__(self):
         super().__init__("WT")
-        self._engine = None  # WtEngine 实例
-        self._trader = None  # TraderAdapter
-        self._spi: Optional[_WtTraderSpi] = None
+        self._engine = None
+        self._proxy: Optional[_GatewayHftProxy] = None
         self._account_id: str = ""
         self._trader_id: str = "CTP"
         self._login_event = threading.Event()
-        self._local_id: int = 0
         self._lock = threading.Lock()
         self.latest_ticks: Dict[str, MarketData] = {}
 
     # ── 连接 ──────────────────────────────────────────────────────────────────
 
     def connect(self, config: Dict[str, Any]) -> bool:
-        WtEngine, EngineType, BaseTraderSpi = _import_wtpy()
+        try:
+            from wtpy.WtEngine import WtEngine, EngineType
+        except ImportError as e:
+            raise ImportError(f"wtpy 未安装，请执行: pip install wtpy --no-deps\n{e}") from e
 
         self._account_id = config.get("account_id", config.get("username", ""))
-        self._trader_id = config.get("trader_id", "CTP")
-        td_cfg = config.get("td_cfg", "config/tdcfg.yaml")
-        env_cfg = config.get("env_cfg", "config/env.yaml")
-        hot_cfg = config.get("hot_cfg", "")
+        self._trader_id  = config.get("trader_id", "CTP")
+        cfg_file   = config.get("cfg_file",   "config/wt/config.json")
+        cfg_folder = config.get("cfg_folder", "config/wt/")
 
         self.status = TradingStatus.CONNECTING
         self._login_event.clear()
 
         try:
-            self._engine = WtEngine(EngineType.ET_CTA)
-            self._engine.init(env_cfg, logCfg="config/logcfg.yaml")
+            self._engine = WtEngine(EngineType.ET_HFT)
+            self._engine.init(cfg_folder, cfgfile=cfg_file)
 
-            # 注册交易通道
-            self._engine.add_cta_trader(self._trader_id, td_cfg)
+            # 注册 CTP 交易通道
+            trader_params = {
+                "module":   config.get("td_module", "TraderCTP"),
+                "front":    config.get("td_front",  config.get("td_server", "")),
+                "broker":   config.get("broker_id", ""),
+                "user":     config.get("username",  ""),
+                "pass":     config.get("password",  ""),
+                "appid":    config.get("app_id",    ""),
+                "authcode": config.get("auth_code", ""),
+            }
+            self._engine.addTrader(self._trader_id, trader_params)
 
-            # 获取 TraderAdapter 并注册 SPI
-            self._spi = _WtTraderSpi(self)
-            self._trader = self._engine.get_trader(self._trader_id)
-            if self._trader is None:
-                raise GatewayError(f"无法获取交易通道: {self._trader_id}")
+            # 注册代理 HFT 策略（持有 gateway 引用，转发所有回调）
+            self._proxy = _GatewayHftProxy(self)
+            self._engine.add_hft_strategy(self._proxy, trader=self._trader_id)
 
-            self._trader.register_spi(self._spi)
-
-            # 在后台线程启动引擎（非阻塞）
+            # 后台启动引擎
             threading.Thread(
-                target=self._engine.run, kwargs={"bAsync": True}, daemon=True
+                target=self._engine.run,
+                kwargs={"bAsync": True},
+                daemon=True,
             ).start()
 
-            logger.info(f"[WT] 正在连接，等待登录回调（最长 30s）…")
+            logger.info("[WT] 引擎已启动，等待交易通道就绪（最长 30s）…")
             if not self._login_event.wait(timeout=30):
                 logger.error("[WT] 登录超时（30s）")
                 self.status = TradingStatus.ERROR
@@ -335,45 +300,38 @@ class WtGateway(GatewayBase):
         if self.status != TradingStatus.CONNECTED:
             logger.warning("[WT] 网关未就绪，无法下单")
             return ""
-        if self._trader is None:
+        if self._proxy is None or self._proxy._ctx is None:
+            logger.warning("[WT] HFT 上下文未就绪")
             return ""
 
-        with self._lock:
-            self._local_id += 1
-            local_id = self._local_id
-
-        is_buy = signal.direction == Direction.LONG
-        offset = getattr(signal, "offset", OffsetFlag.OPEN)
+        ctx = self._proxy._ctx
+        is_buy  = signal.direction == Direction.LONG
+        offset  = getattr(signal, "offset", OffsetFlag.OPEN)
         is_open = offset == OffsetFlag.OPEN
 
-        # wtpy buy/sell 接口：buy(code, qty, price, userTag)
-        # 平仓用 sell（多头平仓）或 buy（空头平仓），通过 offset 区分
         try:
             if is_open:
                 if is_buy:
-                    ids = self._trader.buy(
-                        signal.symbol, signal.volume, signal.price, str(local_id)
-                    )
+                    ids = ctx.stra_buy(signal.symbol, signal.price, signal.volume)
                 else:
-                    ids = self._trader.sell(
-                        signal.symbol, signal.volume, signal.price, str(local_id)
-                    )
+                    ids = ctx.stra_sell(signal.symbol, signal.price, signal.volume)
             else:
-                # 平仓：多头平仓 → sell_close；空头平仓 → buy_close
+                # 平仓：反向操作
                 if is_buy:
-                    ids = self._trader.buy_close(
-                        signal.symbol, signal.volume, signal.price, str(local_id)
-                    )
+                    # 空头平仓 → 买入
+                    ids = ctx.stra_buy(signal.symbol, signal.price, signal.volume)
                 else:
-                    ids = self._trader.sell_close(
-                        signal.symbol, signal.volume, signal.price, str(local_id)
-                    )
+                    # 多头平仓 → 卖出
+                    ids = ctx.stra_sell(signal.symbol, signal.price, signal.volume)
         except Exception as e:
             logger.error(f"[WT] 下单异常: {e}")
             raise GatewayError(f"下单失败: {e}") from e
 
-        # wtpy 返回 localid 列表
-        order_id = str(ids[0]) if ids else str(local_id)
+        # ids 是 localid 列表（整数）
+        order_id = str(ids[0]) if ids else ""
+        if not order_id:
+            logger.error("[WT] 下单未返回 localid")
+            return ""
 
         order = Order(
             order_id=order_id,
@@ -387,9 +345,8 @@ class WtGateway(GatewayBase):
         )
         self.orders[order_id] = order
         logger.info(
-            f"[WT] 已发送委托: {signal.symbol} "
-            f"{'买' if is_buy else '卖'} "
-            f"{'开' if is_open else '平'} "
+            f"[WT] 委托已发送: {signal.symbol} "
+            f"{'买' if is_buy else '卖'}{'开' if is_open else '平'} "
             f"{signal.volume}@{signal.price} id={order_id}"
         )
         return order_id
@@ -397,35 +354,25 @@ class WtGateway(GatewayBase):
     # ── 撤单 ──────────────────────────────────────────────────────────────────
 
     def cancel_order(self, order_id: str) -> bool:
-        if self._trader is None:
+        if self._proxy is None or self._proxy._ctx is None:
             return False
         order = self.orders.get(order_id)
         if order is None or not order.is_active():
             return False
         try:
-            self._trader.cancel(int(order_id))
-            logger.info(f"[WT] 已发送撤单: {order_id}")
+            self._proxy._ctx.stra_cancel(int(order_id))
+            logger.info(f"[WT] 撤单已发送: {order_id}")
             return True
         except Exception as e:
             logger.error(f"[WT] 撤单异常: {e}")
             return False
 
-    # ── 查询 ──────────────────────────────────────────────────────────────────
+    # ── 查询（wtpy HFT 模式下持仓/账户由回调推送，无主动查询接口）────────────
 
     def query_account(self) -> AccountInfo:
-        if self._trader and self.status == TradingStatus.CONNECTED:
-            try:
-                self._trader.query_account()
-            except Exception:
-                pass
         return self.account
 
     def query_positions(self) -> List[Position]:
-        if self._trader and self.status == TradingStatus.CONNECTED:
-            try:
-                self._trader.query_positions()
-            except Exception:
-                pass
         return list(self.positions.values())
 
     def query_orders(self) -> List[Order]:
@@ -434,13 +381,12 @@ class WtGateway(GatewayBase):
     # ── 行情订阅 ───────────────────────────────────────────────────────────────
 
     def subscribe_market_data(self, symbols: List[str]):
-        """订阅行情（需要 wtpy 行情通道已就绪）"""
-        if self._engine is None:
-            logger.warning("[WT] 引擎未初始化，无法订阅行情")
+        if self._proxy is None or self._proxy._ctx is None:
+            logger.warning("[WT] 上下文未就绪，无法订阅行情")
             return
         for sym in symbols:
             try:
-                self._engine.subscribe_market_data(sym)
+                self._proxy._ctx.stra_sub_ticks(sym)
                 logger.info(f"[WT] 已订阅行情: {sym}")
             except Exception as e:
                 logger.warning(f"[WT] 订阅行情失败 {sym}: {e}")

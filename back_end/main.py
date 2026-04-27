@@ -110,7 +110,7 @@ def run_live_trading(config: dict):
     logger.info("=" * 60)
 
     trading_config = config.get('trading', {})
-    gateway_type = trading_config.get('gateway', 'simulated')
+    gateway_type = trading_config.get('gateway')
     logger.info(f"使用交易网关: {gateway_type}")
 
     gateway = create_gateway(gateway_type)

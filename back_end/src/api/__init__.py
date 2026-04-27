@@ -103,7 +103,7 @@ class LoginRequest(BaseModel):
     app_id:     str = "client_TraderMaster_v1.0.0"
     auth_code:  str = ""
     # WonderTrader 专用字段（使用 gateway_type="wondertrader" 时生效）
-    gateway_type: str = "ctp"   # "ctp" | "wondertrader" | "simulated"
+    gateway_type: str = "wondertrader"   # "ctp" | "wondertrader" | "simulated"
     td_cfg:     str = ""        # wtpy 交易通道配置文件路径
     env_cfg:    str = ""        # wtpy 环境配置文件路径
     account_id: str = ""        # wtpy 账户 ID（可选，默认取 username）
@@ -1261,11 +1261,8 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             trading_state.clear_main()
 
         # 确定网关类型
-        is_simulate = body.username in ("模拟", "simulate", "模拟登录")
-        if is_simulate:
-            trading_state.add_log("使用模拟网关登录")
-            gateway_type = "simulated"
-        elif body.gateway_type in ("wondertrader", "wt"):
+        is_simulate = body.username in ( "simulate", "模拟登录")
+        if body.gateway_type in ("wondertrader", "wt"):
             trading_state.add_log("使用 WonderTrader 网关登录")
             gateway_type = "wondertrader"
         else:

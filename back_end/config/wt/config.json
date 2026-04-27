@@ -1,0 +1,18 @@
+{
+    "basefiles": {
+        "commodity": "config/wt/commodities.json",
+        "contract":  "config/wt/contracts.json",
+        "holiday":   "config/wt/holidays.json",
+        "hot":       "config/wt/hots.json",
+        "session":   "config/wt/sessions.json"
+    },
+    "env": {
+        "name": "hft",
+        "mode": "product"
+    },
+    "data": {
+        "store": {
+            "path": "data/wt/"
+        }
+    }
+}
