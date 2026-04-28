@@ -1095,7 +1095,7 @@ def _run_backtest_sync(body: "BacktestRunRequest") -> dict:
     # ── 综合指标 ─────────────────────────────────────────────────────────────
     analyzer = Analyzer(bt_cfg.initial_capital)
     analyzer.set_data(list(engine.equity_curve.values()), engine.result.trades)
-    raw      = analyzer.analyze()
+    raw      = analyzer.analyze().to_dict()
     r        = raw.get("risk",        {}) if raw else {}
     p        = raw.get("performance", {}) if raw else {}
 

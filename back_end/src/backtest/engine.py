@@ -7,16 +7,14 @@ from __future__ import annotations
 import logging
 import traceback
 from datetime import datetime
-from typing import Dict, List, Optional, TYPE_CHECKING
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 
-if TYPE_CHECKING:
-    from ..strategy import (
-        StrategyBase, Signal, Order, Trade, Direction,
-        OrderType, OrderStatus, Position
-    )
+from ..strategy import (
+    Order, Trade, Direction, OrderType, OrderStatus, Position
+)
 
 from .config import BacktestConfig
 from .result import BacktestResult
