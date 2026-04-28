@@ -200,8 +200,119 @@ class ManualOrderRequest(BaseModel):
 
 class ClosePositionRequest(BaseModel):
     """快捷平仓请求"""
-    volume: int = 0         # 0 = 全部平仓
-    price:  float = 0       # 0 = 市价
+    volume:     int = 0         # 0 = 全部平仓
+    price:      float = 0       # 0 = 市价
+    direction:  str = ""        # 可选："long" | "short"，用于锁定要平的持仓方向
+    offset:     str = "close"   # "close" | "close_today" | "close_yesterday"
+    order_type: str = ""        # "" 自动按 price 推断；也可传 "market" | "limit"
+
+
+_MANUAL_DIRECTION_MAP = {"long": Direction.LONG, "short": Direction.SHORT}
+_MANUAL_OFFSET_MAP = {
+    "open": OffsetFlag.OPEN,
+    "close": OffsetFlag.CLOSE,
+    "close_today": OffsetFlag.CLOSE_TODAY,
+    "close_yesterday": OffsetFlag.CLOSE_YESTERDAY,
+}
+_MANUAL_CLOSE_OFFSET_MAP = {
+    "close": OffsetFlag.CLOSE,
+    "close_today": OffsetFlag.CLOSE_TODAY,
+    "close_yesterday": OffsetFlag.CLOSE_YESTERDAY,
+}
+_MANUAL_ORDER_TYPE_MAP = {"market": OrderType.MARKET, "limit": OrderType.LIMIT}
+
+
+def _clean_manual_symbol(symbol: str) -> str:
+    clean_symbol = str(symbol or "").strip()
+    if not clean_symbol:
+        raise HTTPException(status_code=400, detail="合约代码不能为空")
+    return clean_symbol
+
+
+def _normalize_choice(value: str, mapping: Dict[str, Any], field_label: str) -> tuple[str, Any]:
+    normalized = str(value or "").strip().lower()
+    if normalized not in mapping:
+        supported = " / ".join(mapping.keys())
+        raise HTTPException(status_code=400, detail=f"{field_label}无效: {value}，支持: {supported}")
+    return normalized, mapping[normalized]
+
+
+def _positive_volume(value: int, *, allow_zero: bool = False) -> int:
+    try:
+        volume = int(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="委托数量必须是整数")
+    if allow_zero and volume == 0:
+        return 0
+    if volume <= 0:
+        raise HTTPException(status_code=400, detail="委托数量必须大于 0")
+    return volume
+
+
+def _manual_order_price(order_type: OrderType, price: float) -> float:
+    try:
+        parsed_price = float(price or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="委托价格必须是数字")
+    if order_type == OrderType.MARKET:
+        return 0.0
+    if parsed_price <= 0:
+        raise HTTPException(status_code=400, detail="限价单价格必须大于 0")
+    return parsed_price
+
+
+def _manual_position_direction(pos) -> str:
+    direction = getattr(pos, "direction", "")
+    if hasattr(direction, "value"):
+        direction = direction.value
+    direction = str(direction or "").strip().lower()
+    if direction in {"long", "short"}:
+        return direction
+
+    try:
+        volume = float(getattr(pos, "volume", 0))
+    except (TypeError, ValueError):
+        volume = 0
+    if volume > 0:
+        return "long"
+    if volume < 0:
+        return "short"
+    return ""
+
+
+def _find_close_position(positions: Dict[str, Any], symbol: str, direction: str = ""):
+    target_symbol = symbol.strip().lower()
+    target_direction = direction.strip().lower()
+    candidates = []
+    for key, pos in positions.items():
+        pos_symbol = str(getattr(pos, "symbol", key) or "").strip()
+        if pos_symbol.lower() != target_symbol and str(key).strip().lower() != target_symbol:
+            continue
+        try:
+            volume = abs(int(getattr(pos, "volume", 0) or 0))
+        except (TypeError, ValueError):
+            volume = 0
+        if volume <= 0:
+            continue
+        pos_direction = _manual_position_direction(pos)
+        if target_direction and pos_direction != target_direction:
+            continue
+        candidates.append(pos)
+
+    if not candidates:
+        return None
+    if len(candidates) > 1 and not target_direction:
+        raise HTTPException(status_code=400, detail=f"{symbol} 同时存在多个方向持仓，请指定 direction")
+    return candidates[0]
+
+
+def _close_direction_for_position(pos) -> Direction:
+    pos_direction = _manual_position_direction(pos)
+    if pos_direction == "long":
+        return Direction.SHORT
+    if pos_direction == "short":
+        return Direction.LONG
+    raise HTTPException(status_code=400, detail="无法识别持仓方向，已取消快捷平仓")
 
 
 # ---------------------------------------------------------------------------
@@ -589,6 +700,106 @@ def _account_to_dict(account: AccountInfo) -> Dict[str, Any]:
         "position_pnl": account.position_pnl,
         "total_pnl":    account.total_pnl,
     }
+
+
+def _tick_cache_lookup(raw: Dict[str, Any], symbol: str) -> Optional[Dict[str, Any]]:
+    if not raw:
+        return None
+    keys = [symbol, symbol.strip(), symbol.upper(), symbol.lower()]
+    for key in keys:
+        if key in raw:
+            value = raw[key]
+            return dict(value) if isinstance(value, dict) else None
+
+    normalized = symbol.strip().lower()
+    for key, value in raw.items():
+        if str(key).strip().lower() == normalized and isinstance(value, dict):
+            return dict(value)
+    return None
+
+
+def _market_data_tick_snapshot(tick: Any, requested_symbol: str) -> Dict[str, Any]:
+    ts = getattr(tick, "timestamp", None) or datetime.now()
+    last = float(getattr(tick, "last_price", 0) or 0)
+    return {
+        "type": "tick",
+        "source": "vnpy",
+        "symbol": requested_symbol,
+        "last": last,
+        "open": 0.0,
+        "high": 0.0,
+        "low": 0.0,
+        "pre_close": 0.0,
+        "volume": int(getattr(tick, "volume", 0) or 0),
+        "turnover": float(getattr(tick, "turnover", 0) or 0),
+        "open_interest": 0,
+        "bid1": float(getattr(tick, "bid_price_1", 0) or 0),
+        "ask1": float(getattr(tick, "ask_price_1", 0) or 0),
+        "bid1_vol": int(getattr(tick, "bid_volume_1", 0) or 0),
+        "ask1_vol": int(getattr(tick, "ask_volume_1", 0) or 0),
+        "change": 0.0,
+        "change_rate": 0.0,
+        "time": ts.strftime("%H:%M:%S") if hasattr(ts, "strftime") else str(ts),
+        "timestamp": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+    }
+
+
+def _gateway_tick_snapshot(gateway: Any, symbol: str) -> Optional[Dict[str, Any]]:
+    snapshots = getattr(gateway, "latest_tick_snapshots", {})
+    snapshot = _tick_cache_lookup(snapshots, symbol)
+    if snapshot:
+        snapshot["symbol"] = symbol
+        return snapshot
+
+    latest_ticks = getattr(gateway, "latest_ticks", {})
+    tick = latest_ticks.get(symbol)
+    if tick is None:
+        normalized = symbol.strip().lower()
+        for key, value in latest_ticks.items():
+            if str(key).strip().lower() == normalized:
+                tick = value
+                break
+    if tick is None:
+        return None
+    return _market_data_tick_snapshot(tick, symbol)
+
+
+def _subscribe_market_ticks(engine: Optional[TradingEngine], symbols: List[str]) -> None:
+    if engine is None:
+        return
+    subscribe = getattr(engine.gateway, "subscribe_market_data", None)
+    if not callable(subscribe):
+        return
+    unique_symbols = list(dict.fromkeys(s.strip() for s in symbols if s.strip()))
+    if not unique_symbols:
+        return
+    try:
+        subscribe(unique_symbols)
+    except Exception as exc:
+        logger.warning("[watch] 行情订阅失败: %s", exc)
+
+
+async def _wait_for_gateway_ticks(
+    engine: TradingEngine,
+    symbols: List[str],
+    timeout: float = 1.2,
+) -> tuple[Dict[str, Dict[str, Any]], List[str]]:
+    _subscribe_market_ticks(engine, symbols)
+    deadline = time.monotonic() + timeout
+    result: Dict[str, Dict[str, Any]] = {}
+
+    while True:
+        for symbol in symbols:
+            if symbol in result:
+                continue
+            snapshot = _gateway_tick_snapshot(engine.gateway, symbol)
+            if snapshot and float(snapshot.get("last") or 0) > 0:
+                result[symbol] = snapshot
+
+        missing = [symbol for symbol in symbols if symbol not in result]
+        if not missing or time.monotonic() >= deadline:
+            return result, missing
+        await asyncio.sleep(0.1)
 
 
 def _build_system_snapshot() -> dict:
@@ -1704,34 +1915,33 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         if engine is None:
             raise HTTPException(status_code=503, detail="交易引擎未连接")
 
-        # 解析方向
-        dir_map = {"long": Direction.LONG, "short": Direction.SHORT}
-        direction = dir_map.get(body.direction.lower())
-        if direction is None:
-            raise HTTPException(status_code=400, detail=f"无效方向: {body.direction}")
-
-        # 解析开平
-        offset_map = {
-            "open": OffsetFlag.OPEN,
-            "close": OffsetFlag.CLOSE,
-            "close_today": OffsetFlag.CLOSE_TODAY,
-            "close_yesterday": OffsetFlag.CLOSE_YESTERDAY,
-        }
-        offset = offset_map.get(body.offset.lower(), OffsetFlag.OPEN)
-
-        # 解析订单类型
-        ot = OrderType.MARKET if body.order_type.lower() == "market" else OrderType.LIMIT
-        price = body.price if ot == OrderType.LIMIT else body.price
+        try:
+            symbol = _clean_manual_symbol(body.symbol)
+            direction_name, direction = _normalize_choice(body.direction, _MANUAL_DIRECTION_MAP, "买卖方向")
+            offset_name, offset = _normalize_choice(body.offset, _MANUAL_OFFSET_MAP, "开平方向")
+            order_type_name, order_type = _normalize_choice(body.order_type, _MANUAL_ORDER_TYPE_MAP, "订单类型")
+            volume = _positive_volume(body.volume)
+            price = _manual_order_price(order_type, body.price)
+        except HTTPException as exc:
+            _record_audit(
+                "order",
+                "manual_order",
+                "rejected",
+                resource=str(body.symbol or ""),
+                request=request,
+                detail={"reason": exc.detail, "volume": body.volume, "direction": body.direction},
+            )
+            raise
 
         signal = Signal(
-            symbol=body.symbol,
+            symbol=symbol,
             datetime=datetime.now(),
             direction=direction,
             price=price,
-            volume=body.volume,
-            order_type=ot,
+            volume=volume,
+            order_type=order_type,
             offset=offset,
-            comment=f"manual_{body.offset}",
+            comment=f"manual_{offset_name}",
         )
 
         try:
@@ -1745,7 +1955,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
                         "rejected",
                         resource=body.symbol,
                         request=request,
-                        detail={"reason": reason, "volume": body.volume, "direction": body.direction},
+                        detail={"reason": reason, "volume": volume, "direction": direction_name},
                     )
                     raise HTTPException(status_code=400, detail=f"风控拒单: {reason}")
                 raise HTTPException(status_code=500, detail="下单失败，引擎未返回订单号")
@@ -1755,21 +1965,22 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
                 "success",
                 resource=order_id,
                 request=request,
-                detail={"symbol": body.symbol, "volume": body.volume, "direction": body.direction, "offset": body.offset},
+                detail={"symbol": symbol, "volume": volume, "direction": direction_name, "offset": offset_name},
             )
             return {
                 "success": True,
                 "order_id": order_id,
-                "symbol": body.symbol,
-                "direction": body.direction,
-                "offset": body.offset,
+                "symbol": symbol,
+                "direction": direction_name,
+                "offset": offset_name,
                 "price": price,
-                "volume": body.volume,
+                "volume": volume,
+                "order_type": order_type_name,
             }
         except HTTPException:
             raise
         except Exception as exc:
-            _record_audit("order", "manual_order", "error", resource=body.symbol, request=request, detail={"error": str(exc)})
+            _record_audit("order", "manual_order", "error", resource=symbol, request=request, detail={"error": str(exc)})
             raise HTTPException(status_code=500, detail=f"下单失败: {exc}")
 
     @app.post("/orders/cancel-all", summary="一键撤销所有活跃委托", tags=["手动交易"])
@@ -1808,7 +2019,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         return {"success": True, "cancelled": cancelled, "failed": failed}
 
     @app.post("/positions/{symbol}/close", summary="快捷平仓", tags=["手动交易"])
-    def close_position(symbol: str, body: ClosePositionRequest = ClosePositionRequest()):
+    def close_position(symbol: str, request: Request, body: ClosePositionRequest = ClosePositionRequest()):
         """
         快捷平仓指定合约。自动推断持仓方向和数量。
 
@@ -1819,36 +2030,56 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         if engine is None:
             raise HTTPException(status_code=503, detail="交易引擎未连接")
 
-        # 查找持仓
-        pos = None
-        for key, p in engine.gateway.positions.items():
-            if p.symbol == symbol and abs(p.volume) > 0:
-                pos = p
-                break
+        try:
+            clean_symbol = _clean_manual_symbol(symbol)
+            direction_name = str(body.direction or "").strip().lower()
+            if direction_name:
+                direction_name, _ = _normalize_choice(direction_name, _MANUAL_DIRECTION_MAP, "持仓方向")
+            offset_name, offset = _normalize_choice(body.offset, _MANUAL_CLOSE_OFFSET_MAP, "平仓类型")
+            requested_volume = _positive_volume(body.volume, allow_zero=True)
+            inferred_type = "limit" if float(body.price or 0) > 0 else "market"
+            order_type_name = str(body.order_type or inferred_type).strip().lower()
+            order_type_name, order_type = _normalize_choice(order_type_name, _MANUAL_ORDER_TYPE_MAP, "订单类型")
+            price = _manual_order_price(order_type, body.price)
+            pos = _find_close_position(engine.gateway.positions, clean_symbol, direction_name)
+        except HTTPException as exc:
+            _record_audit(
+                "order",
+                "manual_close_position",
+                "rejected",
+                resource=symbol,
+                request=request,
+                detail={"reason": exc.detail, "volume": body.volume, "direction": body.direction},
+            )
+            raise
 
         if pos is None:
+            _record_audit("order", "manual_close_position", "rejected", resource=symbol, request=request, detail={"reason": "position_not_found"})
             raise HTTPException(status_code=404, detail=f"未找到 {symbol} 的持仓")
 
-        close_volume = body.volume if body.volume > 0 else abs(pos.volume)
-        if close_volume > abs(pos.volume):
-            close_volume = abs(pos.volume)
+        available_volume = abs(int(getattr(pos, "volume", 0) or 0))
+        close_volume = requested_volume if requested_volume > 0 else available_volume
+        if close_volume > available_volume:
+            _record_audit(
+                "order",
+                "manual_close_position",
+                "rejected",
+                resource=clean_symbol,
+                request=request,
+                detail={"reason": "close_volume_exceeds_position", "requested": close_volume, "available": available_volume},
+            )
+            raise HTTPException(status_code=400, detail=f"平仓数量 {close_volume} 超过当前持仓 {available_volume}")
 
-        # 平仓方向：持多则卖出，持空则买入
-        if pos.direction == Direction.LONG or pos.volume > 0:
-            close_direction = Direction.SHORT
-        else:
-            close_direction = Direction.LONG
-
-        ot = OrderType.MARKET if body.price == 0 else OrderType.LIMIT
+        close_direction = _close_direction_for_position(pos)
 
         signal = Signal(
-            symbol=symbol,
+            symbol=clean_symbol,
             datetime=datetime.now(),
             direction=close_direction,
-            price=body.price,
+            price=price,
             volume=close_volume,
-            order_type=ot,
-            offset=OffsetFlag.CLOSE,
+            order_type=order_type,
+            offset=offset,
             comment="manual_close_position",
         )
 
@@ -1857,19 +2088,31 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             if not order_id:
                 reason = getattr(engine, "last_reject_reason", "")
                 if reason:
+                    _record_audit("order", "manual_close_position", "rejected", resource=clean_symbol, request=request, detail={"reason": reason})
                     raise HTTPException(status_code=400, detail=f"风控拒单: {reason}")
                 raise HTTPException(status_code=500, detail="平仓下单失败")
+            _record_audit(
+                "order",
+                "manual_close_position",
+                "success",
+                resource=order_id,
+                request=request,
+                detail={"symbol": clean_symbol, "volume": close_volume, "offset": offset_name, "direction": close_direction.value},
+            )
             return {
                 "success": True,
                 "order_id": order_id,
-                "symbol": symbol,
+                "symbol": clean_symbol,
                 "direction": close_direction.value,
                 "volume": close_volume,
-                "price": body.price,
+                "price": price,
+                "offset": offset_name,
+                "order_type": order_type_name,
             }
         except HTTPException:
             raise
         except Exception as exc:
+            _record_audit("order", "manual_close_position", "error", resource=symbol, request=request, detail={"error": str(exc)})
             raise HTTPException(status_code=500, detail=f"平仓失败: {exc}")
 
     @app.post(
@@ -2137,72 +2380,27 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
     @app.get("/watch/tick", summary="批量查询实时行情", tags=["行情"])
     async def get_ticks(symbols: str = ""):
         """批量查询多个合约的实时 tick 数据，用于前端轮询。"""
-        import random
         sym_list = [s.strip() for s in symbols.split(",") if s.strip()]
         if not sym_list:
             return JSONResponse({"code": 1, "msg": "请提供 symbols 参数"}, status_code=400)
 
-        ticks_result = {}
-        rng = random.Random()
+        engine = trading_state.primary_engine()
+        if engine is None or engine.gateway.status not in (TradingStatus.CONNECTED, TradingStatus.TRADING):
+            return JSONResponse(
+                {"code": 1, "msg": "行情网关未连接，请先登录 CTP 账户", "ticks": {}, "missing_symbols": sym_list},
+                status_code=503,
+            )
 
-        for sym in sym_list:
-            ref_price = 3000.0
-            try:
-                from ..watch.kline import get_kline
-                result = get_kline(symbol=sym, interval="1d", limit=2, indicators="")
-                data = result.get("data", [])
-                if isinstance(data, list) and data:
-                    ref_price = float(data[-1].get("close", 3000.0))
-                elif isinstance(data, dict):
-                    bars = data.get("bars", [])
-                    if bars:
-                        ref_price = float(bars[-1].get("close", 3000.0))
-            except Exception:
-                pass
-
-            ref_price = round(ref_price * (1 + rng.gauss(0, 0.0001)), 4)
-            tick_size = max(round(ref_price * 0.0002, 2), 0.01)
-            drift = rng.gauss(0, tick_size)
-            last = round(ref_price + drift, 2)
-            spread = tick_size * rng.uniform(1, 3)
-            bid1 = round(last - spread * 0.5, 2)
-            ask1 = round(last + spread * 0.5, 2)
-            bids, asks = [], []
-            b, a = bid1, ask1
-            for i in range(5):
-                bids.append(round(b - tick_size * i * rng.uniform(0.5, 1.5), 2))
-                asks.append(round(a + tick_size * i * rng.uniform(0.5, 1.5), 2))
-            bid_vols = [rng.randint(1, 200) for _ in range(5)]
-            ask_vols = [rng.randint(1, 200) for _ in range(5)]
-            pre_close = round(last * rng.uniform(0.99, 1.01), 2)
-            open_p = round(pre_close * rng.uniform(0.998, 1.002), 2)
-            high_p = round(max(open_p, last) * rng.uniform(1.0, 1.005), 2)
-            low_p = round(min(open_p, last) * rng.uniform(0.995, 1.0), 2)
-            volume = rng.randint(100, 5000)
-            turnover = round(last * volume * rng.uniform(0.9, 1.1), 0)
-            oi = rng.randint(10000, 500000)
-            change = round(last - pre_close, 2)
-            chg_rate = round(change / pre_close * 100, 3) if pre_close else 0.0
-
-            ticks_result[sym] = {
-                "symbol": sym,
-                "last": last,
-                "open": open_p,
-                "high": high_p,
-                "low": low_p,
-                "pre_close": pre_close,
-                "volume": volume,
-                "turnover": turnover,
-                "open_interest": oi,
-                "bid1": bid1, "bid2": bids[1], "bid3": bids[2], "bid4": bids[3], "bid5": bids[4],
-                "ask1": ask1, "ask2": asks[1], "ask3": asks[2], "ask4": asks[3], "ask5": asks[4],
-                "bid1_vol": bid_vols[0], "bid2_vol": bid_vols[1], "bid3_vol": bid_vols[2], "bid4_vol": bid_vols[3], "bid5_vol": bid_vols[4],
-                "ask1_vol": ask_vols[0], "ask2_vol": ask_vols[1], "ask3_vol": ask_vols[2], "ask4_vol": ask_vols[3], "ask5_vol": ask_vols[4],
-                "change": change,
-                "change_rate": chg_rate,
+        ticks_result, missing = await _wait_for_gateway_ticks(engine, sym_list)
+        msg = "" if not missing else f"已订阅但尚未收到实时行情: {', '.join(missing)}"
+        return JSONResponse(
+            {
+                "code": 0,
+                "ticks": ticks_result,
+                "missing_symbols": missing,
+                "msg": msg,
             }
-
-        return JSONResponse({"code": 0, "ticks": ticks_result})
+        )
 
     # ── /ws/watch — 盯盘系统实时行情 WebSocket ────────────────────────────────
     #
@@ -2228,91 +2426,9 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         await ws.accept()
         logger.info("[WS:watch] 新连接")
 
-        import random
-        import math
-
         # 每个连接的订阅状态：symbol → set(channels)
         subscriptions: Dict[str, set] = {}
-
-        # 品种基础价格缓存（用于模拟价格漂移）
-        base_prices: Dict[str, float] = {}
-
-        def _get_base_price(symbol: str) -> float:
-            """获取或初始化品种基础价格（取最近日线收盘价）。"""
-            if symbol in base_prices:
-                return base_prices[symbol]
-            try:
-                from ..watch.kline import get_kline
-                result = get_kline(symbol=symbol, interval="1d", limit=2, indicators="")
-                data = result.get("data", [])
-                # 新格式：data 是扁平记录数组
-                if isinstance(data, list) and data:
-                    price = float(data[-1].get("close", 3000.0))
-                # 旧格式兼容：data 是含 bars 字段的字典
-                elif isinstance(data, dict):
-                    raw_bars = data.get("bars", [])
-                    price = float(raw_bars[-1]["close"]) if raw_bars else 3000.0
-                else:
-                    price = 3000.0
-            except Exception as e:
-                logger.debug(f"[WS:watch] _get_base_price({symbol}) 失败: {e}")
-                price = 3000.0
-            base_prices[symbol] = price
-            return price
-
-        def _build_tick(symbol: str, ref_price: float, rng: random.Random) -> dict:
-            """
-            基于参考价格模拟一个真实感的 tick 快照。
-            振幅：±0.3%（期货盘中正常波动）。
-            """
-            tick_size  = max(round(ref_price * 0.0002, 2), 0.01)
-            drift      = rng.gauss(0, tick_size)
-            last       = round(ref_price + drift, 2)
-
-            spread     = tick_size * rng.uniform(1, 3)
-            bid1       = round(last - spread * 0.5, 2)
-            ask1       = round(last + spread * 0.5, 2)
-
-            # 5 档深度（价差递增）
-            bids, asks = [], []
-            b, a = bid1, ask1
-            for i in range(5):
-                bids.append(round(b - tick_size * i * rng.uniform(0.5, 1.5), 2))
-                asks.append(round(a + tick_size * i * rng.uniform(0.5, 1.5), 2))
-            bid_vols   = [rng.randint(1, 200) for _ in range(5)]
-            ask_vols   = [rng.randint(1, 200) for _ in range(5)]
-
-            pre_close  = round(last * rng.uniform(0.99, 1.01), 2)
-            open_p     = round(pre_close * rng.uniform(0.998, 1.002), 2)
-            high_p     = round(max(open_p, last) * rng.uniform(1.0, 1.005), 2)
-            low_p      = round(min(open_p, last) * rng.uniform(0.995, 1.0), 2)
-            volume     = rng.randint(100, 5000)
-            turnover   = round(last * volume * rng.uniform(0.9, 1.1), 0)
-            oi         = rng.randint(10000, 500000)
-            change     = round(last - pre_close, 2)
-            chg_rate   = round(change / pre_close * 100, 3) if pre_close else 0.0
-
-            return {
-                "type":         "tick",
-                "symbol":       symbol,
-                "last":         last,
-                "open":         open_p,
-                "high":         high_p,
-                "low":          low_p,
-                "pre_close":    pre_close,
-                "volume":       volume,
-                "turnover":     turnover,
-                "open_interest": oi,
-                "bid1": bids[0], "bid2": bids[1], "bid3": bids[2], "bid4": bids[3], "bid5": bids[4],
-                "ask1": asks[0], "ask2": asks[1], "ask3": asks[2], "ask4": asks[3], "ask5": asks[4],
-                "bid1_vol": bid_vols[0], "bid2_vol": bid_vols[1], "bid3_vol": bid_vols[2],
-                "bid4_vol": bid_vols[3], "bid5_vol": bid_vols[4],
-                "ask1_vol": ask_vols[0], "ask2_vol": ask_vols[1], "ask3_vol": ask_vols[2],
-                "ask4_vol": ask_vols[3], "ask5_vol": ask_vols[4],
-                "change":      change,
-                "change_rate": chg_rate,
-                "time":        datetime.now().strftime("%H:%M:%S"),
-            }
+        last_sent_ts: Dict[str, str] = {}
 
         # 监听客户端消息（订阅 / 取消 / ping）
         async def _recv_loop():
@@ -2332,10 +2448,20 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
                     chs   = msg.get("channels", ["tick"])
 
                     if mtype == "subscribe" and syms:
+                        engine = trading_state.primary_engine()
+                        if engine is None or engine.gateway.status not in (TradingStatus.CONNECTED, TradingStatus.TRADING):
+                            await ws.send_text(_json.dumps({
+                                "type": "error",
+                                "code": "gateway_not_connected",
+                                "msg": "行情网关未连接，请先登录 CTP 账户",
+                            }, ensure_ascii=False))
+                            continue
+
                         for s in syms:
                             if s not in subscriptions:
                                 subscriptions[s] = set()
                             subscriptions[s].update(chs)
+                        _subscribe_market_ticks(engine, syms)
                         await ws.send_text(_json.dumps({
                             "type": "subscribed", "symbols": syms,
                         }, ensure_ascii=False))
@@ -2359,47 +2485,48 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
 
         # 推送 tick 循环（每 500ms 推送一次）
         async def _push_loop():
-            rng = random.Random()
             try:
                 while True:
                     await asyncio.sleep(0.5)
                     if not subscriptions:
+                        continue
+                    engine = trading_state.primary_engine()
+                    if engine is None:
                         continue
                     for symbol, channels in list(subscriptions.items()):
                         if "tick" not in channels and not any(
                             ch.startswith("kline_") for ch in channels
                         ):
                             continue
-                        # 初始化基础价
-                        ref = base_prices.get(symbol)
-                        if ref is None:
-                            ref = await asyncio.get_event_loop().run_in_executor(
-                                None, _get_base_price, symbol
-                            )
-                        # 价格随机游走（模拟真实波动）
-                        ref = round(ref * (1 + rng.gauss(0, 0.0001)), 4)
-                        base_prices[symbol] = ref
+
+                        snapshot = _gateway_tick_snapshot(engine.gateway, symbol)
+                        if not snapshot or float(snapshot.get("last") or 0) <= 0:
+                            _subscribe_market_ticks(engine, [symbol])
+                            continue
 
                         if "tick" in channels:
-                            tick = _build_tick(symbol, ref, rng)
-                            await ws.send_text(_json.dumps(tick, ensure_ascii=False, default=str))
+                            timestamp = str(snapshot.get("timestamp") or snapshot.get("time") or "")
+                            if last_sent_ts.get(symbol) != timestamp:
+                                await ws.send_text(_json.dumps(snapshot, ensure_ascii=False, default=str))
+                                last_sent_ts[symbol] = timestamp
 
-                        # K 线更新（仅推送当前分钟 bar）
+                        # K 线更新（用当前真实 tick 生成当前周期的增量 bar）
                         for ch in channels:
                             if not ch.startswith("kline_"):
                                 continue
                             iv = ch[6:]  # e.g. "1m"
+                            last = float(snapshot.get("last") or 0)
                             bar_update = {
                                 "type":     "kline_update",
                                 "symbol":   symbol,
                                 "interval": iv,
                                 "bar": {
                                     "time":   datetime.now().strftime("%Y-%m-%d %H:%M"),
-                                    "open":   round(ref * rng.uniform(0.9995, 1.0005), 2),
-                                    "high":   round(ref * rng.uniform(1.0, 1.001), 2),
-                                    "low":    round(ref * rng.uniform(0.999, 1.0), 2),
-                                    "close":  ref,
-                                    "volume": rng.randint(50, 500),
+                                    "open":   snapshot.get("open") or last,
+                                    "high":   max(float(snapshot.get("high") or last), last),
+                                    "low":    min(float(snapshot.get("low") or last), last),
+                                    "close":  last,
+                                    "volume": snapshot.get("volume") or 0,
                                 },
                             }
                             await ws.send_text(

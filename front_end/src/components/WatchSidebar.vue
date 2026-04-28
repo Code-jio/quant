@@ -158,12 +158,29 @@ const { recentSymbols, visitCounts } = storeToRefs(historyStore)
 const polledTicks = ref({})
 let pollTimer = null
 
+function collectTickSymbols() {
+  const all = [
+    ...HOT_CONTRACTS,
+    ...watchList.value,
+    ...recentSymbols.value,
+    currentSymbol.value,
+  ]
+  return [
+    ...new Set(
+      all
+        .map(item => typeof item === 'string' ? item : item?.symbol)
+        .filter(Boolean),
+    ),
+  ]
+}
+
 async function pollTicks() {
-  const syms = HOT_CONTRACTS.map(c => c.symbol)
+  const syms = collectTickSymbols()
+  if (!syms.length) return
   try {
     const res = await fetchTicks(syms)
     if (res.code === 0 && res.ticks) {
-      polledTicks.value = res.ticks
+      polledTicks.value = { ...polledTicks.value, ...res.ticks }
     }
   } catch (e) {
     console.error('[WatchSidebar] pollTicks error:', e.message)

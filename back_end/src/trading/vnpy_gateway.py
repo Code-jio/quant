@@ -78,6 +78,8 @@ class VnpyGateway(GatewayBase):
         self._vn_orders: Dict[str, Any] = {}
         self._order_meta: Dict[str, Tuple[str, Any]] = {}
         self.latest_ticks: Dict[str, MarketData] = {}
+        self.latest_tick_snapshots: Dict[str, Dict[str, Any]] = {}
+        self._subscribed_symbols: set[str] = set()
 
     def connect(self, config: Dict[str, Any]) -> bool:
         """Connect to CTP through vn.py."""
@@ -246,8 +248,12 @@ class VnpyGateway(GatewayBase):
 
         for item in symbols:
             symbol, exchange = self._split_symbol(item)
+            vt_key = f"{symbol}.{getattr(exchange, 'value', exchange)}"
+            if vt_key in self._subscribed_symbols:
+                continue
             req = SubscribeRequest(symbol=symbol, exchange=exchange)
             self._main_engine.subscribe(req, self._gateway_name)
+            self._subscribed_symbols.add(vt_key)
 
     def _on_vnpy_log(self, event: Any) -> None:
         log = event.data
@@ -364,8 +370,69 @@ class VnpyGateway(GatewayBase):
             turnover=float(getattr(data, "turnover", 0) or 0),
             timestamp=getattr(data, "datetime", None) or datetime.now(),
         )
-        self.latest_ticks[symbol] = tick
+        snapshot = self._tick_to_snapshot(data, tick)
+        for key in self._tick_cache_keys(data, symbol):
+            self.latest_ticks[key] = tick
+            self.latest_tick_snapshots[key] = snapshot
         self.on_tick(tick)
+
+    @staticmethod
+    def _tick_cache_keys(data: Any, symbol: str) -> set[str]:
+        keys = {symbol}
+        vt_symbol = getattr(data, "vt_symbol", "")
+        if vt_symbol:
+            keys.add(str(vt_symbol))
+        exchange = getattr(data, "exchange", "")
+        exchange_value = getattr(exchange, "value", "")
+        exchange_name = getattr(exchange, "name", "")
+        if exchange_value:
+            keys.add(f"{symbol}.{exchange_value}")
+            keys.add(f"{exchange_value}.{symbol}")
+        if exchange_name:
+            keys.add(f"{symbol}.{exchange_name}")
+            keys.add(f"{exchange_name}.{symbol}")
+        return {key for key in keys if key}
+
+    @staticmethod
+    def _price_field(data: Any, field: str, fallback: float = 0.0) -> float:
+        try:
+            value = float(getattr(data, field, fallback) or fallback)
+        except (TypeError, ValueError):
+            value = fallback
+        return value
+
+    @classmethod
+    def _tick_to_snapshot(cls, data: Any, tick: MarketData) -> Dict[str, Any]:
+        last = tick.last_price
+        pre_close = cls._price_field(data, "pre_close", 0.0)
+        change = round(last - pre_close, 4) if pre_close else 0.0
+        change_rate = round(change / pre_close * 100, 4) if pre_close else 0.0
+        ts = tick.timestamp if hasattr(tick.timestamp, "isoformat") else datetime.now()
+
+        snapshot: Dict[str, Any] = {
+            "type": "tick",
+            "source": "vnpy",
+            "symbol": tick.symbol,
+            "last": last,
+            "open": cls._price_field(data, "open_price", 0.0),
+            "high": cls._price_field(data, "high_price", 0.0),
+            "low": cls._price_field(data, "low_price", 0.0),
+            "pre_close": pre_close,
+            "volume": tick.volume,
+            "turnover": tick.turnover,
+            "open_interest": int(getattr(data, "open_interest", 0) or 0),
+            "change": change,
+            "change_rate": change_rate,
+            "time": ts.strftime("%H:%M:%S") if hasattr(ts, "strftime") else str(ts),
+            "timestamp": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+        }
+
+        for level in range(1, 6):
+            snapshot[f"bid{level}"] = cls._price_field(data, f"bid_price_{level}", 0.0)
+            snapshot[f"ask{level}"] = cls._price_field(data, f"ask_price_{level}", 0.0)
+            snapshot[f"bid{level}_vol"] = int(getattr(data, f"bid_volume_{level}", 0) or 0)
+            snapshot[f"ask{level}_vol"] = int(getattr(data, f"ask_volume_{level}", 0) or 0)
+        return snapshot
 
     @staticmethod
     def _split_symbol(symbol: str) -> Tuple[str, Any]:
