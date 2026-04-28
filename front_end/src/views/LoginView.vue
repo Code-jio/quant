@@ -137,12 +137,6 @@
 
           <div v-if="showAdvanced" class="advanced-body">
             <div class="form-row">
-              <el-form-item label="网关类型">
-                <el-select v-model="form.gateway_type" :disabled="connecting" style="width:100%">
-                  <el-option label="vn.py CTP（实盘）" value="vnpy" />
-                  <el-option label="模拟网关（无需 CTP）" value="simulated" />
-                </el-select>
-              </el-form-item>
               <el-form-item label="AppID">
                 <el-input v-model="form.app_id" :disabled="connecting" />
               </el-form-item>
@@ -201,7 +195,7 @@
 
 <script setup>
  
-import { ref, reactive, computed, onUnmounted } from 'vue'
+import { ref, reactive, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth.js'
@@ -242,7 +236,6 @@ const form = reactive({
   md_server: 'tcp://114.94.128.1:42213',
   app_id:      'client_TraderMaster_v1.0.0',
   auth_code:   '20260324LHJYMHBG',
-  gateway_type: 'vnpy',
   td_custom:   false,
   md_custom:   false,
 })
@@ -262,15 +255,6 @@ const rules = {
 }
 
 // 服务器地址（支持自定义）
-const tdValue = computed({
-  get: () => form.td_custom ? form.td_server : form.td_server,
-  set: (v) => { form.td_server = v },
-})
-const mdValue = computed({
-  get: () => form.md_custom ? form.md_server : form.md_server,
-  set: (v) => { form.md_server = v },
-})
-
 function onTdSelect(v) {
   if (v === '__custom__') { form.td_custom = true }
   else { form.td_custom = false; form.td_server = v }
@@ -331,7 +315,6 @@ async function handleLogin() {
       md_server: form.md_server,
       app_id:    form.app_id,
       auth_code: form.auth_code,
-      gateway_type: form.gateway_type,
     })
 
     const timeoutPromise = new Promise((_, reject) => {

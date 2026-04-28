@@ -74,6 +74,7 @@ class VnpyGateway(GatewayBase):
         self._connected_event = threading.Event()
         self._error_event = threading.Event()
         self._connect_errors: List[str] = []
+        self._connect_log_callback: Any = None
         self._vn_orders: Dict[str, Any] = {}
         self._order_meta: Dict[str, Tuple[str, Any]] = {}
         self.latest_ticks: Dict[str, MarketData] = {}
@@ -84,6 +85,7 @@ class VnpyGateway(GatewayBase):
         self._connected_event.clear()
         self._error_event.clear()
         self._connect_errors.clear()
+        self._connect_log_callback = config.get("log_callback")
 
         try:
             _ensure_vnpy_runtime_dir()
@@ -145,6 +147,10 @@ class VnpyGateway(GatewayBase):
 
         self.status = TradingStatus.ERROR
         return False
+
+    def connection_error_summary(self) -> str:
+        """Return a concise summary of CTP connection errors captured during login."""
+        return "；".join(self._connect_errors[-5:])
 
     def disconnect(self) -> None:
         """Disconnect CTP and stop vn.py event engine."""
@@ -247,13 +253,39 @@ class VnpyGateway(GatewayBase):
         log = event.data
         msg = getattr(log, "msg", str(log))
         logger.info("[vn.py] %s", msg)
+        self._emit_connect_log(msg)
 
         if self.status == TradingStatus.CONNECTING:
             if "结算信息确认成功" in msg or "合约信息查询成功" in msg:
                 self._connected_event.set()
-            elif "失败" in msg or "拒绝" in msg:
-                self._connect_errors.append(msg)
+            elif self._is_connect_error(msg):
+                self._remember_connect_error(msg)
                 self._error_event.set()
+
+    def _emit_connect_log(self, msg: str) -> None:
+        if self._connect_log_callback:
+            try:
+                self._connect_log_callback(f"vn.py: {msg}")
+            except Exception:
+                logger.exception("[vn.py] connect log callback failed")
+
+    def _remember_connect_error(self, msg: str) -> None:
+        if msg and msg not in self._connect_errors:
+            self._connect_errors.append(msg)
+
+    @staticmethod
+    def _is_connect_error(msg: str) -> bool:
+        error_keywords = (
+            "失败",
+            "拒绝",
+            "报错",
+            "错误",
+            "断开",
+            "decode err",
+            "shake hand err",
+        )
+        normalized_msg = msg.lower()
+        return any(keyword.lower() in normalized_msg for keyword in error_keywords)
 
     def _on_vnpy_account(self, event: Any) -> None:
         data = event.data

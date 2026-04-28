@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 from .types import TradingStatus, AccountInfo, MarketData
-from .gateway import GatewayBase, SimulatedGateway
+from .gateway import GatewayBase, create_gateway
 from .errors import TradingError
 from .order_manager import OrderManager, PreOrder
 from .risk import RiskManager
@@ -27,7 +27,7 @@ class TradingEngine:
     """实盘交易引擎"""
 
     def __init__(self, gateway: GatewayBase = None):
-        self.gateway = gateway or SimulatedGateway()
+        self.gateway = gateway or create_gateway("vnpy")
         self.strategy = None
         self.status = TradingStatus.STOPPED
 

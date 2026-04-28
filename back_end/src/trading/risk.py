@@ -1,5 +1,5 @@
 """
-Pre-order risk controls for live and simulated trading.
+Pre-order risk controls for live trading.
 
 The checks are intentionally conservative and local. They run before any order
 reaches the gateway, so both manual orders and strategy-generated signals share

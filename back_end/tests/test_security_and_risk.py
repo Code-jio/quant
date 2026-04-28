@@ -60,7 +60,7 @@ class RiskManagerTest(unittest.TestCase):
 
     def test_configure_reads_nested_risk_config(self):
         manager = RiskManager()
-        manager.configure({"gateway": "simulated", "risk": {"max_order_volume": 1}})
+        manager.configure({"gateway": "vnpy", "risk": {"max_order_volume": 1}})
 
         result = manager.check_signal(self._signal(volume=2))
 

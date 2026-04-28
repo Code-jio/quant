@@ -2,6 +2,42 @@ from fastapi.testclient import TestClient
 
 from src.api import create_app
 from src.api.security import SESSION_COOKIE_NAME
+from src.trading import GatewayBase
+from src.trading.types import AccountInfo, TradingStatus
+
+
+class FakeVnpyGateway(GatewayBase):
+    def __init__(self):
+        super().__init__("VNPY_CTP")
+
+    def connect(self, config):
+        self.status = TradingStatus.CONNECTED
+        self.account = AccountInfo(account_id="TEST001", balance=100000.0, available=100000.0)
+        return True
+
+    def disconnect(self):
+        self.status = TradingStatus.STOPPED
+
+    def send_order(self, signal):
+        return "TEST_ORDER_1"
+
+    def cancel_order(self, order_id):
+        return True
+
+    def query_account(self):
+        return self.account
+
+    def query_positions(self):
+        return []
+
+    def query_orders(self):
+        return []
+
+
+def install_fake_vnpy_gateway(monkeypatch):
+    import src.trading
+
+    monkeypatch.setattr(src.trading, "create_gateway", lambda gateway_type="vnpy": FakeVnpyGateway())
 
 
 def test_protected_endpoint_requires_session():
@@ -27,17 +63,18 @@ def test_health_and_metrics_are_public_and_structured():
     assert "quant_uptime_seconds" in metrics.text
 
 
-def test_simulated_login_sets_cookie_and_allows_protected_endpoint():
+def test_vnpy_login_sets_cookie_and_allows_protected_endpoint(monkeypatch):
+    install_fake_vnpy_gateway(monkeypatch)
     app = create_app()
 
     with TestClient(app) as client:
         login_response = client.post(
             "/auth/login",
             json={
-                "username": "simulate",
-                "password": "simulate",
-                "broker_id": "SIM",
-                "gateway_type": "simulated",
+                "username": "test-account",
+                "password": "test-password",
+                "broker_id": "2071",
+                "gateway_type": "vnpy",
             },
         )
         assert login_response.status_code == 200
@@ -53,17 +90,18 @@ def test_simulated_login_sets_cookie_and_allows_protected_endpoint():
         assert logout_response.json()["success"] is True
 
 
-def test_audit_events_are_available_after_login():
+def test_audit_events_are_available_after_login(monkeypatch):
+    install_fake_vnpy_gateway(monkeypatch)
     app = create_app()
 
     with TestClient(app) as client:
         client.post(
             "/auth/login",
             json={
-                "username": "simulate",
-                "password": "simulate",
-                "broker_id": "SIM",
-                "gateway_type": "simulated",
+                "username": "test-account",
+                "password": "test-password",
+                "broker_id": "2071",
+                "gateway_type": "vnpy",
             },
         )
 

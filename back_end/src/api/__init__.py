@@ -79,7 +79,7 @@ class LoginRequest(BaseModel):
     md_server:  str = "tcp://114.94.128.1:42213"
     app_id:     str = "client_TraderMaster_v1.0.0"
     auth_code:  str = ""
-    gateway_type: str = "vnpy"   # "vnpy" | "ctp" | "simulated"
+    gateway_type: str = "vnpy"   # "vnpy" | "ctp"
     environment: str = "测试"     # vn.py CTP 柜台环境："实盘" | "测试"
 
 
@@ -1329,7 +1329,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         """
         接受 CTP 账户配置，连接交易前置和行情前置。
         连接过程最长等待 35 秒。成功后返回会话 token。
-        若用户名为 '模拟' 或 'simulate'，则使用模拟网关快速登录。
+        当前仅支持 vn.py/CTP 网关；登录成功后返回会话 token。
         """
         from ..trading import create_gateway
 
@@ -1351,12 +1351,11 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
 
         # 确定网关类型：ctp 作为 vn.py CTP 网关别名保留，便于兼容旧配置。
         requested_gateway = (body.gateway_type or "vnpy").lower()
-        if body.username in ("simulate", "模拟", "模拟登录") or requested_gateway == "simulated":
-            gateway_type = "simulated"
-            trading_state.add_log("使用模拟网关登录")
-        else:
-            gateway_type = "vnpy"
-            trading_state.add_log("使用 vn.py CTP 网关登录")
+        if requested_gateway not in {"vnpy", "ctp"}:
+            trading_state.add_log(f"不支持的网关类型: {body.gateway_type}")
+            raise HTTPException(status_code=400, detail="仅支持 vn.py/CTP 网关")
+        gateway_type = "vnpy"
+        trading_state.add_log("使用 vn.py CTP 网关登录")
 
         config: Dict[str, Any] = {
             "gateway":    gateway_type,
@@ -1370,6 +1369,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             "vnpy_environment": body.environment,
             "connect_timeout": 25,
             "initial_capital": 0.0,
+            "log_callback": trading_state.add_log,
         }
 
         trading_state.add_log(f"交易前置: {body.td_server}")
@@ -1409,6 +1409,14 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
                     gateway.disconnect()
                 except Exception:
                     logger.exception("[API] 登录失败后断开网关异常")
+            error_summary = ""
+            if gateway and hasattr(gateway, "connection_error_summary"):
+                error_summary = gateway.connection_error_summary()
+            if error_summary:
+                detail = f"vn.py/CTP 连接失败：{error_summary}"
+                trading_state.add_log(f"✘ {detail}")
+                raise HTTPException(status_code=502, detail=detail)
+
             trading_state.add_log("✘ 登录失败，请检查账户信息")
             raise HTTPException(status_code=401, detail="登录失败，请检查账户/密码/经纪商ID")
 

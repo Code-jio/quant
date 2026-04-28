@@ -51,7 +51,7 @@ python main.py
 
 4. **Trading Module** ([`src/trading/`](src/trading/__init__.py))
    - `GatewayBase`: Abstract gateway for broker connections
-   - `SimulatedGateway`: Paper trading implementation for testing
+   - `VnpyGateway`: vn.py CTP gateway adapter for test/live broker connections
    - `TradingEngine`: Orchestrates live trading execution
    - Callback-based architecture: `on_order`, `on_trade`, `on_position`, `on_account`, `on_tick`
 

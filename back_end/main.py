@@ -43,7 +43,15 @@ DEFAULT_CONFIG = {
         "position_ratio": 0.8
     },
     "trading": {
-        "gateway": "simulated",
+        "gateway": "vnpy",
+        "username": "",
+        "password": "",
+        "broker_id": "2071",
+        "td_server": "tcp://114.94.128.1:42205",
+        "md_server": "tcp://114.94.128.1:42213",
+        "app_id": "client_TraderMaster_v1.0.0",
+        "auth_code": "",
+        "vnpy_environment": "测试",
         "initial_capital": 1000000
     },
     "risk": {
@@ -123,7 +131,7 @@ def run_live_trading(config: dict):
     trading_config = dict(config.get('trading', {}))
     if 'risk' in config:
         trading_config['risk'] = config['risk']
-    gateway_type = trading_config.get('gateway')
+    gateway_type = trading_config.get('gateway', 'vnpy')
     logger.info(f"使用交易网关: {gateway_type}")
 
     gateway = create_gateway(gateway_type)
@@ -139,11 +147,6 @@ def run_live_trading(config: dict):
         return
 
     logger.info("实盘交易启动成功，按 Ctrl+C 停止")
-
-    if gateway_type == 'simulated':
-        symbols = [config['strategy']['symbol']]
-        base_prices = {symbols[0]: 4000.0}
-        gateway.start_quote_simulation(symbols, base_prices)
 
     try:
         while True:

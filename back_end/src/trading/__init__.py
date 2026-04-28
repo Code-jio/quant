@@ -5,7 +5,7 @@
 
 from .errors import TradingError, GatewayError
 from .types import TradingStatus, AccountInfo, MarketData
-from .gateway import GatewayBase, SimulatedGateway, create_gateway, GATEWAY_REGISTRY
+from .gateway import GatewayBase, create_gateway, GATEWAY_REGISTRY
 from .vnpy_gateway import VnpyGateway, create_vnpy_gateway
 from .engine import TradingEngine
 from .risk import RiskConfig, RiskCheckResult, RiskManager
@@ -16,7 +16,7 @@ from .order_manager import (
 __all__ = [
     "TradingError", "GatewayError",
     "TradingStatus", "AccountInfo", "MarketData",
-    "GatewayBase", "SimulatedGateway", "create_gateway", "GATEWAY_REGISTRY",
+    "GatewayBase", "create_gateway", "GATEWAY_REGISTRY",
     "VnpyGateway", "create_vnpy_gateway",
     "TradingEngine",
     "RiskConfig", "RiskCheckResult", "RiskManager",

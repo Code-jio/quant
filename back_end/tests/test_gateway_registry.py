@@ -1,11 +1,19 @@
-from src.trading import SimulatedGateway, create_gateway
+import pytest
+
+from src.trading import create_gateway
+from src.trading.errors import GatewayError
 from src.trading.vnpy_gateway import VnpyGateway
 
 
-def test_unknown_gateway_falls_back_to_simulated():
-    gateway = create_gateway("unknown")
+def test_unknown_gateway_is_rejected():
+    with pytest.raises(GatewayError):
+        create_gateway("unknown")
 
-    assert isinstance(gateway, SimulatedGateway)
+
+def test_default_gateway_uses_vnpy_gateway():
+    gateway = create_gateway()
+
+    assert isinstance(gateway, VnpyGateway)
 
 
 def test_ctp_alias_uses_vnpy_gateway():

@@ -31,13 +31,15 @@ async function request(path, options = {}) {
 
   // 401：清除凭证并跳转登录页
   if (res.status === 401) {
+    let detail = '未登录或登录失败'
+    try { detail = (await res.json()).detail ?? detail } catch { /* ignore */ }
     sessionStorage.removeItem('quant_token')
     sessionStorage.removeItem('quant_account_id')
     sessionStorage.removeItem('quant_session_active')
     localStorage.removeItem('quant_token')
     localStorage.removeItem('quant_account_id')
-    window.location.href = '/login'
-    throw new Error('401')
+    if (path !== '/auth/login') window.location.href = '/login'
+    throw new Error(detail)
   }
 
   if (!res.ok) {
