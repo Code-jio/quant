@@ -32,6 +32,7 @@
 
 import { ref, reactive, computed, onUnmounted } from 'vue'
 import { useAlertConfig } from '@/composables/useAlertConfig.js'
+import { buildWsUrl } from '@/config/network.js'
 
 // ── 常量 ──────────────────────────────────────────────────────────────────
 const WS_PATH        = '/ws/watch'
@@ -103,8 +104,7 @@ const _tickBuf     = {}
 
 // ── WebSocket URL ──────────────────────────────────────────────────────────
 function buildUrl() {
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${proto}//${location.host}${WS_PATH}`
+  return buildWsUrl(WS_PATH)
 }
 
 function _send(data) {

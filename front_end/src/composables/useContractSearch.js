@@ -9,6 +9,7 @@
  */
 
 import { ref, watch } from 'vue'
+import { buildApiUrl } from '@/config/network.js'
 
 // ── 常量 ──────────────────────────────────────────────────────────────────
 export const EXCHANGES = ['SHFE', 'DCE', 'CZCE', 'CFFEX', 'INE', 'GFEX']
@@ -57,8 +58,6 @@ const MAX_RECENT   = 5
 const MAX_FAV      = 30
 
 // ── API base ───────────────────────────────────────────────────────────────
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '/api'
-
 // ── 工具 ───────────────────────────────────────────────────────────────────
 function readLS(key, fallback) {
   try { return JSON.parse(localStorage.getItem(key)) ?? fallback }
@@ -132,7 +131,7 @@ export function useContractSearch() {
       if (exchange.value) p.set('exchange', exchange.value)
       p.set('limit', '60')
 
-      const res  = await fetch(`${API_BASE}/watch/search?${p}`)
+      const res  = await fetch(buildApiUrl(`/watch/search?${p}`), { credentials: 'include' })
       const data = await res.json()
 
       results.value = data.code === 0 ? (data.data ?? []) : []

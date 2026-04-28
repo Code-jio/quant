@@ -33,16 +33,16 @@ REST API 模块 - FastAPI + WebSocket + 身份认证
 import asyncio
 import json as _json
 import logging
-import secrets
+import os
 import time
 import traceback
 from collections import deque
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 
 import psutil
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
@@ -50,45 +50,21 @@ from pydantic import BaseModel
 from ..strategy import Direction, StrategyBase
 from ..trading import AccountInfo, GatewayBase, TradingEngine, TradingStatus
 from ..strategy import Signal, OrderType, OffsetFlag
+from .security import SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME, is_open_path, session_store
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# 会话管理（内存，单进程）
-# ---------------------------------------------------------------------------
-
-_sessions: Dict[str, datetime] = {}   # token → 过期时间
-_SESSION_TTL = timedelta(hours=24)
-
-# 不需要鉴权的路径前缀
-_OPEN_PATHS = {
-    "/auth/login", "/auth/logout", "/auth/status", "/auth/servers",
-    "/docs", "/openapi.json", "/redoc", "/ws-demo",
-    "/system/logs",           # 日志查询可无需登录（调试便利）
-    "/backtest/strategies",   # 策略列表无需登录
-    "/watch/search",           # 品种搜索无需登录
-    "/watch/kline",           # K线数据无需登录
-    "/watch/tick",            # 实时tick无需登录（轮询专用）
-}
+_DEFAULT_CORS_ORIGINS = (
+    "http://localhost:5173,"
+    "http://127.0.0.1:5173,"
+    "http://localhost:5174,"
+    "http://127.0.0.1:5174"
+)
 
 
-def _new_token() -> str:
-    return secrets.token_urlsafe(32)
-
-
-def _is_valid(token: str) -> bool:
-    exp = _sessions.get(token)
-    if exp is None:
-        return False
-    if datetime.now() > exp:
-        _sessions.pop(token, None)
-        return False
-    return True
-
-
-def _revoke(token: str):
-    _sessions.pop(token, None)
-
+def _cors_origins() -> List[str]:
+    raw = os.getenv("QUANT_CORS_ORIGINS", _DEFAULT_CORS_ORIGINS)
+    return [item.strip() for item in raw.split(",") if item.strip()]
 
 # ---------------------------------------------------------------------------
 # Pydantic 模型
@@ -102,11 +78,8 @@ class LoginRequest(BaseModel):
     md_server:  str = "tcp://114.94.128.1:42213"
     app_id:     str = "client_TraderMaster_v1.0.0"
     auth_code:  str = ""
-    # WonderTrader 专用字段（使用 gateway_type="wondertrader" 时生效）
-    gateway_type: str = "wondertrader"   # "ctp" | "wondertrader" | "simulated"
-    td_cfg:     str = ""        # wtpy 交易通道配置文件路径
-    env_cfg:    str = ""        # wtpy 环境配置文件路径
-    account_id: str = ""        # wtpy 账户 ID（可选，默认取 username）
+    gateway_type: str = "vnpy"   # "vnpy" | "ctp" | "simulated"
+    environment: str = "测试"     # vn.py CTP 柜台环境："实盘" | "测试"
 
 
 class LoginResponse(BaseModel):
@@ -1172,9 +1145,10 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=_cors_origins(),
         allow_methods=["*"],
         allow_headers=["*"],
+        allow_credentials=True,
     )
 
     # ── 鉴权中间件 ────────────────────────────────────────────────────────────
@@ -1182,17 +1156,17 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
     async def auth_middleware(request: Request, call_next):
         path = request.url.path
         # 开放路径（登录、状态查询、文档、WebSocket 握手）
-        if path in _OPEN_PATHS or path.startswith("/ws"):
+        if is_open_path(path):
             return await call_next(request)
 
         auth = request.headers.get("authorization", "")
-        if not auth.lower().startswith("bearer "):
+        token = auth[7:] if auth.lower().startswith("bearer ") else request.cookies.get(SESSION_COOKIE_NAME, "")
+        if not token:
             return JSONResponse(
                 {"detail": "未登录，请先连接交易账户"},
                 status_code=401,
             )
-        token = auth[7:]
-        if not _is_valid(token):
+        if not session_store.is_valid(token):
             return JSONResponse(
                 {"detail": "会话已过期，请重新登录"},
                 status_code=401,
@@ -1230,7 +1204,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             account_id = gw.account.account_id if hasattr(gw, "account") else ""
 
         return AuthStatusResponse(
-            logged_in         = bool(_sessions),
+            logged_in         = session_store.has_active_sessions(),
             gateway_connected = connected,
             gateway_status    = gw_status,
             gateway_name      = gw_name,
@@ -1244,7 +1218,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         summary="CTP 账户登录",
         tags=["认证"],
     )
-    async def do_login(body: LoginRequest):
+    async def do_login(body: LoginRequest, response: Response):
         """
         接受 CTP 账户配置，连接交易前置和行情前置。
         连接过程最长等待 35 秒。成功后返回会话 token。
@@ -1260,13 +1234,14 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             trading_state.add_log("检测到已有连接，正在断开…")
             trading_state.clear_main()
 
-        # 确定网关类型
-        is_simulate = body.username in ( "simulate", "模拟登录")
-        if body.gateway_type in ("wondertrader", "wt"):
-            trading_state.add_log("使用 WonderTrader 网关登录")
-            gateway_type = "wondertrader"
+        # 确定网关类型：ctp 作为 vn.py CTP 网关别名保留，便于兼容旧配置。
+        requested_gateway = (body.gateway_type or "vnpy").lower()
+        if body.username in ("simulate", "模拟", "模拟登录") or requested_gateway == "simulated":
+            gateway_type = "simulated"
+            trading_state.add_log("使用模拟网关登录")
         else:
-            gateway_type = "ctp"
+            gateway_type = "vnpy"
+            trading_state.add_log("使用 vn.py CTP 网关登录")
 
         config: Dict[str, Any] = {
             "gateway":    gateway_type,
@@ -1277,37 +1252,48 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             "md_server":  body.md_server,
             "app_id":     body.app_id,
             "auth_code":  body.auth_code,
+            "vnpy_environment": body.environment,
+            "connect_timeout": 25,
             "initial_capital": 0.0,
         }
 
-        # WonderTrader 专用配置
-        if gateway_type == "wondertrader":
-            config["account_id"] = body.account_id or body.username
-            config["td_cfg"]     = body.td_cfg  or "config/wt/tdcfg.yaml"
-            config["env_cfg"]    = body.env_cfg or "config/wt/env.yaml"
-            trading_state.add_log(f"WonderTrader 交易配置: {config['td_cfg']}")
-        else:
-            trading_state.add_log(f"交易前置: {body.td_server}")
-            trading_state.add_log(f"行情前置: {body.md_server}")
+        trading_state.add_log(f"交易前置: {body.td_server}")
+        trading_state.add_log(f"行情前置: {body.md_server}")
 
+        gateway = None
         try:
             gateway = create_gateway(gateway_type)
             loop    = asyncio.get_running_loop()
-            trading_state.add_log("正在连接，请稍候（最长 30 秒）…")
+            trading_state.add_log("正在连接，请稍候（最长 35 秒）…")
 
             success = await asyncio.wait_for(
                 loop.run_in_executor(None, gateway.connect, config),
-                timeout=30,
+                timeout=35,
             )
         except asyncio.TimeoutError:
-            trading_state.add_log("✘ 连接超时（30s）")
-            logger.error("[API] 登录超时（30s），请检查网络和服务器地址")
+            if gateway:
+                try:
+                    gateway.disconnect()
+                except Exception:
+                    logger.exception("[API] 登录超时后断开网关异常")
+            trading_state.add_log("✘ 连接超时（35s）")
+            logger.error("[API] 登录超时（35s），请检查网络和服务器地址")
             raise HTTPException(status_code=408, detail="连接超时，请检查服务器地址或网络")
         except Exception as exc:
+            if gateway:
+                try:
+                    gateway.disconnect()
+                except Exception:
+                    logger.exception("[API] 登录异常后断开网关异常")
             trading_state.add_log(f"✘ 连接异常: {exc}")
             raise HTTPException(status_code=500, detail=f"连接异常: {exc}")
 
         if not success:
+            if gateway:
+                try:
+                    gateway.disconnect()
+                except Exception:
+                    logger.exception("[API] 登录失败后断开网关异常")
             trading_state.add_log("✘ 登录失败，请检查账户信息")
             raise HTTPException(status_code=401, detail="登录失败，请检查账户/密码/经纪商ID")
 
@@ -1325,13 +1311,21 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         # 用真实余额覆盖 initial_capital，并重置当日基准
         if balance > 0:
             config["initial_capital"] = balance
+        engine.configure_risk(config)
         trading_state.set_main_engine(engine, config)
         trading_state._day_open_balance = balance  # 以登录时余额作为日内基准
+        engine.risk_manager.set_day_open_balance(balance)
 
         trading_state.add_log(f"✔ 登录成功，账户: {account_id}，当前余额: ¥{balance:,.2f}（用作初始资金基准）")
 
-        token = _new_token()
-        _sessions[token] = datetime.now() + _SESSION_TTL
+        token = session_store.create()
+        response.set_cookie(
+            key=SESSION_COOKIE_NAME,
+            value=token,
+            max_age=SESSION_COOKIE_MAX_AGE,
+            httponly=True,
+            samesite="lax",
+        )
 
         return LoginResponse(
             success        = True,
@@ -1347,11 +1341,16 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         auth  = request.headers.get("authorization", "")
         token = auth[7:] if auth.lower().startswith("bearer ") else ""
         if token:
-            _revoke(token)
+            session_store.revoke(token)
+        request_token = request.cookies.get(SESSION_COOKIE_NAME, "")
+        if request_token:
+            session_store.revoke(request_token)
+        response = JSONResponse({"success": True, "message": "已断开连接"})
+        response.delete_cookie(SESSION_COOKIE_NAME)
         trading_state.add_log("用户主动断开连接")
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, trading_state.clear_main)
-        return {"success": True, "message": "已断开连接"}
+        return response
 
     # ==================================================================
     # REST 端点
@@ -1597,6 +1596,9 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         try:
             order_id = engine.send_signal(signal)
             if not order_id:
+                reason = getattr(engine, "last_reject_reason", "")
+                if reason:
+                    raise HTTPException(status_code=400, detail=f"风控拒单: {reason}")
                 raise HTTPException(status_code=500, detail="下单失败，引擎未返回订单号")
             return {
                 "success": True,
@@ -1695,6 +1697,9 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         try:
             order_id = engine.send_signal(signal)
             if not order_id:
+                reason = getattr(engine, "last_reject_reason", "")
+                if reason:
+                    raise HTTPException(status_code=400, detail=f"风控拒单: {reason}")
                 raise HTTPException(status_code=500, detail="平仓下单失败")
             return {
                 "success": True,

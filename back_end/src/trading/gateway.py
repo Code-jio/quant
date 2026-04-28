@@ -365,17 +365,13 @@ class SimulatedGateway(GatewayBase):
 GATEWAY_REGISTRY = {
     "simulated": SimulatedGateway,
     "ctp": lambda: __import__(
-        'src.trading.ctp_native_gateway',
-        fromlist=['create_ctp_native_gateway']
-    ).create_ctp_native_gateway(),
-    "wondertrader": lambda: __import__(
-        'src.trading.wt_gateway',
-        fromlist=['create_wt_gateway']
-    ).create_wt_gateway(),
-    "wt": lambda: __import__(
-        'src.trading.wt_gateway',
-        fromlist=['create_wt_gateway']
-    ).create_wt_gateway(),
+        'src.trading.vnpy_gateway',
+        fromlist=['create_vnpy_gateway']
+    ).create_vnpy_gateway(),
+    "vnpy": lambda: __import__(
+        'src.trading.vnpy_gateway',
+        fromlist=['create_vnpy_gateway']
+    ).create_vnpy_gateway(),
 }
 
 

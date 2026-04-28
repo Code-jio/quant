@@ -13,153 +13,14 @@
       </div>
     </header>
 
-    <!-- ── 配置面板 ─────────────────────────────────────────────── -->
-    <el-card class="bt-config-card" shadow="never">
-      <template #header>
-        <span class="card-title">策略配置</span>
-      </template>
-
-      <el-form :model="form" label-position="top" size="default">
-        <!-- 第一行：策略 / 合约 / 日期 -->
-        <el-row :gutter="16">
-          <el-col :xs="24" :sm="12" :md="5">
-            <el-form-item label="策略">
-              <el-select v-model="form.strategy_name" @change="onStrategyChange" style="width:100%">
-                <el-option
-                  v-for="s in strategyCatalog"
-                  :key="s.name"
-                  :value="s.name"
-                  :label="s.label"
-                >
-                  <div class="strategy-option">
-                    <span>{{ s.label }}</span>
-                    <el-tag size="small" type="info">{{ s.desc }}</el-tag>
-                  </div>
-                </el-option>
-              </el-select>
-            </el-form-item>
-          </el-col>
-
-          <el-col :xs="24" :sm="12" :md="4">
-            <el-form-item label="合约代码">
-              <el-input v-model="form.strategy_params.symbol" placeholder="IF9999" />
-            </el-form-item>
-          </el-col>
-
-          <el-col :xs="24" :sm="12" :md="5">
-            <el-form-item label="开始日期">
-              <el-date-picker
-                v-model="form.start_date"
-                type="date"
-                value-format="YYYY-MM-DD"
-                style="width:100%"
-              />
-            </el-form-item>
-          </el-col>
-
-          <el-col :xs="24" :sm="12" :md="5">
-            <el-form-item label="结束日期">
-              <el-date-picker
-                v-model="form.end_date"
-                type="date"
-                value-format="YYYY-MM-DD"
-                style="width:100%"
-              />
-            </el-form-item>
-          </el-col>
-
-          <el-col :xs="24" :sm="12" :md="5">
-            <el-form-item label="初始资金">
-              <el-input-number
-                v-model="form.initial_capital"
-                :min="10000"
-                :step="100000"
-                :controls="false"
-                style="width:100%"
-              />
-            </el-form-item>
-          </el-col>
-        </el-row>
-
-        <!-- 第二行：交易成本 -->
-        <el-row :gutter="16">
-          <el-col :xs="24" :sm="8" :md="4">
-            <el-form-item label="手续费率">
-              <el-input-number
-                v-model="form.commission_rate"
-                :precision="4"
-                :step="0.0001"
-                :min="0"
-                :controls="false"
-                style="width:100%"
-              />
-            </el-form-item>
-          </el-col>
-
-          <el-col :xs="24" :sm="8" :md="4">
-            <el-form-item label="滑点比例">
-              <el-input-number
-                v-model="form.slip_rate"
-                :precision="4"
-                :step="0.0001"
-                :min="0"
-                :controls="false"
-                style="width:100%"
-              />
-            </el-form-item>
-          </el-col>
-
-          <el-col :xs="24" :sm="8" :md="4">
-            <el-form-item label="保证金比例">
-              <el-input-number
-                v-model="form.margin_rate"
-                :precision="2"
-                :step="0.01"
-                :min="0.01"
-                :max="1"
-                :controls="false"
-                style="width:100%"
-              />
-            </el-form-item>
-          </el-col>
-
-          <!-- 策略专属参数（动态渲染） -->
-          <el-col
-            v-for="(val, key) in editableStrategyParams"
-            :key="key"
-            :xs="24"
-            :sm="8"
-            :md="3"
-          >
-            <el-form-item :label="paramLabel(key)">
-              <el-input-number
-                v-if="typeof val === 'number'"
-                v-model="form.strategy_params[key]"
-                :precision="val % 1 !== 0 ? 2 : 0"
-                :step="val % 1 !== 0 ? 0.1 : 1"
-                :controls="false"
-                style="width:100%"
-              />
-              <el-input v-else v-model="form.strategy_params[key]" />
-            </el-form-item>
-          </el-col>
-
-          <el-col :xs="24" :sm="24" :md="5" class="run-col">
-            <el-button
-              type="primary"
-              size="large"
-              :loading="running"
-              :disabled="running"
-              @click="doRunBacktest"
-              class="run-btn"
-            >
-              <el-icon v-if="!running"><VideoPlay /></el-icon>
-              {{ running ? '回测中…' : '运行回测' }}
-            </el-button>
-          </el-col>
-        </el-row>
-      </el-form>
-    </el-card>
+    <BacktestConfigForm
+      v-model:form="form"
+      :strategy-catalog="strategyCatalog"
+      :editable-strategy-params="editableStrategyParams"
+      :running="running"
+      @strategy-change="onStrategyChange"
+      @run="doRunBacktest"
+    />
 
     <!-- ── 进度提示 ─────────────────────────────────────────────── -->
     <el-alert
@@ -257,9 +118,11 @@
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { ArrowLeft, VideoPlay } from '@element-plus/icons-vue'
+import { ArrowLeft } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
 import { fetchBacktestStrategies, runBacktest } from '@/api/index.js'
+import { COMMON_PARAM_KEYS, DEFAULT_BACKTEST_FORM } from '@/config/backtest.js'
+import BacktestConfigForm from '@/components/BacktestConfigForm.vue'
 
 const router = useRouter()
 
@@ -277,39 +140,15 @@ const heatChartRef   = ref(null)
 let equityChart, distChart, heatChart
 
 // ── 表单 ────────────────────────────────────────────────────────────────
-const form = ref({
-  strategy_name:   'ma_cross',
-  strategy_params: { symbol: 'IF9999', fast_period: 10, slow_period: 20, position_ratio: 0.8 },
-  start_date:      '2023-01-01',
-  end_date:        '2024-12-31',
-  initial_capital: 1_000_000,
-  commission_rate: 0.0003,
-  slip_rate:       0.0001,
-  margin_rate:     0.12,
-  sample_days:     700,
-})
+const form = ref(structuredClone(DEFAULT_BACKTEST_FORM))
 
 // 仅展示策略专属参数（排除 symbol 和通用字段）
-const COMMON_PARAM_KEYS = new Set(['symbol'])
 const editableStrategyParams = computed(() => {
   const params = form.value.strategy_params
   return Object.fromEntries(
     Object.entries(params).filter(([k]) => !COMMON_PARAM_KEYS.has(k))
   )
 })
-
-function paramLabel(key) {
-  const labelMap = {
-    fast_period:      '快线周期',
-    slow_period:      '慢线周期',
-    position_ratio:   '仓位比例',
-    rsi_period:       'RSI 周期',
-    oversold:         '超卖阈值',
-    overbought:       '超买阈值',
-    lookback_period:  '回看周期',
-  }
-  return labelMap[key] ?? key
-}
 
 // ── 策略切换：重置参数 ────────────────────────────────────────────────
 function onStrategyChange(name) {
@@ -606,8 +445,8 @@ function renderEquityChart() {
           ? `<br/>盈亏: <span style="color:${ti.pnl >= 0 ? '#3fb950' : '#f85149'}">${ti.pnl >= 0 ? '+' : ''}¥${fmt(ti.pnl)}</span>`
           : ''
         return (
-          `<b>${ti.date}</b>　<span style="color:${ti.type.startsWith('buy') || ti.type === 'cover_close' ? '#3fb950' : '#f85149'}">${typeLabel[ti.type] ?? ti.type}</span><br/>` +
-          `合约: ${ti.symbol}　数量: ${ti.volume} 手<br/>` +
+          `<b>${ti.date}</b>&nbsp;<span style="color:${ti.type.startsWith('buy') || ti.type === 'cover_close' ? '#3fb950' : '#f85149'}">${typeLabel[ti.type] ?? ti.type}</span><br/>` +
+          `合约: ${ti.symbol}&nbsp;数量: ${ti.volume} 手<br/>` +
           `成交价: <b>¥${ti.trade_price.toLocaleString()}</b>` +
           pnlStr +
           `<br/>手续费: ¥${ti.commission}`

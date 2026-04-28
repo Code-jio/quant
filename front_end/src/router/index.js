@@ -51,7 +51,7 @@ router.beforeEach((to) => {
   // 更新页面标题
   if (to.meta.title) document.title = `${to.meta.title} · 量化交易系统`
 
-  const token = localStorage.getItem('quant_token')
+  const token = sessionStorage.getItem('quant_token') || sessionStorage.getItem('quant_session_active')
 
   // 需要登录但未登录 → 跳到登录页
   if (to.meta.requiresAuth && !token) return { name: 'Login' }

@@ -10,28 +10,7 @@
 
 import { ref } from 'vue'
 import { fetchKline } from '@/api/index.js'
-
-// ── 常量 ──────────────────────────────────────────────────────────────────
-
-/** 周期列表 */
-export const INTERVALS = [
-  { label: '1分',  value: '1m'  },
-  { label: '5分',  value: '5m'  },
-  { label: '15分', value: '15m' },
-  { label: '30分', value: '30m' },
-  { label: '1时',  value: '1h'  },
-  { label: '4时',  value: '4h'  },
-  { label: '日线', value: '1d'  },
-  { label: '周线', value: '1w'  },
-]
-
-/** 默认均线配置 */
-export const DEFAULT_MA_CONFIG = [
-  { n: 5,  color: '#f5c842', visible: true, dashType: 'solid' },
-  { n: 10, color: '#f09a00', visible: true, dashType: 'solid' },
-  { n: 20, color: '#f06400', visible: true, dashType: 'solid' },
-  { n: 30, color: '#cc4444', visible: true, dashType: 'solid' },
-]
+export { DEFAULT_MA_CONFIG, INTERVALS } from '@/config/kline.js'
 
 // ── 工具函数 ───────────────────────────────────────────────────────────────
 

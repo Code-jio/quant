@@ -301,7 +301,7 @@ function stopPolling() {
 onUnmounted(stopPolling)
 
 // ── 登录处理 ──────────────────────────────────────────────────────────────
-const LOGIN_TIMEOUT = 10_000
+const LOGIN_TIMEOUT = 35_000
 
 async function handleLogin() {
   try {
@@ -324,10 +324,11 @@ async function handleLogin() {
       md_server: form.md_server,
       app_id:    form.app_id,
       auth_code: form.auth_code,
+      gateway_type: 'vnpy',
     })
 
     const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('登录超时（10s），请检查网络和服务器地址')), LOGIN_TIMEOUT)
+      setTimeout(() => reject(new Error('登录超时（35s），请检查网络和服务器地址')), LOGIN_TIMEOUT)
     })
 
     const res = await Promise.race([loginPromise, timeoutPromise])

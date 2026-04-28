@@ -19,6 +19,7 @@ from .types import TradingStatus, AccountInfo, MarketData
 from .gateway import GatewayBase, SimulatedGateway
 from .errors import TradingError
 from .order_manager import OrderManager, PreOrder
+from .risk import RiskManager
 from ..common.exceptions import ExceptionHandler
 
 
@@ -40,6 +41,8 @@ class TradingEngine:
         self.order_manager.on_trade_callback = self._on_trade
         self.order_manager.on_pre_order_status_change = self._on_pre_order_status_change
 
+        self.risk_manager = RiskManager()
+        self.last_reject_reason = ""
         self._error_count = 0
         self._max_errors = 10
         self.exception_handler = ExceptionHandler()
@@ -47,6 +50,13 @@ class TradingEngine:
     def set_strategy(self, strategy):
         """设置策略"""
         self.strategy = strategy
+
+    def configure_risk(self, config: Dict[str, Any] = None):
+        """Configure pre-order risk controls."""
+        config = config or {}
+        self.risk_manager.configure(config)
+        if config.get("initial_capital"):
+            self.risk_manager.set_day_open_balance(float(config.get("initial_capital") or 0.0))
 
     def start(self, config: Dict[str, Any] = None) -> bool:
         """启动交易引擎"""
@@ -56,6 +66,7 @@ class TradingEngine:
                 return False
 
             config = config or {}
+            self.configure_risk(config)
 
             self.status = TradingStatus.CONNECTING
 
@@ -106,16 +117,29 @@ class TradingEngine:
 
     def send_signal(self, signal: 'Signal') -> str:
         """发送交易信号"""
-        from ..strategy import Signal as SignalClass
+        self.last_reject_reason = ""
         if self.status not in (TradingStatus.TRADING, TradingStatus.CONNECTED):
             # 也检查网关状态，允许网关已连接但引擎未正式 start 的场景（手动交易）
             if self.gateway.status not in (TradingStatus.CONNECTED, TradingStatus.TRADING):
-                logger.warning("交易引擎未在运行")
+                logger.warning("交易引擎未连接")
+                self.last_reject_reason = "Trading engine is not connected"
                 return ""
 
         try:
+            risk_result = self.risk_manager.check_signal(
+                signal,
+                positions=self.gateway.positions,
+                active_orders=self.gateway.orders.values(),
+                account=getattr(self.gateway, "account", None),
+            )
+            if not risk_result.allowed:
+                self.last_reject_reason = risk_result.reason
+                logger.warning(f"风控拒单: {risk_result.reason}")
+                return ""
+
             order_id = self.order_manager.submit_order(signal)
             if order_id:
+                self.risk_manager.record_order()
                 logger.info(f"发送信号: {signal.symbol} {signal.direction.value} {signal.volume}@{signal.price}")
             return order_id
         except Exception as e:

@@ -45,6 +45,17 @@ DEFAULT_CONFIG = {
     "trading": {
         "gateway": "simulated",
         "initial_capital": 1000000
+    },
+    "risk": {
+        "enabled": True,
+        "max_order_volume": 1000,
+        "max_position_volume": 10000,
+        "max_active_orders": 200,
+        "max_orders_per_minute": 120,
+        "max_daily_loss_ratio": 0.10,
+        "allow_market_orders": True,
+        "allowed_symbols": [],
+        "blocked_symbols": []
     }
 }
 
@@ -109,7 +120,9 @@ def run_live_trading(config: dict):
     logger.info("开始实盘交易")
     logger.info("=" * 60)
 
-    trading_config = config.get('trading', {})
+    trading_config = dict(config.get('trading', {}))
+    if 'risk' in config:
+        trading_config['risk'] = config['risk']
     gateway_type = trading_config.get('gateway')
     logger.info(f"使用交易网关: {gateway_type}")
 

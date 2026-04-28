@@ -13,7 +13,7 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "WebFetch(domain:github.com)",
       "Bash(python -c ' *)",
-      "Bash(d:/quant/.venv/Scripts/python -c \"import wtpy; print\\('wtpy version:', wtpy.__version__\\)\")",
+      "Bash(d:/quant/.venv/Scripts/python -c \"import vnpy; print\\('vnpy version:', vnpy.__version__\\)\")",
       "Bash(d:/quant/.venv/Scripts/python -c ' *)"
     ]
   }

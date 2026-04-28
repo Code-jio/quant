@@ -25,6 +25,10 @@ back_end/logs/ctp_flow_md/
 TRADE_*/
 MD_*/
 
+# ── vn.py 运行目录 ───────────────────────────────────────────
+.vntrader/
+back_end/.vntrader/
+
 # ── Python ──────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
@@ -70,9 +74,16 @@ Thumbs.db
 
 # ── 测试 / 覆盖率 ────────────────────────────────────────────
 .pytest_cache/
+pytest-cache-files-*/
+back_end/pytest-cache-files-*/
+.ruff_cache/
+.mypy_cache/
 .coverage
 htmlcov/
 coverage.xml
+front_end/coverage/
+front_end/playwright-report/
+front_end/test-results/
 
 # ── 系统 ─────────────────────────────────────────────────────
 desktop.ini

@@ -5,6 +5,7 @@
  * 支持指数退避自动重连、页面可见性感知暂停。
  */
 import { reactive, ref, onUnmounted } from 'vue'
+import { buildWsUrl } from '@/config/network.js'
 
 const DEFAULT_DATA = {
   accountId:       '',
@@ -29,10 +30,7 @@ const MAX_BACKOFF = 30_000
 const PING_INTERVAL = 20_000
 
 export function useDashboardWs(url) {
-  const wsUrl = url ?? (() => {
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    return `${proto}//${location.host}/ws/dashboard`
-  })()
+  const wsUrl = url ?? buildWsUrl('/ws/dashboard')
 
   const connected = ref(false)
   const data      = reactive({ ...DEFAULT_DATA })

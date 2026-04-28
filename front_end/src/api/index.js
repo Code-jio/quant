@@ -3,14 +3,14 @@
  *
  * - 开发环境：请求通过 Vite proxy 转发（/api → http://localhost:8000）
  * - 生产环境：设置 VITE_API_BASE_URL=http://<backend>:<port>
- * - 所有需要鉴权的请求自动附加 Authorization: Bearer <token>
- * - 收到 401 时自动清除本地 token 并跳转登录页
+ * - 登录后优先使用后端 HttpOnly Cookie，保留 sessionStorage token 作为兼容兜底
+ * - 收到 401 时自动清除会话状态并跳转登录页
  */
 
-const BASE = import.meta.env.VITE_API_BASE_URL ?? '/api'
+import { buildApiUrl } from '@/config/network.js'
 
 function getToken() {
-  return localStorage.getItem('quant_token') ?? ''
+  return sessionStorage.getItem('quant_token') ?? ''
 }
 
 async function request(path, options = {}) {
@@ -23,13 +23,17 @@ async function request(path, options = {}) {
 
   let res
   try {
-    res = await fetch(`${BASE}${path}`, { ...options, headers })
+    res = await fetch(buildApiUrl(path), { ...options, headers, credentials: 'include' })
   } catch (e) {
-    throw new Error(`网络请求失败: ${e.message}`)
+    const message = e instanceof Error ? e.message : String(e)
+    throw new Error(`网络请求失败: ${message}`, { cause: e })
   }
 
   // 401：清除凭证并跳转登录页
   if (res.status === 401) {
+    sessionStorage.removeItem('quant_token')
+    sessionStorage.removeItem('quant_account_id')
+    sessionStorage.removeItem('quant_session_active')
     localStorage.removeItem('quant_token')
     localStorage.removeItem('quant_account_id')
     window.location.href = '/login'

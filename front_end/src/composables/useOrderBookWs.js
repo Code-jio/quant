@@ -9,14 +9,14 @@
  */
 import { reactive, ref, computed, onUnmounted } from 'vue'
 import { fetchOrders, fetchTrades, fetchPositions } from '@/api/index.js'
+import { buildWsUrl } from '@/config/network.js'
 
 const MAX_TRADES  = 500
 const MAX_BACKOFF = 30_000
 const PING_MS     = 20_000
 
 function makeWs(urlPath, onMsg, onOpen) {
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const url   = `${proto}//${location.host}${urlPath}`
+  const url   = buildWsUrl(urlPath)
 
   let ws         = null
   let retryDelay = 1_000

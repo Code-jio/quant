@@ -6,8 +6,9 @@
 from .errors import TradingError, GatewayError
 from .types import TradingStatus, AccountInfo, MarketData
 from .gateway import GatewayBase, SimulatedGateway, create_gateway, GATEWAY_REGISTRY
-from .wt_gateway import WtGateway, create_wt_gateway
+from .vnpy_gateway import VnpyGateway, create_vnpy_gateway
 from .engine import TradingEngine
+from .risk import RiskConfig, RiskCheckResult, RiskManager
 from .order_manager import (
     OrderManager, PreOrder, PreOrderType, PreOrderStatus
 )
@@ -16,7 +17,8 @@ __all__ = [
     "TradingError", "GatewayError",
     "TradingStatus", "AccountInfo", "MarketData",
     "GatewayBase", "SimulatedGateway", "create_gateway", "GATEWAY_REGISTRY",
-    "WtGateway", "create_wt_gateway",
+    "VnpyGateway", "create_vnpy_gateway",
     "TradingEngine",
+    "RiskConfig", "RiskCheckResult", "RiskManager",
     "OrderManager", "PreOrder", "PreOrderType", "PreOrderStatus",
 ]

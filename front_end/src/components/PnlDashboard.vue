@@ -13,16 +13,13 @@
  */
 import { ref, computed, watch, onUnmounted } from 'vue'
 import { useSystemWs } from '@/composables/useSystemWs.js'
+import { buildWsUrl } from '@/config/network.js'
 
 // ── Props ─────────────────────────────────────────────────────────────────
 const props = defineProps({
   wsUrl: {
     type: String,
-    default: () => {
-      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-      // 开发时走 Vite proxy（同源 /ws 路径），生产时仍走同源
-      return `${proto}//${location.host}/ws/system`
-    },
+    default: () => buildWsUrl('/ws/system'),
   },
 })
 

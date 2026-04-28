@@ -110,13 +110,7 @@ import * as echarts from 'echarts'
 import { useSystemWs } from '@/composables/useSystemWs.js'
 
 // ── WebSocket 数据 ─────────────────────────────────────────────────────
-const WS_URL = (() => {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-  const host  = import.meta.env.VITE_WS_HOST ?? location.host
-  return `${proto}://${host}/ws/system`
-})()
-
-const { connected: wsConnected, data } = useSystemWs(WS_URL)
+const { connected: wsConnected, data } = useSystemWs()
 
 // ── 60s 滚动历史 ──────────────────────────────────────────────────────
 const MAX_HISTORY = 60

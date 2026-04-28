@@ -13,12 +13,13 @@
  */
 
 import { ref, reactive, onMounted, onUnmounted } from 'vue'
+import { buildWsUrl } from '@/config/network.js'
 
 const RECONNECT_BASE  = 3_000   // 初始重连延迟 3s
 const RECONNECT_MAX   = 30_000  // 最大重连延迟 30s
 const HEARTBEAT_EVERY = 30_000  // 心跳间隔 30s
 
-export function useSystemWs(url) {
+export function useSystemWs(url = buildWsUrl('/ws/system')) {
   const connected = ref(false)
 
   const data = reactive({

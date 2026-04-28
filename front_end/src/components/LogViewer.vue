@@ -120,13 +120,7 @@ import { Search, Delete, VideoPause, VideoPlay, Document } from '@element-plus/i
 import { useLogsWs } from '@/composables/useLogsWs.js'
 
 // ── WebSocket 数据 ─────────────────────────────────────────────────────
-const WS_URL = (() => {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-  const host  = import.meta.env.VITE_WS_HOST ?? location.host
-  return `${proto}://${host}/ws/logs`
-})()
-
-const { connected: wsConnected, logs, paused, pause, resume, clear } = useLogsWs(WS_URL)
+const { connected: wsConnected, logs, paused, pause, resume, clear } = useLogsWs()
 
 // ── 本地过滤状态 ──────────────────────────────────────────────────────
 const levelFilter  = ref('')

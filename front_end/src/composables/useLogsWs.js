@@ -17,13 +17,14 @@
  */
 
 import { ref, onMounted, onUnmounted } from 'vue'
+import { buildWsUrl } from '@/config/network.js'
 
 const MAX_LOGS        = 500
 const RECONNECT_BASE  = 3_000
 const RECONNECT_MAX   = 30_000
 const HEARTBEAT_EVERY = 30_000
 
-export function useLogsWs(url) {
+export function useLogsWs(url = buildWsUrl('/ws/logs')) {
   const connected = ref(false)
   const logs      = ref([])    // LogEntry[]
   const paused    = ref(false)

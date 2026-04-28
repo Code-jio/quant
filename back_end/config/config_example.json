@@ -17,7 +17,7 @@
   "mode": "live",
 
   "trading": {
-    "gateway": "ctp",
+    "gateway": "vnpy",
     "initial_capital": 1000000,
     "broker_id": "2071",
     "td_server": "tcp://114.94.128.1:42205",
@@ -25,7 +25,20 @@
     "username": "YOUR_USERNAME",
     "password": "YOUR_PASSWORD",
     "app_id": "client_TraderMaster_v1.0.0",
-    "auth_code": "20260324LHJYMHBG"
+    "auth_code": "20260324LHJYMHBG",
+    "vnpy_environment": "测试"
+  },
+
+  "risk": {
+    "enabled": true,
+    "max_order_volume": 1000,
+    "max_position_volume": 10000,
+    "max_active_orders": 200,
+    "max_orders_per_minute": 120,
+    "max_daily_loss_ratio": 0.1,
+    "allow_market_orders": true,
+    "allowed_symbols": [],
+    "blocked_symbols": []
   },
 
   "strategy": {

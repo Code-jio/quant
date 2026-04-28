@@ -1,195 +1,33 @@
 <template>
   <div ref="wrapRef" class="kline-wrap" :class="{ fullscreen: isFullscreen, mobile: isMobile }">
 
-    <!-- ── 工具栏 ──────────────────────────────────────────────────────── -->
-    <div class="kline-toolbar">
-      <!-- 左侧：合约信息 + 周期切换 -->
-      <div class="toolbar-left">
-        <span v-if="name" class="contract-tag">{{ name }}</span>
-        <span v-if="symbol" class="symbol-tag">{{ symbol }}</span>
-
-        <!-- 周期快捷按钮 -->
-        <div class="period-btns">
-          <button
-            v-for="iv in INTERVALS"
-            :key="iv.value"
-            class="period-btn"
-            :class="{ active: currentInterval === iv.value }"
-            @click="setInterval(iv.value)"
-          >{{ iv.label }}</button>
-        </div>
-
-        <!-- 自定义周期 -->
-        <div v-if="!isMobile" class="custom-period">
-          <el-input-number
-            v-model="customN"
-            :min="1" :max="9999" :controls="false"
-            style="width:64px"
-            size="small"
-            placeholder="N"
-          />
-          <el-select v-model="customUnit" size="small" style="width:70px">
-            <el-option label="分" value="m" />
-            <el-option label="时" value="h" />
-            <el-option label="日" value="d" />
-            <el-option label="周" value="w" />
-          </el-select>
-          <el-button size="small" @click="applyCustomPeriod">确认</el-button>
-        </div>
-
-        <!-- K 线数量提示 -->
-        <span class="bar-count" v-if="bars.length">共 {{ bars.length }} 根</span>
-      </div>
-
-      <!-- 右侧：指标/均线/画图/工具 -->
-      <div class="toolbar-right">
-        <!-- 均线管理 -->
-        <el-popover
-          placement="bottom-end"
-          :width="280"
-          trigger="click"
-          popper-class="ma-popover"
-        >
-          <template #reference>
-            <el-button size="small" class="tool-btn">
-              均线
-              <el-icon class="el-icon--right"><ArrowDown /></el-icon>
-            </el-button>
-          </template>
-          <div class="ma-panel">
-            <div v-for="(ma, idx) in maConfig" :key="ma.n" class="ma-row">
-              <el-switch v-model="ma.visible" size="small" @change="refreshChart" />
-              <span class="ma-label">MA{{ ma.n }}</span>
-              <el-color-picker
-                v-model="ma.color"
-                size="small"
-                @change="refreshChart"
-                :predefine="MA_COLORS"
-              />
-              <el-select
-                v-model="ma.dashType"
-                size="small"
-                style="width:70px"
-                @change="refreshChart"
-              >
-                <el-option label="实线" value="solid" />
-                <el-option label="虚线" value="dashed" />
-                <el-option label="点线" value="dotted" />
-              </el-select>
-              <el-button
-                size="small"
-                type="danger"
-                text
-                @click="removeMa(idx)"
-              >×</el-button>
-            </div>
-            <div class="ma-add-row">
-              <el-input-number
-                v-model="newMaN"
-                :min="1" :max="500" :controls="false"
-                size="small"
-                style="width:70px"
-                placeholder="周期"
-              />
-              <el-button size="small" type="primary" @click="addMa">+ 添加均线</el-button>
-            </div>
-          </div>
-        </el-popover>
-
-        <!-- 技术指标选择 -->
-        <el-select
-          v-model="activeIndicator"
-          size="small"
-          style="width:90px"
-          @change="refreshChart"
-        >
-          <el-option label="MACD" value="macd" />
-          <el-option label="KDJ"  value="kdj"  />
-          <el-option label="RSI"  value="rsi"  />
-        </el-select>
-
-        <!-- 画图工具 -->
-        <div v-if="!isMobile" class="draw-tools">
-          <el-tooltip content="选择" placement="bottom">
-            <button
-              class="draw-btn"
-              :class="{ active: drawMode === 'pointer' }"
-              @click="drawMode = 'pointer'"
-            >
-              <el-icon><Pointer /></el-icon>
-            </button>
-          </el-tooltip>
-          <el-tooltip content="趋势线" placement="bottom">
-            <button
-              class="draw-btn"
-              :class="{ active: drawMode === 'trend' }"
-              @click="drawMode = 'trend'"
-            >
-              <el-icon><Edit /></el-icon>
-            </button>
-          </el-tooltip>
-          <el-tooltip content="水平线" placement="bottom">
-            <button
-              class="draw-btn"
-              :class="{ active: drawMode === 'hLine' }"
-              @click="drawMode = 'hLine'"
-            >
-              <el-icon><Minus /></el-icon>
-            </button>
-          </el-tooltip>
-          <el-tooltip content="垂直线" placement="bottom">
-            <button
-              class="draw-btn"
-              :class="{ active: drawMode === 'vLine' }"
-              @click="drawMode = 'vLine'"
-            >
-              <el-icon><SemiSelect /></el-icon>
-            </button>
-          </el-tooltip>
-          <el-tooltip v-if="drawnLines.length" content="清除画线" placement="bottom">
-            <button class="draw-btn" @click="clearDrawings">
-              <el-icon><Delete /></el-icon>
-            </button>
-          </el-tooltip>
-        </div>
-
-        <div class="toolbar-divider" />
-
-        <!-- 全屏 -->
-        <el-tooltip :content="isFullscreen ? '退出全屏' : '全屏'" placement="bottom">
-          <button class="tool-btn icon-btn" @click="toggleFullscreen">
-            <el-icon><FullScreen /></el-icon>
-          </button>
-        </el-tooltip>
-
-        <!-- 保存图片 -->
-        <el-tooltip content="保存图片" placement="bottom">
-          <button class="tool-btn icon-btn" @click="saveImage">
-            <el-icon><Download /></el-icon>
-          </button>
-        </el-tooltip>
-
-        <!-- 刷新 -->
-        <el-tooltip content="刷新数据 (R)" placement="bottom">
-          <button class="tool-btn icon-btn" :class="{ spinning: loading }" @click="reload">
-            <el-icon><Refresh /></el-icon>
-          </button>
-        </el-tooltip>
-
-        <!-- 快捷键帮助 -->
-        <el-tooltip content="快捷键帮助 (?)" placement="bottom">
-          <button class="tool-btn icon-btn" @click="showShortcutsHelp = !showShortcutsHelp">
-            <span style="font-size:13px;font-weight:600;line-height:1">?</span>
-          </button>
-        </el-tooltip>
-
-        <!-- 已加载条数 + 更多标识 -->
-        <span v-if="bars.length" class="bar-count-right">
-          {{ bars.length }} 根
-          <span v-if="hasMore" class="has-more-dot" title="向左拖拽可加载更多历史" />
-        </span>
-      </div>
-    </div>
+    <KlineToolbar
+      :name="name"
+      :symbol="symbol"
+      :current-interval="currentInterval"
+      v-model:custom-n="customN"
+      v-model:custom-unit="customUnit"
+      :bars-count="bars.length"
+      :has-more="hasMore"
+      :is-mobile="isMobile"
+      :ma-config="maConfig"
+      v-model:new-ma-n="newMaN"
+      v-model:active-indicator="activeIndicator"
+      v-model:draw-mode="drawMode"
+      :drawn-lines-count="drawnLines.length"
+      :is-fullscreen="isFullscreen"
+      :loading="loading"
+      v-model:show-shortcuts-help="showShortcutsHelp"
+      @set-interval="setInterval"
+      @apply-custom-period="applyCustomPeriod"
+      @refresh-chart="refreshChart"
+      @remove-ma="removeMa"
+      @add-ma="addMa"
+      @clear-drawings="clearDrawings"
+      @toggle-fullscreen="toggleFullscreen"
+      @save-image="saveImage"
+      @reload="reload"
+    />
 
     <!-- ── 十字光标信息栏 ─────────────────────────────────────────────── -->
     <div v-if="crossInfo.visible" class="crosshair-bar">
@@ -271,21 +109,22 @@
 
 <script setup>
 import {
-  ref, computed, watch, onMounted, onUnmounted, nextTick,
+  ref, watch, onMounted, onUnmounted, nextTick,
 } from 'vue'
 import * as echarts from 'echarts'
 import {
-  ArrowDown, Edit, Minus, Delete, FullScreen, Download, Refresh,
-  Loading, WarningFilled, TrendCharts, Pointer, SemiSelect,
+  WarningFilled, TrendCharts,
 } from '@element-plus/icons-vue'
 
 import { storeToRefs } from 'pinia'
-import { useKlineData, INTERVALS } from '@/composables/useKlineData.js'
+import { useKlineData } from '@/composables/useKlineData.js'
+import { INTERVALS } from '@/config/kline.js'
 import { useWatchStore, useChartStore, useIndicatorStore, useHistoryStore } from '@/stores/index.js'
 import { useHotkeys, KLINE_SHORTCUTS } from '@/composables/useHotkeys.js'
 import { useIndicatorWorker } from '@/composables/useIndicatorWorker.js'
 import { useWatchWs } from '@/composables/useWatchWs.js'
 import KlineSkeleton from '@/components/KlineSkeleton.vue'
+import KlineToolbar from '@/components/KlineToolbar.vue'
 
 // ── Props ────────────────────────────────────────────────────────────────
 const props = defineProps({
@@ -321,12 +160,6 @@ const customN    = ref(1)
 const customUnit = ref('d')
 
 const newMaN = ref(null)
-
-const MA_COLORS = [
-  '#f5c842', '#f09a00', '#f06400', '#cc4444',
-  '#3b82f6', '#22c55e', '#ec4899', '#8b5cf6',
-  '#06b6d4', '#f97316', '#84cc16', '#e879f9',
-]
 
 // 画图相关
 const drawMode    = ref('pointer')
