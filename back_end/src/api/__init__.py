@@ -78,9 +78,9 @@ class LoginRequest(BaseModel):
     td_server:  str = "tcp://114.94.128.1:42205"
     md_server:  str = "tcp://114.94.128.1:42213"
     app_id:     str = "client_TraderMaster_v1.0.0"
-    auth_code:  str = ""
+    auth_code:  str = "20260324LHJYMHBG"
     gateway_type: str = "vnpy"   # "vnpy" | "ctp"
-    environment: str = "测试"     # vn.py CTP 柜台环境："实盘" | "测试"
+    environment: str = "实盘"     # vn.py CTP 柜台环境："实盘" | "测试"
 
 
 class LoginResponse(BaseModel):

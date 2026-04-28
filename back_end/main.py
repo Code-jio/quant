@@ -50,8 +50,8 @@ DEFAULT_CONFIG = {
         "td_server": "tcp://114.94.128.1:42205",
         "md_server": "tcp://114.94.128.1:42213",
         "app_id": "client_TraderMaster_v1.0.0",
-        "auth_code": "",
-        "vnpy_environment": "测试",
+        "auth_code": "20260324LHJYMHBG",
+        "vnpy_environment": "实盘",
         "initial_capital": 1000000
     },
     "risk": {

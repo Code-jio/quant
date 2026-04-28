@@ -132,7 +132,7 @@
           >
             <el-icon><ArrowRight :style="{ transform: showAdvanced ? 'rotate(90deg)' : '', transition: 'transform .2s' }" /></el-icon>
             高级配置
-            <span class="adv-hint">（AppID / 认证码）</span>
+            <span class="adv-hint">（AppID / 认证码 / 柜台环境）</span>
           </div>
 
           <div v-if="showAdvanced" class="advanced-body">
@@ -142,6 +142,12 @@
               </el-form-item>
               <el-form-item label="认证码（AuthCode）">
                 <el-input v-model="form.auth_code" :disabled="connecting" />
+              </el-form-item>
+              <el-form-item label="柜台环境">
+                <el-select v-model="form.environment" :disabled="connecting" style="width:100%">
+                  <el-option label="实盘（生产版 API）" value="实盘" />
+                  <el-option label="测试" value="测试" />
+                </el-select>
               </el-form-item>
             </div>
           </div>
@@ -236,6 +242,7 @@ const form = reactive({
   md_server: 'tcp://114.94.128.1:42213',
   app_id:      'client_TraderMaster_v1.0.0',
   auth_code:   '20260324LHJYMHBG',
+  environment: '实盘',
   td_custom:   false,
   md_custom:   false,
 })
@@ -315,6 +322,7 @@ async function handleLogin() {
       md_server: form.md_server,
       app_id:    form.app_id,
       auth_code: form.auth_code,
+      environment: form.environment,
     })
 
     const timeoutPromise = new Promise((_, reject) => {
