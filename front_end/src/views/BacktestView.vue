@@ -119,10 +119,10 @@ import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft } from '@element-plus/icons-vue'
-import * as echarts from 'echarts'
 import { fetchBacktestStrategies, runBacktest } from '@/api/index.js'
 import { COMMON_PARAM_KEYS, DEFAULT_BACKTEST_FORM } from '@/config/backtest.js'
 import BacktestConfigForm from '@/components/BacktestConfigForm.vue'
+import { loadEcharts } from '@/utils/asyncEcharts.js'
 
 const router = useRouter()
 
@@ -138,6 +138,7 @@ const equityChartRef = ref(null)
 const distChartRef   = ref(null)
 const heatChartRef   = ref(null)
 let equityChart, distChart, heatChart
+let echarts = null
 
 // ── 表单 ────────────────────────────────────────────────────────────────
 const form = ref(structuredClone(DEFAULT_BACKTEST_FORM))
@@ -170,7 +171,7 @@ async function doRunBacktest() {
     lastRunTime.value = new Date().toLocaleTimeString('zh-CN')
     ElMessage.success('回测完成')
     await nextTick()
-    renderCharts()
+    await renderCharts()
   } catch (e) {
     errorMsg.value = e.message
   } finally {
@@ -377,7 +378,8 @@ const riskRows = computed(() => {
 })
 
 // ── ECharts 渲染 ──────────────────────────────────────────────────────
-function renderCharts() {
+async function renderCharts() {
+  echarts = echarts || await loadEcharts()
   renderEquityChart()
   renderDistChart()
   renderHeatChart()

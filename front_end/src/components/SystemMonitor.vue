@@ -106,8 +106,8 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { Timer, Connection } from '@element-plus/icons-vue'
-import * as echarts from 'echarts'
 import { useSystemWs } from '@/composables/useSystemWs.js'
+import { loadEcharts } from '@/utils/asyncEcharts.js'
 
 // ── WebSocket 数据 ─────────────────────────────────────────────────────
 const { connected: wsConnected, data } = useSystemWs()
@@ -163,6 +163,7 @@ function formatBytes(bps) {
 const cpuChartRef = ref(null)
 const netChartRef = ref(null)
 let cpuChart, netChart
+let echarts = null
 
 const AXIS_STYLE = {
   axisLabel:  { color: '#6e7681', fontSize: 11 },
@@ -287,8 +288,9 @@ function handleResize() {
 }
 
 // ── 生命周期 ─────────────────────────────────────────────────────────
-onMounted(() => {
+onMounted(async () => {
   window.addEventListener('resize', handleResize)
+  echarts = await loadEcharts()
   if (cpuChartRef.value) {
     cpuChart = echarts.init(cpuChartRef.value, 'dark')
     cpuChart.setOption(buildCpuOption())

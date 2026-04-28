@@ -81,6 +81,8 @@ back_end/pytest-cache-files-*/
 .coverage
 htmlcov/
 coverage.xml
+.test-artifacts/
+back_end/.test-artifacts/
 front_end/coverage/
 front_end/playwright-report/
 front_end/test-results/

@@ -17,6 +17,13 @@ python -m ruff check src tests
 python -m mypy
 ```
 
+Useful operational endpoints:
+
+- `GET /health` - process, session, gateway, and WebSocket health snapshot.
+- `GET /metrics` - Prometheus-style runtime metrics.
+- `GET /data/quality?symbol=IF9999&timeframe=1d` - historical bar metadata, gap report, and OHLCV quality checks.
+- `GET /audit/events` - protected trading/auth audit trail.
+
 ## Frontend
 
 ```bash

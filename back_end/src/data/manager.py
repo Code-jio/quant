@@ -12,6 +12,7 @@ import numpy as np
 from .db import DatabaseManager
 from .cache import DataCache
 from .errors import DatabaseError, DataLoadError
+from .governance import detect_bar_gaps, summarize_ohlcv_quality
 from .indicators import add_technical_indicators, validate_data
 
 logger = logging.getLogger(__name__)
@@ -21,9 +22,10 @@ class DataManager:
     """数据管理器 - 统一数据访问接口"""
 
     def __init__(self, db_path: str = "data/historical/quotes.db",
-                 max_retries: int = 3, max_cache_size: int = 10):
+                 max_retries: int = 3, max_cache_size: int = 10,
+                 cache_ttl_seconds: int = 300):
         self.db = DatabaseManager(db_path, max_retries=max_retries)
-        self.cache = DataCache(max_cache_size=max_cache_size)
+        self.cache = DataCache(max_cache_size=max_cache_size, ttl_seconds=cache_ttl_seconds)
 
     def get_bars(self, symbol: str, start_date: str, end_date: str,
                  timeframe: str = "1d", use_cache: bool = True) -> pd.DataFrame:
@@ -51,10 +53,26 @@ class DataManager:
             logger.error(f"获取数据异常: {e}")
             return pd.DataFrame()
 
-    def save_bars(self, df: pd.DataFrame, symbol: str, timeframe: str = "1d") -> bool:
+    def save_bars(
+        self,
+        df: pd.DataFrame,
+        symbol: str,
+        timeframe: str = "1d",
+        *,
+        data_source: str = "unknown",
+        adjustment: str = "raw",
+        rollover_rule: str = "none",
+    ) -> bool:
         """保存K线数据"""
         try:
-            result = self.db.save_bars(df, symbol, timeframe)
+            result = self.db.save_bars(
+                df,
+                symbol,
+                timeframe,
+                data_source=data_source,
+                adjustment=adjustment,
+                rollover_rule=rollover_rule,
+            )
             self.cache.clear()
             return result
         except DatabaseError as e:
@@ -109,6 +127,21 @@ class DataManager:
     def validate_data(self, df: pd.DataFrame):
         """验证数据质量"""
         return validate_data(df)
+
+    def inspect_data_quality(self, symbol: str, start_date: str, end_date: str,
+                             timeframe: str = "1d") -> Dict:
+        """返回回测前可读的数据治理报告。"""
+        df = self.get_bars(symbol, start_date, end_date, timeframe, use_cache=False)
+        gap_report = detect_bar_gaps(df, timeframe)
+        return {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "range": {"start": start_date, "end": end_date},
+            "metadata": self.db.get_metadata(symbol, timeframe),
+            "gaps": gap_report.to_dict(),
+            "quality": summarize_ohlcv_quality(df),
+            "cache": self.cache.stats(),
+        }
 
     def clear_cache(self):
         """清空缓存"""

@@ -8,8 +8,8 @@
  * 数据源：/ws/dashboard（每 2 秒推送）
  */
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
-import * as echarts from 'echarts'
 import { useDashboardWs } from '@/composables/useDashboardWs.js'
+import { loadEcharts } from '@/utils/asyncEcharts.js'
 
 // ── WebSocket ───────────────────────────────────────────────────────────────
 const { connected, data } = useDashboardWs()
@@ -89,6 +89,7 @@ function expLevel(v) {
 // ── ECharts 权益曲线 ──────────────────────────────────────────────────────────
 const lineRef  = ref(null)
 let lineChart  = null
+let echarts    = null
 
 function buildLineOption(curve) {
   const xs = curve.map(p => p.ts)
@@ -138,8 +139,9 @@ function buildLineOption(curve) {
   }
 }
 
-function initLineChart() {
+async function initLineChart() {
   if (!lineRef.value) return
+  echarts = await loadEcharts()
   lineChart = echarts.init(lineRef.value, null, { renderer: 'svg' })
   lineChart.setOption(buildLineOption(data.equityCurve))
 }
@@ -203,8 +205,9 @@ function buildDonutOption(positions) {
   }
 }
 
-function initDonutChart() {
+async function initDonutChart() {
   if (!donutRef.value) return
+  echarts = echarts || await loadEcharts()
   donutChart = echarts.init(donutRef.value, null, { renderer: 'svg' })
   donutChart.setOption(buildDonutOption(data.positions))
 }
@@ -225,8 +228,7 @@ const resizeObs = typeof ResizeObserver !== 'undefined'
 
 onMounted(async () => {
   await nextTick()
-  initLineChart()
-  initDonutChart()
+  await Promise.all([initLineChart(), initDonutChart()])
   if (resizeObs && lineRef.value)  resizeObs.observe(lineRef.value)
   if (resizeObs && donutRef.value) resizeObs.observe(donutRef.value)
   window.addEventListener('resize', resizeCharts)

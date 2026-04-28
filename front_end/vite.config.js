@@ -24,4 +24,17 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined
+          if (id.includes('echarts') || id.includes('zrender')) return 'vendor-echarts'
+          if (id.includes('element-plus') || id.includes('@element-plus')) return 'vendor-element-plus'
+          if (id.includes('vue') || id.includes('pinia') || id.includes('vue-router')) return 'vendor-vue'
+          return 'vendor'
+        },
+      },
+    },
+  },
 })

@@ -44,12 +44,13 @@ from typing import Any, Dict, List, Optional, Set
 import psutil
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 
 from ..strategy import Direction, StrategyBase
 from ..trading import AccountInfo, GatewayBase, TradingEngine, TradingStatus
 from ..strategy import Signal, OrderType, OffsetFlag
+from ..observability import audit_log, metrics, new_request_id, structured_json
 from .security import SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME, is_open_path, session_store
 
 logger = logging.getLogger(__name__)
@@ -230,18 +231,22 @@ _PRESET_MD = [
 # ---------------------------------------------------------------------------
 
 class ConnectionManager:
-    def __init__(self, channel: str):
+    def __init__(self, channel: str, send_timeout: float = 1.0):
         self.channel = channel
+        self.send_timeout = send_timeout
         self._connections: Set[WebSocket] = set()
 
     async def connect(self, ws: WebSocket):
         await ws.accept()
         self._connections.add(ws)
+        metrics.record_ws_connect(self.channel)
         logger.info(f"[WS:{self.channel}] 新连接，当前: {len(self._connections)} 条")
 
     def disconnect(self, ws: WebSocket):
-        self._connections.discard(ws)
-        logger.info(f"[WS:{self.channel}] 连接断开，剩余: {len(self._connections)} 条")
+        if ws in self._connections:
+            self._connections.discard(ws)
+            metrics.record_ws_disconnect(self.channel)
+            logger.info(f"[WS:{self.channel}] 连接断开，剩余: {len(self._connections)} 条")
 
     async def broadcast(self, payload: dict):
         if not self._connections:
@@ -250,10 +255,12 @@ class ConnectionManager:
         dead: Set[WebSocket] = set()
         for ws in list(self._connections):
             try:
-                await ws.send_text(text)
+                await asyncio.wait_for(ws.send_text(text), timeout=self.send_timeout)
             except Exception:
                 dead.add(ws)
-        self._connections -= dead
+        for ws in dead:
+            self.disconnect(ws)
+        metrics.record_ws_broadcast(self.channel, dropped=len(dead))
 
     def broadcast_sync(self, payload: dict, loop: asyncio.AbstractEventLoop):
         if loop and not loop.is_closed():
@@ -427,6 +434,33 @@ class TradingState:
 
 trading_state = TradingState()
 
+
+def _request_id(request: Optional[Request]) -> str:
+    return getattr(getattr(request, "state", None), "request_id", "") if request else ""
+
+
+def _record_audit(
+    event_type: str,
+    action: str,
+    status: str,
+    *,
+    actor: str = "system",
+    resource: str = "",
+    request: Optional[Request] = None,
+    detail: Optional[Dict[str, Any]] = None,
+) -> None:
+    audit_log.record(
+        event_type,
+        action,
+        status,
+        actor=actor,
+        resource=resource,
+        request_id=_request_id(request),
+        detail=detail,
+    )
+    metrics.record_audit(event_type)
+
+
 # ---------------------------------------------------------------------------
 # 订单广播钩子
 # ---------------------------------------------------------------------------
@@ -485,6 +519,7 @@ def _install_hook_on_engine(engine: TradingEngine):
 
     def _order_chained(order):
         trading_state._last_gw_callback_ts = time.monotonic()
+        _record_audit("order", "gateway_order_update", "received", resource=getattr(order, "order_id", ""))
         if _orig_order:
             _orig_order(order)
         loop = _event_loop
@@ -498,6 +533,7 @@ def _install_hook_on_engine(engine: TradingEngine):
 
     def _trade_chained(trade):
         trading_state._last_gw_callback_ts = time.monotonic()
+        _record_audit("trade", "gateway_trade_update", "received", resource=getattr(trade, "trade_id", ""))
         if _orig_trade:
             _orig_trade(trade)
         loop = _event_loop
@@ -891,6 +927,7 @@ class _LogBuffer(logging.Handler):
                 "level":   record.levelname,
                 "name":    record.name,
                 "message": record.getMessage(),
+                "request_id": getattr(record, "request_id", ""),
             }
             self._buf.append(entry)
             if self._queue is not None:
@@ -1151,6 +1188,44 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         allow_credentials=True,
     )
 
+    # ── 可观测性中间件：request id + 结构化访问日志 + 基础指标 ───────────────
+    @app.middleware("http")
+    async def observability_middleware(request: Request, call_next):
+        request_id = request.headers.get("x-request-id") or new_request_id()
+        request.state.request_id = request_id
+        started = time.perf_counter()
+        status_code = 500
+        response = None
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+        except Exception:
+            logger.exception(
+                structured_json(
+                    "http.request.error",
+                    request_id=request_id,
+                    method=request.method,
+                    path=request.url.path,
+                )
+            )
+            raise
+        finally:
+            elapsed = time.perf_counter() - started
+            metrics.record_http(request.method, request.url.path, status_code, elapsed)
+            logger.info(
+                structured_json(
+                    "http.request",
+                    request_id=request_id,
+                    method=request.method,
+                    path=request.url.path,
+                    status=status_code,
+                    elapsed_ms=round(elapsed * 1000, 3),
+                )
+            )
+        if response is not None:
+            response.headers["X-Request-ID"] = request_id
+        return response
+
     # ── 鉴权中间件 ────────────────────────────────────────────────────────────
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
@@ -1171,11 +1246,43 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
                 {"detail": "会话已过期，请重新登录"},
                 status_code=401,
             )
-        return await call_next(request)
+        response = await call_next(request)
+        request_id = getattr(request.state, "request_id", "")
+        if request_id:
+            response.headers["X-Request-ID"] = request_id
+        return response
 
     # ==================================================================
     # Auth 端点
     # ==================================================================
+
+    @app.get("/health", summary="健康检查", tags=["运维"])
+    def health():
+        engine = trading_state.primary_engine()
+        gateway_status = "stopped"
+        if engine:
+            gateway_status = engine.gateway.status.value if hasattr(engine.gateway.status, "value") else str(engine.gateway.status)
+        return {
+            "status": "ok",
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "gateway_status": gateway_status,
+            "active_sessions": session_store.active_count(),
+            "websockets": {
+                "system": system_manager.count,
+                "orders": orders_manager.count,
+                "dashboard": dashboard_manager.count,
+                "positions": positions_manager.count,
+                "logs": log_manager.count,
+            },
+        }
+
+    @app.get("/metrics", summary="Prometheus 指标", tags=["运维"])
+    def prometheus_metrics():
+        return PlainTextResponse(metrics.prometheus_text(), media_type="text/plain; version=0.0.4")
+
+    @app.get("/audit/events", summary="交易事件审计", tags=["运维"])
+    def audit_events(event_type: str = "", limit: int = 200):
+        return {"events": audit_log.query(event_type=event_type, limit=limit)}
 
     @app.get("/auth/servers", summary="获取预设服务器列表", tags=["认证"])
     def get_servers():
@@ -1218,7 +1325,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         summary="CTP 账户登录",
         tags=["认证"],
     )
-    async def do_login(body: LoginRequest, response: Response):
+    async def do_login(body: LoginRequest, response: Response, request: Request):
         """
         接受 CTP 账户配置，连接交易前置和行情前置。
         连接过程最长等待 35 秒。成功后返回会话 token。
@@ -1228,6 +1335,14 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
 
         trading_state.clear_log()
         trading_state.add_log(f"开始连接账户: {body.username}")
+        _record_audit(
+            "auth",
+            "login_attempt",
+            "started",
+            actor=body.username,
+            request=request,
+            detail={"gateway_type": body.gateway_type},
+        )
 
         # 若已有连接先断开
         if trading_state._main_engine:
@@ -1327,6 +1442,15 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             samesite="lax",
         )
 
+        _record_audit(
+            "auth",
+            "login",
+            "success",
+            actor=body.username,
+            request=request,
+            detail={"gateway_type": gateway_type, "account_id": account_id},
+        )
+
         return LoginResponse(
             success        = True,
             token          = token,
@@ -1348,6 +1472,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         response = JSONResponse({"success": True, "message": "已断开连接"})
         response.delete_cookie(SESSION_COOKIE_NAME)
         trading_state.add_log("用户主动断开连接")
+        _record_audit("auth", "logout", "success", request=request)
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, trading_state.clear_main)
         return response
@@ -1525,7 +1650,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         return _collect_all_trades()[:500]
 
     @app.delete("/orders/{order_id}", summary="撤销委托单", tags=["订单簿"])
-    def cancel_order(order_id: str):
+    def cancel_order(order_id: str, request: Request):
         """调用网关 cancel_order()，结果通过 /ws/orders 回调推送。"""
         engine = trading_state.primary_engine()
         if engine is None:
@@ -1543,14 +1668,22 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             raise HTTPException(status_code=404, detail=f"委托单不存在: {order_id}")
         try:
             success = gw.cancel_order(order_id)
+            _record_audit(
+                "order",
+                "cancel",
+                "success" if success else "rejected",
+                resource=order_id,
+                request=request,
+            )
             return {"success": bool(success), "order_id": order_id}
         except Exception as exc:
+            _record_audit("order", "cancel", "error", resource=order_id, request=request, detail={"error": str(exc)})
             raise HTTPException(status_code=500, detail=f"撤单失败: {exc}")
 
     # ── 手动交易端点 ──────────────────────────────────────────────────────────
 
     @app.post("/orders", summary="手动下单", tags=["手动交易"])
-    def place_manual_order(body: ManualOrderRequest):
+    def place_manual_order(body: ManualOrderRequest, request: Request):
         """
         手动下达交易指令（开仓/平仓）。
 
@@ -1598,8 +1731,24 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             if not order_id:
                 reason = getattr(engine, "last_reject_reason", "")
                 if reason:
+                    _record_audit(
+                        "order",
+                        "manual_order",
+                        "rejected",
+                        resource=body.symbol,
+                        request=request,
+                        detail={"reason": reason, "volume": body.volume, "direction": body.direction},
+                    )
                     raise HTTPException(status_code=400, detail=f"风控拒单: {reason}")
                 raise HTTPException(status_code=500, detail="下单失败，引擎未返回订单号")
+            _record_audit(
+                "order",
+                "manual_order",
+                "success",
+                resource=order_id,
+                request=request,
+                detail={"symbol": body.symbol, "volume": body.volume, "direction": body.direction, "offset": body.offset},
+            )
             return {
                 "success": True,
                 "order_id": order_id,
@@ -1612,6 +1761,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         except HTTPException:
             raise
         except Exception as exc:
+            _record_audit("order", "manual_order", "error", resource=body.symbol, request=request, detail={"error": str(exc)})
             raise HTTPException(status_code=500, detail=f"下单失败: {exc}")
 
     @app.post("/orders/cancel-all", summary="一键撤销所有活跃委托", tags=["手动交易"])
@@ -1761,6 +1911,29 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
     def get_dashboard_metrics():
         """一次性返回仪表盘所有关键指标（PnL、收益率、夏普比率、最大回撤、仓位概览）。"""
         return _build_dashboard_metrics()
+
+    @app.get("/data/quality", summary="历史行情数据质量报告", tags=["数据治理"])
+    def data_quality(symbol: str, start_date: str = "", end_date: str = "", timeframe: str = "1d"):
+        from ..data import DataManager
+
+        if not symbol:
+            raise HTTPException(status_code=400, detail="symbol 不能为空")
+        dm = DataManager()
+        if not start_date or not end_date:
+            first, last = dm.db.get_data_range(symbol, timeframe)
+            start_date = start_date or first or ""
+            end_date = end_date or last or ""
+        if not start_date or not end_date:
+            return {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "range": {"start": start_date, "end": end_date},
+                "metadata": dm.db.get_metadata(symbol, timeframe),
+                "gaps": {"has_gaps": False, "missing_count": 0},
+                "quality": {"rows": 0},
+                "cache": dm.cache.stats(),
+            }
+        return dm.inspect_data_quality(symbol, start_date, end_date, timeframe)
 
     # ==================================================================
     # WebSocket 端点
