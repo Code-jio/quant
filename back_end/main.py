@@ -15,7 +15,6 @@ from src.strategy import create_strategy
 from src.backtest import BacktestEngine, BacktestConfig
 from src.trading import TradingEngine, create_gateway
 from src.analysis import Analyzer
-from src.settings import ctp_defaults
 
 
 logging.basicConfig(
@@ -25,7 +24,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_PATH = "config/config_production.json"
-_CTP_DEFAULTS = ctp_defaults()
 
 DEFAULT_CONFIG = {
     "mode": "backtest",
@@ -35,8 +33,7 @@ DEFAULT_CONFIG = {
         "initial_capital": 1000000,
         "commission_rate": 0.0003,
         "slip_rate": 0.0001,
-        "margin_rate": 0.12,
-        "contract_multiplier": 1
+        "margin_rate": 0.12
     },
     "strategy": {
         "name": "ma_cross",
@@ -49,12 +46,12 @@ DEFAULT_CONFIG = {
         "gateway": "vnpy",
         "username": "",
         "password": "",
-        "broker_id": _CTP_DEFAULTS["broker_id"],
-        "td_server": _CTP_DEFAULTS["td_server"],
-        "md_server": _CTP_DEFAULTS["md_server"],
-        "app_id": _CTP_DEFAULTS["app_id"],
-        "auth_code": _CTP_DEFAULTS["auth_code"],
-        "vnpy_environment": _CTP_DEFAULTS["vnpy_environment"],
+        "broker_id": "2071",
+        "td_server": "tcp://114.94.128.1:42205",
+        "md_server": "tcp://114.94.128.1:42213",
+        "app_id": "",
+        "auth_code": "",
+        "vnpy_environment": "实盘",
         "initial_capital": 1000000
     },
     "risk": {
@@ -92,8 +89,7 @@ def run_backtest(config: dict):
         initial_capital=config['backtest']['initial_capital'],
         commission_rate=config['backtest']['commission_rate'],
         slip_rate=config['backtest']['slip_rate'],
-        margin_rate=config['backtest']['margin_rate'],
-        contract_multiplier=config['backtest'].get('contract_multiplier', 1)
+        margin_rate=config['backtest']['margin_rate']
     )
 
     data_manager = DataManager()

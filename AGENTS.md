@@ -1,5 +1,5 @@
 ---
-description: 
+description:
 alwaysApply: true
 ---
 
@@ -9,105 +9,121 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 ## Project Overview
 
-This is a quantitative trading system built in Python that supports both backtesting and live trading modes. The system is modular and follows a clean architecture with separated concerns for data management, strategy execution, backtesting, trading, and analysis.
+This is a Chinese futures quantitative trading system with a **front-end / back-end separated architecture**:
+
+- **Backend** (`back_end/`): Python 3.13, FastAPI REST API + WebSocket, vn.py CTP gateway for live futures trading
+- **Frontend** (`front_end/`): Vue 3 + Vite + Element Plus + ECharts dashboard with real-time WebSocket monitoring
 
 ## Running the System
 
 ```bash
-# Install dependencies
+# Backend
+cd back_end
 pip install -r requirements.txt
+python main.py                          # CLI backtest/live mode
+start.bat                               # Launch FastAPI API server (port 8000)
 
-# Run backtest (default mode)
-python main.py
-
-# Run live trading simulation
-python main.py
-# Note: Set "mode": "live" in config/config.json or change in main.py
+# Frontend
+cd front_end
+npm install
+npm run dev                             # Dev server (port 5173, proxies to :8000)
 ```
 
 ## Architecture
 
-### Core Components
+### Backend (`back_end/src/`)
 
-1. **Data Module** ([`src/data/`](src/data/__init__.py))
-   - `DataManager`: Unified interface for data access with caching
-   - `DatabaseManager`: SQLite-based storage for historical data
-   - `DataSource`: Abstract base for implementing real data feeds
-   - Technical indicator calculation support
+```
+src/
+├── api/              # FastAPI REST + WebSocket API
+│   ├── app.py        # create_app factory + middleware + lifespan
+│   ├── schemas.py    # Pydantic request/response models
+│   ├── state.py      # TradingState global singleton
+│   ├── deps.py       # Shared helpers (audit, serialization, snapshots, hooks)
+│   ├── ws.py         # ConnectionManager + WebSocket endpoints + broadcast loops
+│   ├── security.py   # Session management (in-memory token store)
+│   ├── _constants.py # Preset CTP server lists
+│   └── routers/      # Route modules (auth, system, strategy, trading, dashboard, backtest, watch)
+├── data/             # DataManager, DatabaseManager (SQLite), DataCache, indicators, governance
+├── strategy/         # StrategyBase, registry, types (Signal, Order, Trade, Position, Direction)
+│   └── strategies/   # Built-in: ma_cross, rsi, breakout
+├── backtest/         # BacktestEngine (event-driven), BacktestConfig, BacktestResult
+├── trading/          # TradingEngine, GatewayBase, VnpyGateway, OrderManager, RiskManager
+├── analysis/         # RiskAnalyzer, PerformanceAnalyzer, Analyzer, report formatters
+├── common/           # Shared exception hierarchy
+├── watch/            # search_contracts(), K-line data + technical indicator endpoint
+└── observability.py  # Metrics, audit logging, request IDs
+```
 
-2. **Strategy Module** ([`src/strategy/`](src/strategy/__init__.py))
-   - `StrategyBase`: Abstract base class for all strategies
-   - Defines lifecycle: `on_init()`, `on_bar()`, `on_start()`, `on_stop()`, `on_order()`, `on_trade()`
-   - Core trading methods: `buy()`, `sell()`, `short()`, `cover()`
-   - Built-in strategies: `MACrossStrategy`, `RSIStrategy`, `BreakoutStrategy`
-   - `STRATEGY_REGISTRY`: Registry pattern for strategy factory
-   - Key data structures: `Signal`, `Order`, `Trade`, `Position`
+### Frontend (`front_end/src/`)
 
-3. **Backtest Module** ([`src/backtest/`](src/backtest/__init__.py))
-   - `BacktestEngine`: Event-driven backtesting engine
-   - Processes bars sequentially, generates orders, tracks positions
-   - Handles margin requirements (12% default), commissions, and slippage
-   - Calculates performance metrics: Sharpe ratio, max drawdown, win rate
-
-4. **Trading Module** ([`src/trading/`](src/trading/__init__.py))
-   - `GatewayBase`: Abstract gateway for broker connections
-   - `VnpyGateway`: vn.py CTP gateway adapter for test/live broker connections
-   - `TradingEngine`: Orchestrates live trading execution
-   - Callback-based architecture: `on_order`, `on_trade`, `on_position`, `on_account`, `on_tick`
-
-5. **Analysis Module** ([`src/analysis/`](src/analysis/__init__.py))
-   - `RiskAnalyzer`: VaR, CVaR, drawdown, Sharpe/Sortino/Calmar ratios
-   - `PerformanceAnalyzer`: Win rate, profit/loss ratio, consecutive trades
-   - `Analyzer`: Combined analysis with report generation
+```
+src/
+├── api/index.js        # REST + auth client
+├── components/         # Vue components (KlineChart, TradingPanel, OrderBook, etc.)
+├── composables/        # WebSocket composables (useWatchWs, useKlineData, etc.)
+├── config/network.js   # Centralized API/WS base URLs
+├── router/index.js     # Routes: /login, /, /backtest, /system, /kline, /watch
+├── stores/             # Pinia stores (auth, chart, watch, indicator)
+├── views/              # Page views (Dashboard, Backtest, Kline, Watch, System, Login)
+└── workers/            # Web Worker for indicator calculations
+```
 
 ### Configuration
 
-Configuration is loaded from `config/config.json`:
-- `mode`: "backtest" or "live"
-- `backtest`: Date range, capital, commission/slippage/margin rates
-- `strategy`: Name, symbol, strategy-specific parameters
-- `trading`: Gateway type, initial capital, risk parameters
+- **Production config**: `back_end/config/config_production.jsonc` (gitignored, contains real credentials)
+- **Example config**: `back_end/config/config_example.jsonc` (uses placeholder credentials)
+- **Database**: `back_end/data/historical/quotes.db` (SQLite)
 
 ### Data Flow
 
-1. **Backtest Mode**: `DataManager` loads bars → `BacktestEngine` iterates bars → `Strategy.on_bar()` generates signals → `BacktestEngine` executes orders → `Analyzer` generates report
-2. **Live Mode**: `TradingEngine` connects → `Gateway` receives ticks → `Strategy` processes data → `Gateway` sends orders → Callbacks update strategy
+1. **Backtest Mode**: `DataManager` loads bars → `BacktestEngine` iterates → `Strategy.on_bar()` → `BacktestEngine` executes → `Analyzer` generates report
+2. **Live Mode**: `TradingEngine` connects via CTP gateway → receives ticks → `Strategy` processes → `Gateway` sends orders → callbacks update state → WebSocket broadcasts to frontend
 
 ### Adding New Strategies
 
-Create a class inheriting from `StrategyBase`:
+Create a class inheriting from `StrategyBase` in `back_end/src/strategy/strategies/`:
 ```python
 class MyStrategy(StrategyBase):
     def on_init(self):
         self.symbol = self.params.get('symbol', 'IF9999')
-        # ... other params
 
     def on_bar(self, bar: pd.Series):
         df = self.get_data(self.symbol)
         # ... strategy logic
-        # Use self.buy(), self.sell(), self.short(), self.cover() to generate signals
+        self.buy() / self.sell() / self.short() / self.cover()
 ```
 
-Register in `STRATEGY_REGISTRY` at bottom of [`src/strategy/__init__.py`](src/strategy/__init__.py#L404)
+Register in `STRATEGY_REGISTRY` at `back_end/src/strategy/registry.py`.
 
 ### Adding New Gateways
 
-Create a class inheriting from `GatewayBase` implementing:
-- `connect()`, `disconnect()`
-- `send_order()`, `cancel_order()`
-- `query_account()`, `query_positions()`, `query_orders()`
-- Use callback methods: `on_order()`, `on_trade()`, `on_position()`, `on_account()`, `on_tick()`
+Create a class inheriting from `GatewayBase` in `back_end/src/trading/` implementing:
+`connect()`, `disconnect()`, `send_order()`, `cancel_order()`, `query_account()`, `query_positions()`
+
+### API Endpoints (30 REST + 6 WebSocket)
+
+- **Auth**: `/auth/login`, `/auth/logout`, `/auth/status`, `/auth/servers`
+- **System**: `/health`, `/metrics`, `/audit/events`, `/system/status`, `/system/logs`
+- **Strategy**: `/strategies`, `/strategies/{id}`, `/strategies/{id}/params`, `/strategies/weights`, `/strategy/{id}/action`
+- **Trading**: `/orders`, `/trades`, `/positions`, `POST /orders`, `DELETE /orders/{id}`, `/orders/cancel-all`, `/positions/{symbol}/close`
+- **Dashboard**: `/dashboard/metrics`
+- **Backtest**: `/backtest/strategies`, `/backtest/run`
+- **Watch**: `/watch/kline`, `/watch/tick`, `/watch/search`, `/watch/kline/cache`
+- **WebSocket**: `/ws/system`, `/ws/orders`, `/ws/positions`, `/ws/dashboard`, `/ws/logs`, `/ws/watch`
 
 ### Key Patterns
 
-- **Registry Pattern**: Strategies are registered in `STRATEGY_REGISTRY` and created via `create_strategy()` factory function
+- **Registry Pattern**: Strategies registered in `STRATEGY_REGISTRY`, created via `create_strategy()`
+- **Gateway Registry**: Gateways registered in `GATEWAY_REGISTRY`, created via `create_gateway()`
 - **Callback Architecture**: Trading gateway updates strategy through callbacks
-- **Event-Driven**: Backtest engine processes bars sequentially with signal generation and execution
-- **Dataclass Models**: `Signal`, `Order`, `Trade`, `Position`, `BacktestConfig`, `BacktestResult` use dataclasses for clean models
-- **Enum Direction**: Use `Direction.LONG` and `Direction.SHORT` consistently throughout
+- **Event-Driven**: Backtest engine processes bars sequentially
+- **Dataclass Models**: Signal, Order, Trade, Position, BacktestConfig, BacktestResult
+- **Enum Direction**: `Direction.LONG` and `Direction.SHORT`
+- **APIRouter**: Each API route group uses FastAPI `APIRouter`, assembled in `app.py`
 
 ### Database Schema
 
-SQLite at `data/historical/quotes.db`:
+SQLite at `back_end/data/historical/quotes.db`:
 - `bars` table: symbol, timeframe, datetime, OHLCV, open_interest
 - Indexed on (symbol, timeframe, datetime)
