@@ -16,7 +16,7 @@ from .governance import BarDataMetadata, normalize_metadata
 
 logger = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 
 class DatabaseManager:
@@ -58,7 +58,15 @@ class DatabaseManager:
             self._ensure_column(cursor, "bars", "data_source", "TEXT DEFAULT 'unknown'")
             self._ensure_column(cursor, "bars", "adjustment", "TEXT DEFAULT 'raw'")
             self._ensure_column(cursor, "bars", "rollover_rule", "TEXT DEFAULT 'none'")
-            self._ensure_column(cursor, "bars", "ingested_at", "TEXT DEFAULT CURRENT_TIMESTAMP")
+            self._ensure_column(cursor, "bars", "ingested_at", "TEXT")
+            cursor.execute(
+                """
+                UPDATE bars
+                SET ingested_at = ?
+                WHERE ingested_at IS NULL OR ingested_at = ''
+                """,
+                (datetime.now().isoformat(timespec="seconds"),),
+            )
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_symbol_timeframe_datetime
                 ON bars(symbol, timeframe, datetime)
@@ -92,7 +100,7 @@ class DatabaseManager:
                 (
                     CURRENT_SCHEMA_VERSION,
                     datetime.now().isoformat(timespec="seconds"),
-                    "bars governance metadata and migration tracking",
+                    "bars governance metadata, safe ingested_at migration, and migration tracking",
                 ),
             )
             cursor.execute(f"PRAGMA user_version = {CURRENT_SCHEMA_VERSION}")

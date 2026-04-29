@@ -9,8 +9,23 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from src.api.security import SessionStore
+from src.api import LoginRequest
 from src.strategy import Direction, OffsetFlag, OrderType, Position, Signal
 from src.trading.risk import RiskManager
+from main import DEFAULT_CONFIG
+
+
+class SafeDefaultsTest(unittest.TestCase):
+    def test_ctp_defaults_do_not_embed_production_credentials(self):
+        request = LoginRequest(username="u", password="p")
+
+        self.assertEqual(request.td_server, "")
+        self.assertEqual(request.md_server, "")
+        self.assertEqual(request.app_id, "")
+        self.assertEqual(request.auth_code, "")
+        self.assertEqual(request.environment, "测试")
+        self.assertEqual(DEFAULT_CONFIG["trading"]["auth_code"], "")
+        self.assertEqual(DEFAULT_CONFIG["trading"]["vnpy_environment"], "测试")
 
 
 class SessionStoreTest(unittest.TestCase):

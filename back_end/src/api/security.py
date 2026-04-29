@@ -90,7 +90,7 @@ class SessionStore:
 
 
 def is_open_path(path: str) -> bool:
-    return path in OPEN_PATHS or path.startswith("/ws")
+    return path in OPEN_PATHS
 
 
 session_store = SessionStore()

@@ -75,7 +75,7 @@
 
           <div class="form-row">
             <!-- 交易前置 -->
-            <el-form-item label="交易前置（TD）">
+            <el-form-item label="交易前置（TD）" prop="td_server">
               <el-select
                 :model-value="form.td_custom ? '__custom__' : form.td_server"
                 @change="onTdSelect"
@@ -100,7 +100,7 @@
             </el-form-item>
 
             <!-- 行情前置 -->
-            <el-form-item label="行情前置（MD）">
+            <el-form-item label="行情前置（MD）" prop="md_server">
               <el-select
                 :model-value="form.md_custom ? '__custom__' : form.md_server"
                 @change="onMdSelect"
@@ -148,6 +148,34 @@
                   <el-option label="实盘（生产版 API）" value="实盘" />
                   <el-option label="测试" value="测试" />
                 </el-select>
+              </el-form-item>
+            </div>
+            <div class="form-row">
+              <el-form-item label="登录后启动策略">
+                <el-switch
+                  v-model="form.auto_start_strategy"
+                  :disabled="connecting"
+                  active-text="启动"
+                  inactive-text="不启动"
+                />
+              </el-form-item>
+              <el-form-item label="策略">
+                <el-select
+                  v-model="form.strategy_name"
+                  :disabled="connecting || !form.auto_start_strategy"
+                  style="width:100%"
+                >
+                  <el-option label="MA 双均线" value="ma_cross" />
+                  <el-option label="RSI 均值回归" value="rsi" />
+                  <el-option label="突破策略" value="breakout" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="策略合约">
+                <el-input
+                  v-model="form.strategy_symbol"
+                  :disabled="connecting || !form.auto_start_strategy"
+                  placeholder="IF9999"
+                />
               </el-form-item>
             </div>
           </div>
@@ -211,18 +239,8 @@ const router    = useRouter()
 const authStore = useAuthStore()
 
 // ── 预设服务器（本地备用，会从后端覆盖） ──────────────────────────────────
-const TD_SERVERS_DEFAULT = [
-  { label: '电信1', value: 'tcp://114.94.128.1:42205'   },
-  { label: '联通1', value: 'tcp://140.206.34.161:42205' },
-  { label: '电信2', value: 'tcp://114.94.128.5:42205'   },
-  { label: '联通2', value: 'tcp://140.206.34.165:42205' },
-  { label: '电信3', value: 'tcp://114.94.128.6:42205'   },
-  { label: '联通3', value: 'tcp://140.206.34.166:42205' },
-]
-const MD_SERVERS_DEFAULT = TD_SERVERS_DEFAULT.map(s => ({
-  label: s.label,
-  value: s.value.replace(':42205', ':42213'),
-}))
+const TD_SERVERS_DEFAULT = []
+const MD_SERVERS_DEFAULT = []
 
 const tdServers = ref([...TD_SERVERS_DEFAULT])
 const mdServers = ref([...MD_SERVERS_DEFAULT])
@@ -237,14 +255,17 @@ fetchServers().then(data => {
 const form = reactive({
   username:  '',
   password:  '',
-  broker_id: '2071',
-  td_server: 'tcp://114.94.128.1:42205',
-  md_server: 'tcp://114.94.128.1:42213',
-  app_id:      'client_TraderMaster_v1.0.0',
-  auth_code:   '20260324LHJYMHBG',
-  environment: '实盘',
-  td_custom:   false,
-  md_custom:   false,
+  broker_id: '',
+  td_server: '',
+  md_server: '',
+  app_id:      '',
+  auth_code:   '',
+  environment: '测试',
+  td_custom:   true,
+  md_custom:   true,
+  auto_start_strategy: false,
+  strategy_name: 'ma_cross',
+  strategy_symbol: 'IF9999',
 })
 
 const formRef         = ref(null)
@@ -259,6 +280,8 @@ const rules = {
   username:  [{ required: true, message: '请输入投资者账号', trigger: 'blur' }],
   password:  [{ required: true, message: '请输入密码',       trigger: 'blur' }],
   broker_id: [{ required: true, message: '请输入经纪商ID',   trigger: 'blur' }],
+  td_server: [{ required: true, message: '请输入交易前置',   trigger: 'blur' }],
+  md_server: [{ required: true, message: '请输入行情前置',   trigger: 'blur' }],
 }
 
 // 服务器地址（支持自定义）
@@ -323,6 +346,11 @@ async function handleLogin() {
       app_id:    form.app_id,
       auth_code: form.auth_code,
       environment: form.environment,
+      auto_start_strategy: form.auto_start_strategy,
+      strategy_name: form.strategy_name,
+      strategy_params: {
+        symbol: form.strategy_symbol,
+      },
     })
 
     const timeoutPromise = new Promise((_, reject) => {

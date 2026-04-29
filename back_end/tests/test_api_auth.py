@@ -1,4 +1,6 @@
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
+import pytest
 
 from src.api import create_app
 from src.api.security import SESSION_COOKIE_NAME
@@ -63,6 +65,15 @@ def test_health_and_metrics_are_public_and_structured():
     assert "quant_uptime_seconds" in metrics.text
 
 
+def test_websocket_requires_session():
+    app = create_app()
+
+    with TestClient(app) as client:
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect("/ws/system"):
+                pass
+
+
 def test_vnpy_login_sets_cookie_and_allows_protected_endpoint(monkeypatch):
     install_fake_vnpy_gateway(monkeypatch)
     app = create_app()
@@ -88,6 +99,42 @@ def test_vnpy_login_sets_cookie_and_allows_protected_endpoint(monkeypatch):
         logout_response = client.post("/auth/logout")
         assert logout_response.status_code == 200
         assert logout_response.json()["success"] is True
+
+
+def test_login_can_auto_start_strategy_runtime(monkeypatch):
+    install_fake_vnpy_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login_response = client.post(
+            "/auth/login",
+            json={
+                "username": "test-account",
+                "password": "test-password",
+                "broker_id": "2071",
+                "gateway_type": "vnpy",
+                "auto_start_strategy": True,
+                "strategy_name": "ma_cross",
+                "strategy_params": {
+                    "symbol": "rb2505",
+                    "fast_period": 5,
+                    "slow_period": 10,
+                    "position_ratio": 0.2,
+                },
+            },
+        )
+
+        assert login_response.status_code == 200
+        body = login_response.json()
+        assert body["strategy_started"] is True
+        assert body["strategy_id"] == "ma_cross_main"
+
+        strategies = client.get("/strategies")
+        assert strategies.status_code == 200
+        assert strategies.json()[0]["strategy_id"] == "ma_cross_main"
+        assert strategies.json()[0]["status"] == "running"
+
+        client.post("/auth/logout")
 
 
 def test_audit_events_are_available_after_login(monkeypatch):

@@ -14,6 +14,7 @@ from .cache import DataCache
 from .errors import DatabaseError, DataLoadError
 from .governance import detect_bar_gaps, summarize_ohlcv_quality
 from .indicators import add_technical_indicators, validate_data
+from ..settings import synthetic_data_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,10 @@ class DataManager:
     def generate_sample_data(self, symbol: str, days: int = 500,
                              timeframe: str = "1d") -> pd.DataFrame:
         """生成模拟K线数据用于测试"""
+        if not synthetic_data_enabled():
+            logger.warning("模拟数据生成已禁用: %s %s", symbol, timeframe)
+            return pd.DataFrame()
+
         try:
             np.random.seed(42)
             dates = pd.date_range(end=datetime.now(), periods=days, freq='D')
@@ -113,7 +118,7 @@ class DataManager:
                 'open_interest': np.random.randint(5000, 50000, days)
             })
 
-            self.save_bars(df, symbol, timeframe)
+            self.save_bars(df, symbol, timeframe, data_source="synthetic")
             return df
 
         except Exception as e:

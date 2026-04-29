@@ -29,6 +29,7 @@ class TradingEngine:
     def __init__(self, gateway: GatewayBase = None):
         self.gateway = gateway or create_gateway("vnpy")
         self.strategy = None
+        self._processed_signal_count = 0
         self.status = TradingStatus.STOPPED
 
         self.order_manager = OrderManager(self.gateway)
@@ -50,6 +51,7 @@ class TradingEngine:
     def set_strategy(self, strategy):
         """设置策略"""
         self.strategy = strategy
+        self._processed_signal_count = len(getattr(strategy, "signals", []))
 
     def configure_risk(self, config: Dict[str, Any] = None):
         """Configure pre-order risk controls."""
@@ -70,9 +72,10 @@ class TradingEngine:
 
             self.status = TradingStatus.CONNECTING
 
-            if not self.gateway.connect(config):
-                self.status = TradingStatus.ERROR
-                return False
+            if self.gateway.status not in (TradingStatus.CONNECTED, TradingStatus.TRADING):
+                if not self.gateway.connect(config):
+                    self.status = TradingStatus.ERROR
+                    return False
 
             self.order_manager.start()
 
@@ -195,22 +198,51 @@ class TradingEngine:
         if not self.strategy:
             return
         try:
-            import pandas as pd
-            bar = pd.Series({
-                'symbol':   tick.symbol,
-                'datetime': tick.timestamp,
-                'open':     tick.last_price,
-                'high':     tick.last_price,
-                'low':      tick.last_price,
-                'close':    tick.last_price,
-                'volume':   tick.volume,
-                'bid':      tick.bid_price_1,
-                'ask':      tick.ask_price_1,
-            })
+            bar = self._append_live_bar(tick)
             self.strategy.current_date = tick.timestamp
             self.strategy.on_bar(bar)
+            self._dispatch_strategy_signals()
         except Exception as e:
             logger.error(f"处理行情数据失败: {e}")
+
+    def _append_live_bar(self, tick: MarketData):
+        """Convert a live tick into a strategy bar and keep rolling live data."""
+        import pandas as pd
+
+        bar = pd.Series({
+            "symbol": tick.symbol,
+            "datetime": tick.timestamp,
+            "open": tick.last_price,
+            "high": tick.last_price,
+            "low": tick.last_price,
+            "close": tick.last_price,
+            "volume": tick.volume,
+            "bid": tick.bid_price_1,
+            "ask": tick.ask_price_1,
+        })
+        bar_frame = pd.DataFrame([bar.to_dict()], index=[tick.timestamp])
+
+        existing = self.strategy.data.get(tick.symbol)
+        if existing is None or existing.empty:
+            updated = bar_frame
+        else:
+            updated = pd.concat([existing, bar_frame])
+            updated = updated[~updated.index.duplicated(keep="last")].sort_index()
+
+        self.strategy.data[tick.symbol] = updated
+        return bar
+
+    def _dispatch_strategy_signals(self):
+        """Send newly generated strategy signals to the broker gateway."""
+        signals = getattr(self.strategy, "signals", [])
+        if self._processed_signal_count > len(signals):
+            self._processed_signal_count = 0
+
+        new_signals = signals[self._processed_signal_count:]
+        self._processed_signal_count = len(signals)
+
+        for signal in new_signals:
+            self.send_signal(signal)
 
     def get_account(self) -> AccountInfo:
         """获取账户信息"""

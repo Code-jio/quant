@@ -110,6 +110,29 @@
           </el-form-item>
         </el-col>
 
+        <el-col :xs="24" :sm="8" :md="4">
+          <el-form-item label="合约乘数">
+            <el-input-number
+              v-model="form.contract_multiplier"
+              :precision="0"
+              :step="1"
+              :min="1"
+              :controls="false"
+              style="width:100%"
+            />
+          </el-form-item>
+        </el-col>
+
+        <el-col :xs="24" :sm="8" :md="4">
+          <el-form-item label="模拟数据">
+            <el-switch
+              v-model="form.allow_synthetic_data"
+              active-text="允许"
+              inactive-text="禁用"
+            />
+          </el-form-item>
+        </el-col>
+
         <el-col
           v-for="(val, key) in editableStrategyParams"
           :key="key"

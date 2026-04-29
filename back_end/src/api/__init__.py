@@ -45,15 +45,18 @@ import psutil
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..strategy import Direction, StrategyBase
 from ..trading import AccountInfo, GatewayBase, TradingEngine, TradingStatus
 from ..strategy import Signal, OrderType, OffsetFlag
 from ..observability import audit_log, metrics, new_request_id, structured_json
+from ..settings import ctp_defaults, ctp_server_presets
+from .backtest_service import STRATEGY_CATALOG, run_backtest_sync
 from .security import SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME, is_open_path, session_store
 
 logger = logging.getLogger(__name__)
+_CTP_DEFAULTS = ctp_defaults()
 
 _DEFAULT_CORS_ORIGINS = (
     "http://localhost:5173,"
@@ -74,13 +77,16 @@ def _cors_origins() -> List[str]:
 class LoginRequest(BaseModel):
     username:   str
     password:   str
-    broker_id:  str = "2071"
-    td_server:  str = "tcp://114.94.128.1:42205"
-    md_server:  str = "tcp://114.94.128.1:42213"
-    app_id:     str = "client_TraderMaster_v1.0.0"
-    auth_code:  str = "20260324LHJYMHBG"
+    broker_id:  str = _CTP_DEFAULTS["broker_id"]
+    td_server:  str = _CTP_DEFAULTS["td_server"]
+    md_server:  str = _CTP_DEFAULTS["md_server"]
+    app_id:     str = _CTP_DEFAULTS["app_id"]
+    auth_code:  str = _CTP_DEFAULTS["auth_code"]
     gateway_type: str = "vnpy"   # "vnpy" | "ctp"
-    environment: str = "实盘"     # vn.py CTP 柜台环境："实盘" | "测试"
+    environment: str = _CTP_DEFAULTS["vnpy_environment"]     # vn.py CTP 柜台环境："实盘" | "测试"
+    auto_start_strategy: bool = False
+    strategy_name: str = "ma_cross"
+    strategy_params: Dict[str, Any] = Field(default_factory=dict)
 
 
 class LoginResponse(BaseModel):
@@ -90,6 +96,8 @@ class LoginResponse(BaseModel):
     gateway_status: str
     account_id:     str = ""
     balance:        float = 0.0
+    strategy_started: bool = False
+    strategy_id:      str = ""
 
 
 class AuthStatusResponse(BaseModel):
@@ -178,14 +186,16 @@ class WeightRequest(BaseModel):
 
 class BacktestRunRequest(BaseModel):
     strategy_name:   str            = "ma_cross"
-    strategy_params: Dict[str, Any] = {}
+    strategy_params: Dict[str, Any] = Field(default_factory=dict)
     start_date:      str            = "2023-01-01"
     end_date:        str            = "2024-12-31"
     initial_capital: float          = 1_000_000
     commission_rate: float          = 0.0003
     slip_rate:       float          = 0.0001
     margin_rate:     float          = 0.12
+    contract_multiplier: float      = 1.0
     sample_days:     int            = 700   # 模拟数据天数
+    allow_synthetic_data: bool      = True
 
 
 class ManualOrderRequest(BaseModel):
@@ -316,26 +326,13 @@ def _close_direction_for_position(pos) -> Direction:
 
 
 # ---------------------------------------------------------------------------
-# 预设服务器列表（西南期货 SimNow / 生产前置）
+# 预设服务器列表从环境变量读取：
+# QUANT_CTP_TD_PRESETS="label=tcp://host:port,label2=tcp://host:port"
+# QUANT_CTP_MD_PRESETS="label=tcp://host:port,label2=tcp://host:port"
 # ---------------------------------------------------------------------------
 
-_PRESET_TD = [
-    {"label": "电信1", "value": "tcp://114.94.128.1:42205"},
-    {"label": "联通1", "value": "tcp://140.206.34.161:42205"},
-    {"label": "电信2", "value": "tcp://114.94.128.5:42205"},
-    {"label": "联通2", "value": "tcp://140.206.34.165:42205"},
-    {"label": "电信3", "value": "tcp://114.94.128.6:42205"},
-    {"label": "联通3", "value": "tcp://140.206.34.166:42205"},
-]
-
-_PRESET_MD = [
-    {"label": "电信1", "value": "tcp://114.94.128.1:42213"},
-    {"label": "联通1", "value": "tcp://140.206.34.161:42213"},
-    {"label": "电信2", "value": "tcp://114.94.128.5:42213"},
-    {"label": "联通2", "value": "tcp://140.206.34.165:42213"},
-    {"label": "电信3", "value": "tcp://114.94.128.6:42213"},
-    {"label": "联通3", "value": "tcp://140.206.34.166:42213"},
-]
+_PRESET_TD = ctp_server_presets("td")
+_PRESET_MD = ctp_server_presets("md")
 
 # ---------------------------------------------------------------------------
 # WebSocket 连接管理器
@@ -550,6 +547,21 @@ def _request_id(request: Optional[Request]) -> str:
     return getattr(getattr(request, "state", None), "request_id", "") if request else ""
 
 
+def _websocket_session_token(ws: WebSocket) -> str:
+    auth = ws.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth[7:]
+    return ws.cookies.get(SESSION_COOKIE_NAME, "") or ws.query_params.get("token", "")
+
+
+async def _require_websocket_session(ws: WebSocket) -> bool:
+    token = _websocket_session_token(ws)
+    if token and session_store.is_valid(token):
+        return True
+    await ws.close(code=1008)
+    return False
+
+
 def _record_audit(
     event_type: str,
     action: str,
@@ -624,6 +636,8 @@ def _trade_to_dict(trade) -> dict:
 def _install_hook_on_engine(engine: TradingEngine):
     """在引擎的网关回调链末尾挂载订单 & 成交广播钩子。"""
     gw = engine.gateway
+    if getattr(gw, "_quant_api_hooks_installed", False):
+        return
 
     # ── 订单钩子 ────────────────────────────────────────────────────────────
     _orig_order = gw.on_order_callback
@@ -652,6 +666,7 @@ def _install_hook_on_engine(engine: TradingEngine):
             orders_manager.broadcast_sync(_trade_to_dict(trade), loop)
 
     gw.on_trade_callback = _trade_chained
+    setattr(gw, "_quant_api_hooks_installed", True)
     logger.info(f"[API] 订单/成交广播钩子已安装: 网关={gw.name}")
 
 # ---------------------------------------------------------------------------
@@ -1167,190 +1182,8 @@ log_buffer.setFormatter(logging.Formatter("%(message)s"))
 # ---------------------------------------------------------------------------
 # 回测辅助
 # ---------------------------------------------------------------------------
-
-# 策略目录（供前端选择器使用）
-_STRATEGY_CATALOG = [
-    {
-        "name":   "ma_cross",
-        "label":  "双均线策略",
-        "desc":   "快慢均线金叉/死叉",
-        "default_params": {
-            "symbol": "IF9999", "fast_period": 10,
-            "slow_period": 20,  "position_ratio": 0.8,
-        },
-    },
-    {
-        "name":   "rsi",
-        "label":  "RSI 均值回归",
-        "desc":   "RSI 超买超卖反转",
-        "default_params": {
-            "symbol": "IF9999", "rsi_period": 14,
-            "oversold": 30,     "overbought": 70,
-            "position_ratio": 0.8,
-        },
-    },
-    {
-        "name":   "breakout",
-        "label":  "突破策略",
-        "desc":   "N 日高低点突破",
-        "default_params": {
-            "symbol": "IF9999", "lookback_period": 20,
-            "position_ratio": 0.8,
-        },
-    },
-]
-
-
-def _run_backtest_sync(body: "BacktestRunRequest") -> dict:
-    """在线程池中同步运行回测并返回序列化结果（阻塞操作）。"""
-    import numpy as np
-    import pandas as pd
-    from ..backtest import BacktestEngine, BacktestConfig
-    from ..data import DataManager
-    from ..strategy import create_strategy, Direction
-    from ..analysis import Analyzer
-
-    bt_cfg = BacktestConfig(
-        start_date      = body.start_date,
-        end_date        = body.end_date,
-        initial_capital = body.initial_capital,
-        commission_rate = body.commission_rate,
-        slip_rate       = body.slip_rate,
-        margin_rate     = body.margin_rate,
-    )
-
-    strategy = create_strategy(body.strategy_name, body.strategy_params or {})
-
-    dm = DataManager()
-    symbol = (body.strategy_params or {}).get("symbol", "IF9999")
-    # 若数据库无数据则生成模拟数据
-    existing = dm.get_bars(symbol, body.start_date, body.end_date)
-    if existing is None or existing.empty:
-        dm.generate_sample_data(symbol, days=body.sample_days)
-
-    engine = BacktestEngine(bt_cfg)
-    engine.set_data_manager(dm)
-    engine.set_strategy(strategy)
-    engine.run()
-
-    # ── 权益曲线 ─────────────────────────────────────────────────────────────
-    equity_list = sorted(engine.equity_curve.values(), key=lambda x: x["date"])
-    if not equity_list:
-        return {"success": False, "error": "回测无数据，请检查日期范围或合约代码"}
-
-    eq_df = pd.DataFrame(equity_list)
-    eq_df["date"] = pd.to_datetime(eq_df["date"])
-    eq_df = eq_df.set_index("date")
-    peak  = eq_df["capital"].cummax()
-    eq_df["dd_pct"] = (eq_df["capital"] - peak) / peak * 100
-
-    equity_curve_out = [
-        {
-            "date":    str(idx.date()),
-            "capital": round(row["capital"], 2),
-            "dd_pct":  round(row["dd_pct"], 4),
-            "cash":    round(row.get("cash", 0), 2),
-        }
-        for idx, row in eq_df.iterrows()
-    ]
-
-    # ── 日收益率 ─────────────────────────────────────────────────────────────
-    daily_ret_pct = (eq_df["capital"].pct_change().dropna() * 100).round(4).tolist()
-
-    # ── 月度热力图 ───────────────────────────────────────────────────────────
-    monthly_ret = eq_df["capital"].resample("ME").last().pct_change().dropna()
-    years_list  = sorted({str(dt.year) for dt in monthly_ret.index})
-    yr_idx_map  = {y: i for i, y in enumerate(years_list)}
-    heatmap_data = []
-    for dt, ret in monthly_ret.items():
-        heatmap_data.append([dt.month - 1, yr_idx_map[str(dt.year)], round(ret * 100, 3)])
-
-    # ── 交易标记（含开/平仓类型推断）──────────────────────────────────────────
-    cap_map      = {item["date"]: item["capital"] for item in equity_curve_out}
-    pos_tracker: dict = {}
-    trade_markers = []
-
-    for t in sorted(engine.result.trades, key=lambda x: x.trade_time):
-        sym       = t.symbol
-        dirval    = t.direction.value   # "long" | "short"
-        cur_pos   = pos_tracker.get(sym)
-
-        if dirval == "long":
-            if cur_pos == "short":
-                mtype            = "cover_close"
-                pos_tracker[sym] = None
-            else:
-                mtype            = "buy_open"
-                pos_tracker[sym] = "long"
-        else:
-            if cur_pos == "long":
-                mtype            = "sell_close"
-                pos_tracker[sym] = None
-            else:
-                mtype            = "short_open"
-                pos_tracker[sym] = "short"
-
-        ts       = t.trade_time
-        date_str = ts.strftime("%Y-%m-%d") if hasattr(ts, "strftime") else str(ts)[:10]
-        trade_markers.append({
-            "date":        date_str,
-            "capital":     cap_map.get(date_str),
-            "trade_price": round(t.price, 4),
-            "type":        mtype,
-            "symbol":      sym,
-            "volume":      t.volume,
-            "pnl":         round(getattr(t, "pnl", 0.0), 2),
-            "commission":  round(t.commission, 4),
-        })
-
-    # ── 综合指标 ─────────────────────────────────────────────────────────────
-    analyzer = Analyzer(bt_cfg.initial_capital)
-    analyzer.set_data(list(engine.equity_curve.values()), engine.result.trades)
-    raw      = analyzer.analyze().to_dict()
-    r        = raw.get("risk",        {}) if raw else {}
-    p        = raw.get("performance", {}) if raw else {}
-
-    metrics = {
-        "total_return":           round(p.get("total_return",          0) * 100, 3),
-        "annual_return":          round(p.get("annual_return",         0) * 100, 3),
-        "win_rate":               round(p.get("win_rate",              0) * 100, 3),
-        "profit_loss_ratio":      round(p.get("profit_loss_ratio",     0),       4),
-        "total_trades":           p.get("total_trades",                0),
-        "winning_trades":         p.get("winning_trades",              0),
-        "losing_trades":          p.get("losing_trades",               0),
-        "avg_win":                round(p.get("avg_win",               0),       2),
-        "avg_loss":               round(p.get("avg_loss",              0),       2),
-        "max_consecutive_wins":   p.get("max_consecutive_wins",        0),
-        "max_consecutive_losses": p.get("max_consecutive_losses",      0),
-        "sharpe_ratio":           round(r.get("sharpe_ratio",          0),       3),
-        "sortino_ratio":          round(r.get("sortino_ratio",         0),       3),
-        "calmar_ratio":           round(r.get("calmar_ratio",          0),       3),
-        "max_drawdown_pct":       round(r.get("max_drawdown_pct",      0) * 100, 3),
-        "volatility":             round(r.get("volatility",            0) * 100, 3),
-        "var_95":                 round(r.get("var_95",                0) * 100, 3),
-        "cvar_95":                round(r.get("cvar_95",               0) * 100, 3),
-        "downside_vol":           round(r.get("downside_vol",          0) * 100, 3),
-        "skewness":               round(r.get("skewness",              0),       4),
-        "kurtosis":               round(r.get("kurtosis",              0),       4),
-    }
-
-    return {
-        "success":      True,
-        "config":       {
-            "strategy_name":   strategy.name,
-            "start_date":      body.start_date,
-            "end_date":        body.end_date,
-            "initial_capital": body.initial_capital,
-            "commission_rate": body.commission_rate,
-            "slip_rate":       body.slip_rate,
-            "margin_rate":     body.margin_rate,
-        },
-        "metrics":      metrics,
-        "equity_curve": equity_curve_out,
-        "daily_returns": daily_ret_pct,
-        "monthly_heatmap": {"years": years_list, "data": heatmap_data},
-        "trade_markers": trade_markers,
-    }
+# Backtest helpers are implemented in api.backtest_service.
+# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # FastAPI 应用工厂
@@ -1650,6 +1483,33 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         trading_state._day_open_balance = balance  # 以登录时余额作为日内基准
         engine.risk_manager.set_day_open_balance(balance)
 
+        strategy_started = False
+        strategy_id = ""
+        if body.auto_start_strategy:
+            from ..strategy import create_strategy
+
+            strategy_params = dict(body.strategy_params or {})
+            if not strategy_params.get("symbol") and not strategy_params.get("symbols"):
+                raise HTTPException(status_code=400, detail="自动启动策略需要 strategy_params.symbol 或 symbols")
+            strategy = create_strategy(body.strategy_name, strategy_params)
+            strategy.initial_capital = config.get("initial_capital", 0.0) or balance or 1_000_000.0
+            engine.set_strategy(strategy)
+
+            strategy_config = {
+                **config,
+                "strategy_name": body.strategy_name,
+                "strategy_params": strategy_params,
+            }
+            if not engine.start(strategy_config):
+                raise HTTPException(status_code=500, detail="策略运行时启动失败")
+
+            strategy_id = f"{body.strategy_name}_main"
+            trading_state.register(strategy_id, strategy, engine, strategy_config)
+            symbols = strategy_params.get("symbols") or [strategy_params.get("symbol")]
+            _subscribe_market_ticks(engine, [s for s in symbols if s])
+            strategy_started = True
+            trading_state.add_log(f"策略已自动启动: {strategy_id}")
+
         trading_state.add_log(f"✔ 登录成功，账户: {account_id}，当前余额: ¥{balance:,.2f}（用作初始资金基准）")
 
         token = session_store.create()
@@ -1673,10 +1533,12 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         return LoginResponse(
             success        = True,
             token          = token,
-            message        = "登录成功",
+            message        = "登录成功，策略已启动" if strategy_started else "登录成功",
             gateway_status = gateway.status.value,
             account_id     = account_id,
             balance        = balance,
+            strategy_started = strategy_started,
+            strategy_id      = strategy_id,
         )
 
     @app.post("/auth/logout", summary="断开连接并注销会话", tags=["认证"])
@@ -2192,6 +2054,8 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
 
     @app.websocket("/ws/system")
     async def ws_system(ws: WebSocket):
+        if not await _require_websocket_session(ws):
+            return
         await system_manager.connect(ws)
         try:
             await ws.send_text(_json.dumps(_build_system_snapshot(), ensure_ascii=False, default=str))
@@ -2206,6 +2070,8 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
 
     @app.websocket("/ws/orders")
     async def ws_orders(ws: WebSocket):
+        if not await _require_websocket_session(ws):
+            return
         await orders_manager.connect(ws)
         try:
             while True:
@@ -2219,6 +2085,8 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
 
     @app.websocket("/ws/positions")
     async def ws_positions(ws: WebSocket):
+        if not await _require_websocket_session(ws):
+            return
         await positions_manager.connect(ws)
         try:
             # 连接时立即推送当前持仓快照
@@ -2236,6 +2104,8 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
 
     @app.websocket("/ws/dashboard")
     async def ws_dashboard(ws: WebSocket):
+        if not await _require_websocket_session(ws):
+            return
         await dashboard_manager.connect(ws)
         try:
             # 连接时立即推送一次快照
@@ -2276,6 +2146,8 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
 
     @app.websocket("/ws/logs")
     async def ws_logs(ws: WebSocket):
+        if not await _require_websocket_session(ws):
+            return
         await log_manager.connect(ws)
         try:
             # 连接时先推送最近 200 条历史日志
@@ -2299,7 +2171,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
     @app.get("/backtest/strategies")
     async def bt_list_strategies(request: Request):
         """返回可用策略列表及默认参数。"""
-        return JSONResponse({"strategies": _STRATEGY_CATALOG})
+        return JSONResponse({"strategies": STRATEGY_CATALOG})
 
     @app.post("/backtest/run")
     async def bt_run(body: BacktestRunRequest, request: Request):
@@ -2307,7 +2179,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         loop = asyncio.get_event_loop()
         try:
             result = await asyncio.wait_for(
-                loop.run_in_executor(None, _run_backtest_sync, body),
+                loop.run_in_executor(None, run_backtest_sync, body),
                 timeout=120,
             )
         except asyncio.TimeoutError:
@@ -2423,6 +2295,8 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
     # 每个连接独立维护自己的订阅集合；tick 生成器按已订阅品种模拟行情。
     @app.websocket("/ws/watch")
     async def ws_watch(ws: WebSocket):
+        if not await _require_websocket_session(ws):
+            return
         await ws.accept()
         logger.info("[WS:watch] 新连接")
 

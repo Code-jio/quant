@@ -1,0 +1,42 @@
+{
+  "mode": "backtest",
+  "backtest": {
+    "start_date": "2023-01-01",
+    "end_date": "2024-12-31",
+    "initial_capital": 1000000,
+    "commission_rate": 0.0003,
+    "slip_rate": 0.0001,
+    "margin_rate": 0.12,
+    "contract_multiplier": 1
+  },
+  "strategy": {
+    "name": "ma_cross",
+    "symbol": "IF9999",
+    "fast_period": 10,
+    "slow_period": 20,
+    "position_ratio": 0.8
+  },
+  "trading": {
+    "gateway": "vnpy",
+    "username": "",
+    "password": "",
+    "broker_id": "",
+    "td_server": "",
+    "md_server": "",
+    "app_id": "",
+    "auth_code": "",
+    "vnpy_environment": "测试",
+    "initial_capital": 1000000
+  },
+  "risk": {
+    "enabled": true,
+    "max_order_volume": 1000,
+    "max_position_volume": 10000,
+    "max_active_orders": 200,
+    "max_orders_per_minute": 120,
+    "max_daily_loss_ratio": 0.1,
+    "allow_market_orders": true,
+    "allowed_symbols": [],
+    "blocked_symbols": []
+  }
+}
