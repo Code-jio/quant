@@ -134,6 +134,7 @@ class TradingEngine:
                 positions=self.gateway.positions,
                 active_orders=self.gateway.orders.values(),
                 account=getattr(self.gateway, "account", None),
+                market_data=self._market_data_for_symbol(signal.symbol),
             )
             if not risk_result.allowed:
                 self.last_reject_reason = risk_result.reason
@@ -142,7 +143,7 @@ class TradingEngine:
 
             order_id = self.order_manager.submit_order(signal)
             if order_id:
-                self.risk_manager.record_order()
+                self.risk_manager.record_order(signal)
                 logger.info(f"发送信号: {signal.symbol} {signal.direction.value} {signal.volume}@{signal.price}")
             return order_id
         except Exception as e:
@@ -194,6 +195,7 @@ class TradingEngine:
             "last_price": tick.last_price,
             "bid_price_1": tick.bid_price_1,
             "ask_price_1": tick.ask_price_1,
+            "timestamp": tick.timestamp,
         })
         if not self.strategy:
             return
@@ -243,6 +245,28 @@ class TradingEngine:
 
         for signal in new_signals:
             self.send_signal(signal)
+
+    def _market_data_for_symbol(self, symbol: str) -> Dict[str, Any]:
+        data = self.order_manager.market_data.get(symbol)
+        if data:
+            return data
+
+        latest_ticks = getattr(self.gateway, "latest_ticks", {})
+        tick = latest_ticks.get(symbol) if isinstance(latest_ticks, dict) else None
+        if tick:
+            return {
+                "last_price": getattr(tick, "last_price", 0.0),
+                "bid_price_1": getattr(tick, "bid_price_1", 0.0),
+                "ask_price_1": getattr(tick, "ask_price_1", 0.0),
+                "timestamp": getattr(tick, "timestamp", None),
+            }
+
+        snapshots = getattr(self.gateway, "latest_tick_snapshots", {})
+        snapshot = snapshots.get(symbol) if isinstance(snapshots, dict) else None
+        if snapshot:
+            return snapshot
+
+        return {}
 
     def get_account(self) -> AccountInfo:
         """获取账户信息"""

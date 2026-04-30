@@ -57,6 +57,23 @@ from .security import SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME, is_open_path,
 
 logger = logging.getLogger(__name__)
 _CTP_DEFAULTS = ctp_defaults()
+_DEFAULT_RUNTIME_RISK = {
+    "enabled": True,
+    "max_order_volume": 1000,
+    "max_position_volume": 10000,
+    "max_active_orders": 200,
+    "max_orders_per_minute": 120,
+    "max_daily_loss_ratio": 0.03,
+    "max_order_value": 5_000_000,
+    "max_position_value": 10_000_000,
+    "max_price_deviation": 0.02,
+    "max_market_data_age_seconds": 0,
+    "duplicate_signal_window_seconds": 2,
+    "default_contract_multiplier": 1,
+    "allow_market_orders": True,
+    "allowed_symbols": [],
+    "blocked_symbols": [],
+}
 
 _DEFAULT_CORS_ORIGINS = (
     "http://localhost:5173,"
@@ -87,6 +104,7 @@ class LoginRequest(BaseModel):
     auto_start_strategy: bool = False
     strategy_name: str = "ma_cross"
     strategy_params: Dict[str, Any] = Field(default_factory=dict)
+    risk: Dict[str, Any] = Field(default_factory=dict)
 
 
 class LoginResponse(BaseModel):
@@ -215,6 +233,18 @@ class ClosePositionRequest(BaseModel):
     direction:  str = ""        # 可选："long" | "short"，用于锁定要平的持仓方向
     offset:     str = "close"   # "close" | "close_today" | "close_yesterday"
     order_type: str = ""        # "" 自动按 price 推断；也可传 "market" | "limit"
+
+
+class EmergencyStopRequest(BaseModel):
+    """交易急停请求。"""
+    reason: str = ""
+    cancel_orders: bool = True
+    stop_strategies: bool = False
+
+
+class RiskConfigRequest(BaseModel):
+    """运行时风控配置更新请求。"""
+    risk: Dict[str, Any] = Field(default_factory=dict)
 
 
 _MANUAL_DIRECTION_MAP = {"long": Direction.LONG, "short": Direction.SHORT}
@@ -1060,6 +1090,42 @@ def _collect_all_trades() -> list:
     return result
 
 
+def _unique_engines() -> list:
+    """Return connected engines without duplicate object references."""
+    engines = []
+    seen: set[int] = set()
+    primary = trading_state.primary_engine()
+    if primary:
+        engines.append(primary)
+        seen.add(id(primary))
+    for entry in trading_state.all_entries():
+        if id(entry.engine) not in seen:
+            engines.append(entry.engine)
+            seen.add(id(entry.engine))
+    return engines
+
+
+def _cancel_all_active_orders() -> dict:
+    cancelled = 0
+    failed = 0
+    seen: set[str] = set()
+    for engine in _unique_engines():
+        for oid, order in list(engine.gateway.orders.items()):
+            if oid in seen:
+                continue
+            seen.add(oid)
+            if not order.is_active():
+                continue
+            try:
+                if engine.gateway.cancel_order(oid):
+                    cancelled += 1
+                else:
+                    failed += 1
+            except Exception:
+                failed += 1
+    return {"cancelled": cancelled, "failed": failed}
+
+
 def _build_positions_snapshot() -> dict:
     """构建完整持仓快照，含市值估算。"""
     engine    = trading_state.primary_engine()
@@ -1413,6 +1479,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             "vnpy_environment": body.environment,
             "connect_timeout": 25,
             "initial_capital": 0.0,
+            "risk": {**_DEFAULT_RUNTIME_RISK, **dict(body.risk or {})},
             "log_callback": trading_state.add_log,
         }
 
@@ -1730,6 +1797,115 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         """返回所有已成交记录，按时间倒序，最多 500 条。"""
         return _collect_all_trades()[:500]
 
+    @app.get("/risk/status", summary="风控状态", tags=["风控"])
+    def risk_status():
+        engine = trading_state.primary_engine()
+        if engine is None:
+            return {"connected": False, "risk": None}
+        return {
+            "connected": True,
+            "gateway_status": engine.gateway.status.value if hasattr(engine.gateway.status, "value") else str(engine.gateway.status),
+            "risk": engine.risk_manager.status(),
+            "last_reject_reason": getattr(engine, "last_reject_reason", ""),
+        }
+
+    @app.put("/risk/config", summary="更新运行时风控配置", tags=["风控"])
+    def update_risk_config(body: RiskConfigRequest, request: Request):
+        engines = _unique_engines()
+        if not engines:
+            raise HTTPException(status_code=503, detail="交易引擎未连接")
+        merged = {**_DEFAULT_RUNTIME_RISK, **dict(body.risk or {})}
+        for engine in engines:
+            engine.configure_risk({"risk": merged})
+        if trading_state._main_config is not None:
+            trading_state._main_config["risk"] = merged
+        _record_audit("risk", "update_config", "success", request=request, detail={"risk": merged})
+        return {"success": True, "risk": engines[0].risk_manager.status()}
+
+    @app.post("/risk/emergency-stop", summary="交易急停", tags=["风控"])
+    def emergency_stop(body: EmergencyStopRequest, request: Request):
+        engines = _unique_engines()
+        if not engines:
+            raise HTTPException(status_code=503, detail="交易引擎未连接")
+
+        reason = body.reason.strip() or "operator emergency stop"
+        for engine in engines:
+            engine.risk_manager.set_emergency_stop(True, reason)
+
+        cancel_result = _cancel_all_active_orders() if body.cancel_orders else {"cancelled": 0, "failed": 0}
+        stopped = 0
+        if body.stop_strategies:
+            for entry in trading_state.all_entries():
+                try:
+                    entry.engine.stop()
+                    stopped += 1
+                except Exception:
+                    logger.exception("[risk] 急停策略停止失败: %s", entry.strategy_id)
+
+        trading_state.add_log(f"交易急停已触发: {reason}")
+        _record_audit(
+            "risk",
+            "emergency_stop",
+            "success",
+            request=request,
+            detail={**cancel_result, "stopped_strategies": stopped, "reason": reason},
+        )
+        return {
+            "success": True,
+            "emergency_stop": True,
+            "reason": reason,
+            **cancel_result,
+            "stopped_strategies": stopped,
+        }
+
+    @app.post("/risk/resume", summary="解除交易急停", tags=["风控"])
+    def resume_trading(request: Request):
+        engines = _unique_engines()
+        if not engines:
+            raise HTTPException(status_code=503, detail="交易引擎未连接")
+        for engine in engines:
+            engine.risk_manager.set_emergency_stop(False, "")
+        trading_state.add_log("交易急停已解除")
+        _record_audit("risk", "resume", "success", request=request)
+        return {"success": True, "emergency_stop": False}
+
+    @app.get("/trading/reconcile", summary="账户/委托/持仓对账快照", tags=["风控"])
+    def trading_reconcile():
+        engine = trading_state.primary_engine()
+        if engine is None:
+            raise HTTPException(status_code=503, detail="交易引擎未连接")
+        account = engine.get_account()
+        positions_snapshot = _build_positions_snapshot()
+        orders = _collect_all_orders()
+        active_orders = [order for order in orders if order.get("status") in {"submitting", "submitted", "partfilled"}]
+        return {
+            "timestamp": datetime.now().isoformat(),
+            "connected": engine.gateway.status in (TradingStatus.CONNECTED, TradingStatus.TRADING),
+            "gateway_status": engine.gateway.status.value if hasattr(engine.gateway.status, "value") else str(engine.gateway.status),
+            "account": _account_to_dict(account) if not getattr(account, "error_msg", "") else {"error_msg": account.error_msg},
+            "risk": engine.risk_manager.status(),
+            "orders": {
+                "active_count": len(active_orders),
+                "total_count": len(orders),
+                "active": active_orders[:100],
+            },
+            "positions": {
+                "count": len(positions_snapshot.get("positions", [])),
+                "items": positions_snapshot.get("positions", []),
+            },
+            "strategies": [
+                {
+                    "strategy_id": entry.strategy_id,
+                    "name": entry.strategy.name,
+                    "status": entry.status,
+                    "signal_count": len(getattr(entry.strategy, "signals", [])),
+                    "trade_count": len(getattr(entry.strategy, "trades", [])),
+                    "error_count": getattr(entry.strategy, "_error_count", 0),
+                }
+                for entry in trading_state.all_entries()
+            ],
+        }
+
     @app.delete("/orders/{order_id}", summary="撤销委托单", tags=["订单簿"])
     def cancel_order(order_id: str, request: Request):
         """调用网关 cancel_order()，结果通过 /ws/orders 回调推送。"""
@@ -1854,29 +2030,9 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
 
         cancelled = 0
         failed = 0
-
-        # 主引擎订单
-        for oid, order in list(engine.gateway.orders.items()):
-            if order.is_active():
-                try:
-                    if engine.gateway.cancel_order(oid):
-                        cancelled += 1
-                    else:
-                        failed += 1
-                except Exception:
-                    failed += 1
-
-        # 各策略引擎订单
-        for entry in trading_state.all_entries():
-            for oid, order in list(entry.engine.gateway.orders.items()):
-                if order.is_active():
-                    try:
-                        if entry.engine.gateway.cancel_order(oid):
-                            cancelled += 1
-                        else:
-                            failed += 1
-                    except Exception:
-                        failed += 1
+        result = _cancel_all_active_orders()
+        cancelled = result["cancelled"]
+        failed = result["failed"]
 
         return {"success": True, "cancelled": cancelled, "failed": failed}
 

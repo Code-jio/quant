@@ -64,6 +64,13 @@ DEFAULT_CONFIG = {
         "max_active_orders": 200,
         "max_orders_per_minute": 120,
         "max_daily_loss_ratio": 0.10,
+        "max_order_value": 5000000,
+        "max_position_value": 10000000,
+        "max_price_deviation": 0.02,
+        "max_market_data_age_seconds": 0,
+        "duplicate_signal_window_seconds": 2,
+        "default_contract_multiplier": 1,
+        "contract_multipliers": {},
         "allow_market_orders": True,
         "allowed_symbols": [],
         "blocked_symbols": []

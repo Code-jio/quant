@@ -106,6 +106,20 @@ export const updateWeights = (weights) =>
 // ── 仪表盘 ────────────────────────────────────────────────────────────────
 export const fetchDashboardMetrics = () => request('/dashboard/metrics')
 
+// ── 风控 / 对账 ────────────────────────────────────────────────────────────
+export const fetchRiskStatus = () => request('/risk/status')
+
+export const updateRiskConfig = (risk) =>
+  request('/risk/config', { method: 'PUT', body: JSON.stringify({ risk }) })
+
+export const emergencyStop = (body = {}) =>
+  request('/risk/emergency-stop', { method: 'POST', body: JSON.stringify(body) })
+
+export const resumeTrading = () =>
+  request('/risk/resume', { method: 'POST' })
+
+export const fetchTradingReconcile = () => request('/trading/reconcile')
+
 // ── 订单簿 ────────────────────────────────────────────────────────────────
 /** 所有委托单（最近 500 条） */
 export const fetchOrders = () => request('/orders')

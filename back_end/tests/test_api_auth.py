@@ -137,6 +137,110 @@ def test_login_can_auto_start_strategy_runtime(monkeypatch):
         client.post("/auth/logout")
 
 
+def test_emergency_stop_blocks_manual_orders_and_can_resume(monkeypatch):
+    install_fake_vnpy_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login_response = client.post(
+            "/auth/login",
+            json={
+                "username": "test-account",
+                "password": "test-password",
+                "broker_id": "2071",
+                "gateway_type": "vnpy",
+            },
+        )
+        assert login_response.status_code == 200
+
+        stop_response = client.post(
+            "/risk/emergency-stop",
+            json={"reason": "operator test", "cancel_orders": True, "stop_strategies": False},
+        )
+        assert stop_response.status_code == 200
+        assert stop_response.json()["emergency_stop"] is True
+
+        order_response = client.post(
+            "/orders",
+            json={
+                "symbol": "rb2505",
+                "direction": "long",
+                "offset": "open",
+                "price": 0,
+                "volume": 1,
+                "order_type": "market",
+            },
+        )
+        assert order_response.status_code == 400
+        assert "Emergency stop" in order_response.json()["detail"]
+
+        resume_response = client.post("/risk/resume")
+        assert resume_response.status_code == 200
+        assert resume_response.json()["emergency_stop"] is False
+
+
+def test_runtime_risk_config_can_be_tightened(monkeypatch):
+    install_fake_vnpy_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login_response = client.post(
+            "/auth/login",
+            json={
+                "username": "test-account",
+                "password": "test-password",
+                "broker_id": "2071",
+                "gateway_type": "vnpy",
+            },
+        )
+        assert login_response.status_code == 200
+
+        config_response = client.put("/risk/config", json={"risk": {"max_order_volume": 1}})
+        assert config_response.status_code == 200
+        assert config_response.json()["risk"]["max_order_volume"] == 1
+
+        order_response = client.post(
+            "/orders",
+            json={
+                "symbol": "rb2505",
+                "direction": "long",
+                "offset": "open",
+                "price": 0,
+                "volume": 2,
+                "order_type": "market",
+            },
+        )
+
+    assert order_response.status_code == 400
+    assert "volume" in order_response.json()["detail"].lower()
+
+
+def test_trading_reconcile_reports_account_orders_and_positions(monkeypatch):
+    install_fake_vnpy_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login_response = client.post(
+            "/auth/login",
+            json={
+                "username": "test-account",
+                "password": "test-password",
+                "broker_id": "2071",
+                "gateway_type": "vnpy",
+            },
+        )
+        assert login_response.status_code == 200
+
+        response = client.get("/trading/reconcile")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["connected"] is True
+    assert body["account"]["account_id"] == "TEST001"
+    assert "orders" in body
+    assert "positions" in body
+
+
 def test_audit_events_are_available_after_login(monkeypatch):
     install_fake_vnpy_gateway(monkeypatch)
     app = create_app()

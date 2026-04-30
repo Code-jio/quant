@@ -109,6 +109,61 @@ class RiskManagerTest(unittest.TestCase):
         self.assertFalse(result.allowed)
         self.assertIn("Close volume", result.reason)
 
+    def test_emergency_stop_rejects_all_orders(self):
+        manager = RiskManager()
+        manager.set_emergency_stop(True, "manual halt")
+
+        result = manager.check_signal(self._signal(), positions={})
+
+        self.assertFalse(result.allowed)
+        self.assertIn("Emergency stop", result.reason)
+
+    def test_rejects_stale_market_data_before_opening(self):
+        manager = RiskManager({"max_market_data_age_seconds": 1})
+        stale_tick = {
+            "last_price": 3888.0,
+            "timestamp": datetime.now() - timedelta(seconds=3),
+        }
+
+        result = manager.check_signal(self._signal(price=3888), positions={}, market_data=stale_tick)
+
+        self.assertFalse(result.allowed)
+        self.assertIn("Market data is stale", result.reason)
+
+    def test_rejects_limit_order_far_from_latest_price(self):
+        manager = RiskManager({"max_price_deviation": 0.01})
+        tick = {"last_price": 100.0, "timestamp": datetime.now()}
+
+        result = manager.check_signal(
+            self._signal(price=103.0, order_type=OrderType.LIMIT),
+            positions={},
+            market_data=tick,
+        )
+
+        self.assertFalse(result.allowed)
+        self.assertIn("Price deviation", result.reason)
+
+    def test_rejects_order_value_above_limit(self):
+        manager = RiskManager({"max_order_value": 10_000, "default_contract_multiplier": 10})
+        tick = {"last_price": 101.0, "timestamp": datetime.now()}
+
+        result = manager.check_signal(self._signal(price=101.0, volume=10), positions={}, market_data=tick)
+
+        self.assertFalse(result.allowed)
+        self.assertIn("Order value", result.reason)
+
+    def test_duplicate_signal_is_rejected_within_window(self):
+        manager = RiskManager({"duplicate_signal_window_seconds": 60})
+        signal = self._signal(price=100.0, order_type=OrderType.LIMIT)
+
+        first = manager.check_signal(signal, positions={}, market_data={"last_price": 100.0, "timestamp": datetime.now()})
+        manager.record_order(signal)
+        second = manager.check_signal(signal, positions={}, market_data={"last_price": 100.0, "timestamp": datetime.now()})
+
+        self.assertTrue(first.allowed)
+        self.assertFalse(second.allowed)
+        self.assertIn("Duplicate signal", second.reason)
+
 
 if __name__ == "__main__":
     unittest.main()
