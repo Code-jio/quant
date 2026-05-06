@@ -49,6 +49,18 @@ class LiveDataSignalStrategy(StrategyBase):
         self.buy(self.symbol, float(bar["close"]), 1, OrderType.LIMIT)
 
 
+class LiveBiasProbeStrategy(StrategyBase):
+    def on_init(self):
+        self.symbol = self.params.get("symbol", "rb2505")
+        self.observed_lengths = []
+        self.current_seen = []
+
+    def on_bar(self, bar: pd.Series):
+        data = self.get_data(self.symbol)
+        self.observed_lengths.append(0 if data is None else len(data))
+        self.current_seen.append(False if data is None else self.current_date in data.index)
+
+
 def make_tick(symbol: str, price: float, timestamp: datetime) -> MarketData:
     return MarketData(
         symbol=symbol,
@@ -81,4 +93,20 @@ def test_live_ticks_update_strategy_data_and_dispatch_new_signals_once():
     assert len(strategy.signals) == 1
     assert len(gateway.sent_signals) == 1
     assert gateway.sent_signals[0].symbol == "rb2505"
-    assert gateway.sent_signals[0].price == 3810.0
+    assert gateway.sent_signals[0].price == 3820.0
+
+
+def test_live_on_bar_sees_only_prior_ticks_in_strategy_data():
+    gateway = RecordingGateway()
+    engine = TradingEngine(gateway)
+    strategy = LiveBiasProbeStrategy("live_bias", {"symbol": "rb2505"})
+    engine.set_strategy(strategy)
+
+    assert engine.start({"initial_capital": 100000.0}) is True
+
+    start = datetime(2026, 4, 29, 9, 30)
+    engine.on_tick(make_tick("rb2505", 3800.0, start))
+    engine.on_tick(make_tick("rb2505", 3810.0, start + timedelta(seconds=1)))
+
+    assert strategy.observed_lengths == [0, 1]
+    assert strategy.current_seen == [False, False]

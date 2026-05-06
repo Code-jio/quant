@@ -14,40 +14,35 @@
 
 ## 二、项目结构
 
-quant-trading-system/
-├── config/                  # 配置文件
-│   ├── settings.yaml        # 全局配置（数据库连接、API密钥等）
-│   └── contracts.yaml       # 合约信息表（乘数、保证金率、手续费）
-├── data/
-│   ├── fetcher.py           # 数据采集（Tick / K线）
-│   ├── cleaner.py           # 数据清洗（夜盘时间归属、异常值处理）
-│   ├── storage.py           # 数据存储（时序数据库读写）
-│   └── contract_manager.py  # 主力合约换月 & 价格复权
-├── strategy/
-│   ├── base.py              # 策略基类（统一接口）
-│   ├── factors.py           # 因子计算
-│   ├── cta_strategy.py      # CTA趋势策略（均线、通道突破等）
-│   ├── spread_strategy.py   # 套利策略（跨期、跨品种）
-│   ├── ml_strategy.py       # 机器学习策略
-│   └── signals.py           # 信号生成 & 仓位计算
-├── backtest/
-│   ├── engine.py            # 回测引擎
-│   ├── analyzer.py          # 绩效分析（夏普、Calmar、最大回撤）
-│   └── visualizer.py        # 回测可视化（K线 + 信号标注 + 净值曲线）
-├── execution/
-│   ├── gateway.py           # CTP 交易网关封装
-│   ├── order_manager.py     # 订单管理（下单、撤单、状态追踪）
-│   ├── position_manager.py  # 持仓管理
-│   └── risk.py              # 风控模块
-├── monitor/
-│   ├── logger.py            # 日志记录
-│   ├── alert.py             # 告警推送（钉钉/企业微信）
-│   └── dashboard.py         # Web 仪表盘（FastAPI）
-├── notebooks/               # Jupyter 策略研究笔记
-├── tests/                   # 单元测试
-├── main.py                  # 系统入口
-└── requirements.txt         # 依赖清单
-
+```text
+quant/
+├── back_end/
+│   ├── main.py                         # CLI 入口：回测/实盘模式
+│   ├── requirements.txt                # 运行依赖
+│   ├── requirements-dev.txt            # 测试/静态检查依赖
+│   ├── config/
+│   │   └── config.example.json         # 安全示例配置，不含券商密钥
+│   ├── src/
+│   │   ├── api/                        # FastAPI、WebSocket、登录、风控、对账接口
+│   │   ├── backtest/                   # 事件驱动回测、保证金/手续费/滑点模型
+│   │   ├── data/                       # SQLite 历史行情、数据治理、模拟数据开关
+│   │   ├── strategy/                   # 策略基类和 MA/RSI/突破策略
+│   │   ├── trading/                    # vn.py CTP 网关、交易引擎、订单管理、风控
+│   │   ├── analysis/                   # 风险和绩效指标
+│   │   └── settings.py                 # 环境变量和安全默认值
+│   └── tests/                          # 后端单元/集成测试
+├── front_end/
+│   ├── package.json
+│   ├── vite.config.js
+│   ├── src/
+│   │   ├── api/                        # 前端 API 客户端
+│   │   ├── components/                 # 交易、策略、行情、回测组件
+│   │   ├── views/                      # 登录、仪表盘、回测、行情页面
+│   │   └── config/                     # 前端默认参数
+│   └── tests/e2e/                      # Playwright 冒烟测试
+├── AGENTS.md                           # Codex 项目工作约定
+├── DEVELOPMENT.md                      # 开发说明
+└── README.md
 ```
 ---
 

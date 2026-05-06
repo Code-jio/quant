@@ -44,7 +44,7 @@ class BacktestEngine:
 
         self._current_date = None
         self._error_count = 0
-        self._max_errors = 100
+        self._max_errors = max(1, int(getattr(config, "max_errors", 100)))
 
     def set_data_manager(self, data_manager):
         """设置数据管理器"""
@@ -103,7 +103,7 @@ class BacktestEngine:
                     self._current_date = date
 
                     for symbol, df in all_data.items():
-                        self.strategy.data[symbol] = df.loc[:date]
+                        self.strategy.data[symbol] = df.loc[df.index < date]
 
                     self.strategy.current_date = date
 
@@ -420,26 +420,21 @@ class BacktestEngine:
 
             pnl_list = []
             in_position = False
-            entry_price = 0
             entry_direction = None
 
             for trade in self.trades:
                 if trade.direction == Direction.LONG and not in_position:
-                    entry_price = trade.price
                     entry_direction = Direction.LONG
                     in_position = True
                 elif trade.direction == Direction.SHORT and not in_position:
-                    entry_price = trade.price
                     entry_direction = Direction.SHORT
                     in_position = True
                 elif in_position:
                     if entry_direction == Direction.LONG and trade.direction == Direction.SHORT:
-                        pnl = trade.price - entry_price
-                        pnl_list.append(pnl)
+                        pnl_list.append(float(getattr(trade, "pnl", 0.0)))
                         in_position = False
                     elif entry_direction == Direction.SHORT and trade.direction == Direction.LONG:
-                        pnl = entry_price - trade.price
-                        pnl_list.append(pnl)
+                        pnl_list.append(float(getattr(trade, "pnl", 0.0)))
                         in_position = False
 
             self.result.total_trades = len(pnl_list)

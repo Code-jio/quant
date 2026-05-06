@@ -36,14 +36,16 @@ DEFAULT_CONFIG = {
         "commission_rate": 0.0003,
         "slip_rate": 0.0001,
         "margin_rate": 0.12,
-        "contract_multiplier": 1
+        "contract_multiplier": 1,
+        "max_errors": 100
     },
     "strategy": {
         "name": "ma_cross",
         "symbol": "IF9999",
         "fast_period": 10,
         "slow_period": 20,
-        "position_ratio": 0.8
+        "position_ratio": 0.8,
+        "max_errors": 10
     },
     "trading": {
         "gateway": "vnpy",
@@ -55,7 +57,8 @@ DEFAULT_CONFIG = {
         "app_id": _CTP_DEFAULTS["app_id"],
         "auth_code": _CTP_DEFAULTS["auth_code"],
         "vnpy_environment": _CTP_DEFAULTS["vnpy_environment"],
-        "initial_capital": 1000000
+        "initial_capital": 1000000,
+        "max_errors": 10
     },
     "risk": {
         "enabled": True,
@@ -100,7 +103,8 @@ def run_backtest(config: dict):
         commission_rate=config['backtest']['commission_rate'],
         slip_rate=config['backtest']['slip_rate'],
         margin_rate=config['backtest']['margin_rate'],
-        contract_multiplier=config['backtest'].get('contract_multiplier', 1)
+        contract_multiplier=config['backtest'].get('contract_multiplier', 1),
+        max_errors=config['backtest'].get('max_errors', 100)
     )
 
     data_manager = DataManager()

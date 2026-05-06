@@ -124,6 +124,19 @@
         </el-col>
 
         <el-col :xs="24" :sm="8" :md="4">
+          <el-form-item label="最大错误数">
+            <el-input-number
+              v-model="form.max_errors"
+              :precision="0"
+              :step="10"
+              :min="1"
+              :controls="false"
+              style="width:100%"
+            />
+          </el-form-item>
+        </el-col>
+
+        <el-col :xs="24" :sm="8" :md="4">
           <el-form-item label="模拟数据">
             <el-switch
               v-model="form.allow_synthetic_data"

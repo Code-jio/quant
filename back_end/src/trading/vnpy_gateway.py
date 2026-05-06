@@ -317,7 +317,7 @@ class VnpyGateway(GatewayBase):
             volume=volume,
             frozen=int(getattr(data, "frozen", 0) or 0),
             price=float(getattr(data, "price", 0) or 0),
-            cost=float(getattr(data, "price", 0) or 0) * volume,
+            cost=float(getattr(data, "price", 0) or 0),
             pnl=float(getattr(data, "pnl", 0) or 0),
         )
         self.positions[f"{symbol}_{direction.value}"] = pos

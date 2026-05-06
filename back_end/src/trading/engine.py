@@ -52,6 +52,8 @@ class TradingEngine:
         """设置策略"""
         self.strategy = strategy
         self._processed_signal_count = len(getattr(strategy, "signals", []))
+        if hasattr(strategy, "set_position_source"):
+            strategy.set_position_source(self.gateway.positions)
 
     def configure_risk(self, config: Dict[str, Any] = None):
         """Configure pre-order risk controls."""
@@ -69,6 +71,7 @@ class TradingEngine:
 
             config = config or {}
             self.configure_risk(config)
+            self._max_errors = max(1, int(config.get("max_errors", self._max_errors)))
 
             self.status = TradingStatus.CONNECTING
 
@@ -200,18 +203,19 @@ class TradingEngine:
         if not self.strategy:
             return
         try:
-            bar = self._append_live_bar(tick)
+            bar = self._tick_to_bar(tick)
             self.strategy.current_date = tick.timestamp
             self.strategy.on_bar(bar)
             self._dispatch_strategy_signals()
+            self._append_live_bar(tick, bar)
         except Exception as e:
             logger.error(f"处理行情数据失败: {e}")
 
-    def _append_live_bar(self, tick: MarketData):
-        """Convert a live tick into a strategy bar and keep rolling live data."""
+    def _tick_to_bar(self, tick: MarketData):
+        """Convert a live tick into the bar passed to strategy.on_bar."""
         import pandas as pd
 
-        bar = pd.Series({
+        return pd.Series({
             "symbol": tick.symbol,
             "datetime": tick.timestamp,
             "open": tick.last_price,
@@ -222,6 +226,13 @@ class TradingEngine:
             "bid": tick.bid_price_1,
             "ask": tick.ask_price_1,
         })
+
+    def _append_live_bar(self, tick: MarketData, bar=None):
+        """Append the processed tick to rolling live data after strategy.on_bar."""
+        import pandas as pd
+
+        if bar is None:
+            bar = self._tick_to_bar(tick)
         bar_frame = pd.DataFrame([bar.to_dict()], index=[tick.timestamp])
 
         existing = self.strategy.data.get(tick.symbol)

@@ -212,6 +212,7 @@ class BacktestRunRequest(BaseModel):
     slip_rate:       float          = 0.0001
     margin_rate:     float          = 0.12
     contract_multiplier: float      = 1.0
+    max_errors:      int            = 100
     sample_days:     int            = 700   # 模拟数据天数
     allow_synthetic_data: bool      = True
 

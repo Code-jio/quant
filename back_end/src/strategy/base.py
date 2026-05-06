@@ -4,7 +4,7 @@
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, List, TYPE_CHECKING
+from typing import Dict, Any, Optional, List, Mapping, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .types import Signal, Order, Trade, Position, Direction, OrderType
@@ -25,6 +25,7 @@ class StrategyBase(ABC):
         self.indicators: Dict[str, pd.DataFrame] = {}
         self.signals: List[Signal] = []
         self.positions: Dict[str, Position] = {}
+        self._position_source: Optional[Mapping[str, Position]] = None
         self.orders: Dict[str, Order] = {}
         self.trades: List[Trade] = []
         self.data: Dict[str, pd.DataFrame] = {}
@@ -33,7 +34,7 @@ class StrategyBase(ABC):
         self.current_capital: float = 1000000.0
         self._initialized = False
         self._error_count = 0
-        self._max_errors = 10
+        self._max_errors = int(self.params.get("max_errors", 10))
 
     @abstractmethod
     def on_init(self):
@@ -190,7 +191,67 @@ class StrategyBase(ABC):
 
     def get_position(self, symbol: str) -> Position:
         """获取持仓"""
+        source_position = self._get_position_from_source(symbol)
+        if source_position is not None:
+            return source_position
         return self.positions.get(symbol, Position(symbol=symbol, direction=Direction.NET, volume=0))
+
+    def set_position_source(self, positions: Optional[Mapping[str, Position]]) -> None:
+        """绑定外部持仓源，实盘优先读取网关持仓，策略本地持仓作为兜底。"""
+        self._position_source = positions
+
+    def _get_position_from_source(self, symbol: str) -> Optional[Position]:
+        if not self._position_source:
+            return None
+
+        matches = [
+            pos for key, pos in self._position_source.items()
+            if key == symbol or getattr(pos, "symbol", "") == symbol
+        ]
+        if not matches:
+            return None
+
+        signed_volume = 0
+        weighted_cost = 0.0
+        weighted_price = 0.0
+        total_abs_volume = 0
+        frozen = 0
+        pnl = 0.0
+
+        for pos in matches:
+            raw_volume = int(getattr(pos, "volume", 0) or 0)
+            direction = getattr(pos, "direction", Direction.NET)
+            if direction == Direction.SHORT:
+                volume = -abs(raw_volume)
+            elif direction == Direction.LONG:
+                volume = abs(raw_volume)
+            else:
+                volume = raw_volume
+
+            abs_volume = abs(volume)
+            signed_volume += volume
+            total_abs_volume += abs_volume
+            weighted_cost += float(getattr(pos, "cost", 0.0) or 0.0) * abs_volume
+            weighted_price += float(getattr(pos, "price", 0.0) or 0.0) * abs_volume
+            frozen += int(getattr(pos, "frozen", 0) or 0)
+            pnl += float(getattr(pos, "pnl", 0.0) or 0.0)
+
+        if signed_volume > 0:
+            direction = Direction.LONG
+        elif signed_volume < 0:
+            direction = Direction.SHORT
+        else:
+            direction = Direction.NET
+
+        return Position(
+            symbol=symbol,
+            direction=direction,
+            volume=signed_volume,
+            frozen=frozen,
+            price=weighted_price / total_abs_volume if total_abs_volume else 0.0,
+            cost=weighted_cost / total_abs_volume if total_abs_volume else 0.0,
+            pnl=pnl,
+        )
 
     def get_data(self, symbol: str) -> Optional[pd.DataFrame]:
         """获取历史数据"""
@@ -203,38 +264,47 @@ class StrategyBase(ABC):
                 self.positions[symbol] = Position(symbol=symbol, direction=Direction.NET, volume=0)
 
             pos = self.positions[symbol]
-            if trade.direction == Direction.LONG:
-                if pos.volume >= 0:
-                    pos.direction = Direction.LONG
-                    pos.volume += trade.volume
-                else:
-                    if abs(trade.volume) >= abs(pos.volume):
-                        pos.volume = trade.volume + pos.volume
-                        pos.direction = Direction.LONG if pos.volume > 0 else Direction.SHORT
-                    else:
-                        pos.volume += trade.volume
-            else:
-                if pos.volume <= 0:
-                    pos.direction = Direction.SHORT
-                    pos.volume -= trade.volume
-                else:
-                    if trade.volume >= pos.volume:
-                        pos.volume = pos.volume - trade.volume
-                        pos.direction = Direction.SHORT if pos.volume < 0 else Direction.LONG
-                    else:
-                        pos.volume -= trade.volume
+            old_volume = self._signed_position_volume(pos)
+            old_cost = float(pos.cost or pos.price or 0.0)
+            delta = int(trade.volume) if trade.direction == Direction.LONG else -int(trade.volume)
+            new_volume = old_volume + delta
 
-            if pos.volume == 0:
+            if old_volume == 0 or old_volume * delta > 0:
+                old_abs = abs(old_volume)
+                new_abs = abs(new_volume)
+                pos.cost = (
+                    (old_cost * old_abs + float(trade.price) * abs(delta)) / new_abs
+                    if new_abs else 0.0
+                )
+            elif new_volume == 0:
+                pos.cost = 0
+            elif old_volume * new_volume > 0:
+                pos.cost = old_cost
+            else:
+                pos.cost = float(trade.price)
+
+            pos.volume = new_volume
+            if new_volume > 0:
+                pos.direction = Direction.LONG
+            elif new_volume < 0:
+                pos.direction = Direction.SHORT
+            else:
                 pos.direction = Direction.NET
                 pos.price = 0
-                pos.cost = 0
-            else:
-                if pos.is_long:
-                    pos.cost = (pos.cost * (abs(pos.volume) - trade.volume) + trade.price * trade.volume) / abs(pos.volume)
-                else:
-                    pos.cost = (pos.cost * (abs(pos.volume) - trade.volume) + trade.price * trade.volume) / abs(pos.volume)
+
+            if new_volume != 0:
+                pos.price = pos.cost
 
             pos.pnl = 0
 
         except Exception as e:
             self.on_error(e, "update_position")
+
+    @staticmethod
+    def _signed_position_volume(pos: Position) -> int:
+        volume = int(getattr(pos, "volume", 0) or 0)
+        if getattr(pos, "direction", Direction.NET) == Direction.SHORT:
+            return -abs(volume)
+        if getattr(pos, "direction", Direction.NET) == Direction.LONG:
+            return abs(volume)
+        return volume
