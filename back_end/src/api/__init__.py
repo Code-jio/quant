@@ -41,6 +41,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 
+import numpy as np
+import pandas as pd
 import psutil
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -48,7 +50,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from ..strategy import Direction, StrategyBase
-from ..trading import AccountInfo, GatewayBase, TradingEngine, TradingStatus
+from ..trading import AccountInfo, TradingEngine, TradingStatus
 from ..strategy import Signal, OrderType, OffsetFlag
 from ..observability import audit_log, metrics, new_request_id, structured_json
 from ..settings import ctp_defaults, ctp_server_presets
@@ -935,9 +937,6 @@ async def _system_broadcast_loop():
 
 def _build_dashboard_metrics() -> dict:
     """计算实时 PnL、收益率、夏普比率、最大回撤、仓位概览。"""
-    import numpy as np      # noqa: PLC0415
-    import pandas as pd     # noqa: PLC0415
-
     engine          = trading_state.primary_engine()
     total_pnl       = 0.0
     balance         = 0.0
@@ -1661,7 +1660,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             market_connected = market_connected,
             gateway_status   = gateway_status,
             gateway_name     = gateway_name,
-            cpu_percent      = psutil.cpu_percent(interval=0.1),
+            cpu_percent      = psutil.cpu_percent(interval=None),
             memory_percent   = psutil.virtual_memory().percent,
             active_strategies = active_count,
             account          = account_dict,
