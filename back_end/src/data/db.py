@@ -18,6 +18,13 @@ logger = logging.getLogger(__name__)
 
 CURRENT_SCHEMA_VERSION = 3
 
+_IDENTIFIER_RE = __import__("re").compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validate_identifier(name: str) -> None:
+    if not _IDENTIFIER_RE.match(name):
+        raise DatabaseError(f"Invalid SQL identifier: {name!r}")
+
 
 class DatabaseManager:
     """数据库管理器"""
@@ -103,7 +110,7 @@ class DatabaseManager:
                     "bars governance metadata, safe ingested_at migration, and migration tracking",
                 ),
             )
-            cursor.execute(f"PRAGMA user_version = {CURRENT_SCHEMA_VERSION}")
+            cursor.execute("PRAGMA user_version = " + str(CURRENT_SCHEMA_VERSION))
             conn.commit()
             conn.close()
             logger.info(f"数据库初始化完成: {self.db_path}")
@@ -113,10 +120,12 @@ class DatabaseManager:
 
     @staticmethod
     def _ensure_column(cursor: sqlite3.Cursor, table: str, column: str, ddl: str) -> None:
-        cursor.execute(f"PRAGMA table_info({table})")
+        _validate_identifier(table)
+        _validate_identifier(column)
+        cursor.execute("PRAGMA table_info(" + table + ")")
         existing = {row[1] for row in cursor.fetchall()}
         if column not in existing:
-            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+            cursor.execute("ALTER TABLE " + table + " ADD COLUMN " + column + " " + ddl)
 
     @retry(max_retries=3, initial_delay=0.5, backoff_factor=1.5)
     def save_bars(
@@ -181,7 +190,7 @@ class DatabaseManager:
             logger.info(f"保存 {symbol} {timeframe} 数据 {len(df)} 条")
             return True
 
-        except sqlite3.IntegrityError as e:
+        except sqlite3.IntegrityError:
             logger.warning(f"数据重复，跳过: {symbol} {timeframe}")
             return False
         except sqlite3.Error as e:
@@ -198,7 +207,10 @@ class DatabaseManager:
             """,
             (metadata.symbol, metadata.timeframe),
         )
-        first_dt, last_dt, row_count = cursor.fetchone()
+        row = cursor.fetchone()
+        if row is None:
+            return
+        first_dt, last_dt, row_count = row
         cursor.execute(
             """
             INSERT INTO bar_metadata (
