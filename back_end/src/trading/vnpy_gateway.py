@@ -193,18 +193,6 @@ class VnpyGateway(GatewayBase):
             return ""
 
         self._order_meta[vt_orderid] = (symbol, exchange)
-        order = Order(
-            order_id=vt_orderid,
-            symbol=symbol,
-            direction=signal.direction,
-            order_type=signal.order_type,
-            price=signal.price,
-            volume=signal.volume,
-            status=OrderStatus.SUBMITTING,
-            offset=signal.offset,
-        )
-        self.orders[vt_orderid] = order
-        self.on_order(order)
         return vt_orderid
 
     def cancel_order(self, order_id: str) -> bool:
@@ -352,6 +340,8 @@ class VnpyGateway(GatewayBase):
             direction=self._from_vnpy_direction(getattr(data, "direction", None)),
             price=float(getattr(data, "price", 0) or 0),
             volume=int(getattr(data, "volume", 0) or 0),
+            commission=float(getattr(data, "commission", 0) or getattr(data, "fee", 0) or 0),
+            pnl=float(getattr(data, "pnl", 0) or getattr(data, "profit", 0) or 0),
             trade_time=getattr(data, "datetime", None) or datetime.now(),
         )
         self.on_trade(trade)

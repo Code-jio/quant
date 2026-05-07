@@ -25,6 +25,29 @@ def trade(direction: Direction, price: float, volume: int) -> Trade:
     )
 
 
+def test_strategy_capital_does_not_double_count_commission_when_trade_pnl_is_net():
+    strategy = PositionProbeStrategy("probe", {"symbol": "rb2505"})
+    strategy.current_capital = 1000
+    net_trade = trade(Direction.SHORT, 120, 1)
+    net_trade.pnl = 18
+    net_trade.commission = 2
+
+    strategy.update_position("rb2505", net_trade)
+
+    assert strategy.current_capital == pytest.approx(1018)
+
+
+def test_strategy_capital_deducts_commission_when_trade_has_no_pnl():
+    strategy = PositionProbeStrategy("probe", {"symbol": "rb2505"})
+    strategy.current_capital = 1000
+    fee_only_trade = trade(Direction.LONG, 100, 1)
+    fee_only_trade.commission = 2
+
+    strategy.update_position("rb2505", fee_only_trade)
+
+    assert strategy.current_capital == pytest.approx(998)
+
+
 def test_partial_close_keeps_remaining_long_cost_unchanged():
     strategy = PositionProbeStrategy("probe", {"symbol": "rb2505"})
 

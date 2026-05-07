@@ -305,6 +305,7 @@ class TradingEngine:
 
     def _on_order(self, order: 'Order'):
         """订单回调"""
+        self.order_manager.update_order(order)
         if self.strategy:
             try:
                 self.strategy.on_order(order)

@@ -296,7 +296,9 @@ class StrategyBase(ABC):
 
             realized_pnl = float(getattr(trade, "pnl", 0) or 0)
             commission = float(getattr(trade, "commission", 0) or 0)
-            self.current_capital += realized_pnl - commission
+            self.current_capital += realized_pnl
+            if realized_pnl == 0 and commission:
+                self.current_capital -= commission
 
         except Exception as e:
             self.on_error(e, "update_position")

@@ -89,7 +89,7 @@ class OrderManager:
                     order_type=signal.order_type,
                     price=signal.price,
                     volume=signal.volume,
-                    status=OrderStatus.SUBMITTED,
+                    status=OrderStatus.SUBMITTING,
                     offset=getattr(signal, 'offset', OffsetFlag.OPEN),
                 )
                 self.active_orders[order_id] = order
@@ -132,6 +132,16 @@ class OrderManager:
                     self.on_order_callback(order)
 
             return success
+
+    def update_order(self, order: Order) -> None:
+        """Synchronize a broker order callback into local order books."""
+        with self.lock:
+            if order.is_active():
+                self.active_orders[order.order_id] = order
+                self.completed_orders.pop(order.order_id, None)
+            else:
+                self.completed_orders[order.order_id] = order
+                self.active_orders.pop(order.order_id, None)
 
     def batch_submit_orders(self, signals: List[Signal]) -> List[str]:
         """批量提交订单"""
