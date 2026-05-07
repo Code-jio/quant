@@ -4,10 +4,7 @@
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, List, Mapping, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from .types import Signal, Order, Trade, Position, Direction, OrderType
+from typing import Dict, Any, Optional, List, Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +65,7 @@ class StrategyBase(ABC):
         logger.error(f"策略 {self.name} 错误 ({context}): {error}")
         if self._error_count >= self._max_errors:
             logger.error(f"策略 {self.name} 错误次数过多 ({self._error_count}), 停止策略")
-            return False
+            raise StrategyError(f"策略 {self.name} 错误次数超限 ({self._error_count}/{self._max_errors})") from error
         return True
 
     def buy(self, symbol: str, price: float, volume: int,
@@ -265,7 +262,7 @@ class StrategyBase(ABC):
 
             pos = self.positions[symbol]
             old_volume = self._signed_position_volume(pos)
-            old_cost = float(pos.cost or pos.price or 0.0)
+            old_cost = float(pos.cost if pos.cost is not None else (pos.price if pos.price is not None else 0.0))
             delta = int(trade.volume) if trade.direction == Direction.LONG else -int(trade.volume)
             new_volume = old_volume + delta
 
@@ -296,6 +293,10 @@ class StrategyBase(ABC):
                 pos.price = pos.cost
 
             pos.pnl = 0
+
+            realized_pnl = float(getattr(trade, "pnl", 0) or 0)
+            commission = float(getattr(trade, "commission", 0) or 0)
+            self.current_capital += realized_pnl - commission
 
         except Exception as e:
             self.on_error(e, "update_position")
