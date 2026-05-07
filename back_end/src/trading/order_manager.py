@@ -6,7 +6,7 @@ import logging
 import threading
 import time
 from typing import Dict, List, Optional, Callable
-from datetime import datetime, timedelta
+from datetime import datetime
 from enum import Enum
 import uuid
 from dataclasses import dataclass, field
@@ -180,16 +180,19 @@ class OrderManager:
                 logger.info(f"订单已修改: {order_id} -> {new_order_id}")
                 return True
             else:
-                logger.error(f"无法创建新订单，恢复原订单失败")
-                # 尝试重新提交原订单
-                self.submit_order(Signal(
+                logger.error(f"无法创建新订单，尝试恢复原订单: {order_id}")
+                rollback_id = self.submit_order(Signal(
                     symbol=original_order.symbol,
-                    datetime=original_order.create_time,
+                    datetime=original_order.create_time or datetime.now(),
                     direction=original_order.direction,
                     price=original_order.price,
                     volume=original_order.volume,
                     order_type=original_order.order_type
                 ))
+                if rollback_id:
+                    logger.info(f"原订单已恢复: {order_id} -> {rollback_id}")
+                else:
+                    logger.error(f"原订单恢复失败: {order_id}")
                 return False
 
     def place_pre_order(self, pre_order: 'PreOrder') -> str:
@@ -337,18 +340,28 @@ class OrderManager:
         return False
 
     def _check_trailing_stop_trigger(self, pre_order: 'PreOrder', current_price: float) -> bool:
-        """检查移动止损预埋单触发条件"""
-        # 简化的移动止损逻辑
-        # 如果当前价格与挂单价的差距超过激活阈值，则开始跟踪
-        activation_diff = abs(current_price - pre_order.trigger_price)
+        """检查移动止损预埋单触发条件。
 
-        # 这里简化实现，实际应用中会更复杂
+        移动止损会随价格朝有利方向移动而收紧止损线，但不会向不利方向回退。
+        """
+        trailing_pct = pre_order.trailing_percent
+        if trailing_pct <= 0:
+            return False
+
         if pre_order.direction == Direction.LONG:
-            # 多头移动止损 - 如果价格下跌超过一定幅度则触发
-            return current_price <= pre_order.trigger_price * (1 - pre_order.trailing_percent / 100)
+            best_price = getattr(pre_order, "_trail_best_price", None)
+            if best_price is None or current_price > best_price:
+                pre_order._trail_best_price = current_price
+                pre_order.trigger_price = current_price * (1 - trailing_pct / 100)
+                return False
+            return current_price <= pre_order.trigger_price
         else:
-            # 空头移动止损 - 如果价格上涨超过一定幅度则触发
-            return current_price >= pre_order.trigger_price * (1 + pre_order.trailing_percent / 100)
+            best_price = getattr(pre_order, "_trail_best_price", None)
+            if best_price is None or current_price < best_price:
+                pre_order._trail_best_price = current_price
+                pre_order.trigger_price = current_price * (1 + trailing_pct / 100)
+                return False
+            return current_price >= pre_order.trigger_price
 
     def _trigger_pre_order(self, pre_order: 'PreOrder'):
         """触发预埋单"""

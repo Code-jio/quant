@@ -79,7 +79,9 @@ class GatewayBase(ABC):
 
     def on_position(self, position: Position) -> None:
         """Position callback entrypoint."""
-        self.positions[position.symbol] = position
+        direction = position.direction.value if hasattr(position.direction, "value") else str(position.direction)
+        key = f"{position.symbol}_{direction}"
+        self.positions[key] = position
         if self.on_position_callback:
             try:
                 self.on_position_callback(position)

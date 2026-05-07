@@ -249,13 +249,17 @@ class TradingEngine:
         """Send newly generated strategy signals to the broker gateway."""
         signals = getattr(self.strategy, "signals", [])
         if self._processed_signal_count > len(signals):
-            self._processed_signal_count = 0
+            self._processed_signal_count = len(signals)
 
         new_signals = signals[self._processed_signal_count:]
-        self._processed_signal_count = len(signals)
-
         for signal in new_signals:
-            self.send_signal(signal)
+            order_id = self.send_signal(signal)
+            if not order_id:
+                logger.warning(
+                    "Strategy signal rejected: %s %s %s",
+                    signal.symbol, signal.direction, signal.volume,
+                )
+        self._processed_signal_count = len(signals)
 
     def _market_data_for_symbol(self, symbol: str) -> Dict[str, Any]:
         data = self.order_manager.market_data.get(symbol)
