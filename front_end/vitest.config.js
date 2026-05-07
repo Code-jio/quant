@@ -1,11 +1,6 @@
-import { defineConfig } from 'vitest/config'
-import vue from '@vitejs/plugin-vue'
-import { resolve } from 'path'
-
-export default defineConfig({
-  plugins: [vue()],
+export default {
   resolve: {
-    alias: { '@': resolve(__dirname, 'src') },
+    alias: { '@': new URL('./src', import.meta.url).pathname },
   },
   test: {
     environment: 'jsdom',
@@ -15,4 +10,4 @@ export default defineConfig({
       reporter: ['text', 'html'],
     },
   },
-})
+}
