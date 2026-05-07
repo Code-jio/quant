@@ -15,13 +15,9 @@ from src.strategy import create_strategy
 from src.backtest import BacktestEngine, BacktestConfig
 from src.trading import TradingEngine, create_gateway
 from src.analysis import Analyzer
-from src.settings import ctp_defaults
+from src.settings import ctp_defaults, runtime_risk_defaults
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_PATH = "config/config_production.json"
@@ -60,25 +56,16 @@ DEFAULT_CONFIG = {
         "initial_capital": 1000000,
         "max_errors": 10
     },
-    "risk": {
-        "enabled": True,
-        "max_order_volume": 1000,
-        "max_position_volume": 10000,
-        "max_active_orders": 200,
-        "max_orders_per_minute": 120,
-        "max_daily_loss_ratio": 0.10,
-        "max_order_value": 5000000,
-        "max_position_value": 10000000,
-        "max_price_deviation": 0.02,
-        "max_market_data_age_seconds": 0,
-        "duplicate_signal_window_seconds": 2,
-        "default_contract_multiplier": 1,
-        "contract_multipliers": {},
-        "allow_market_orders": True,
-        "allowed_symbols": [],
-        "blocked_symbols": []
-    }
+    "risk": runtime_risk_defaults()
 }
+
+
+def configure_logging() -> None:
+    """Configure CLI logging without changing logging state on import."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
 
 
 def load_config(config_path: str = DEFAULT_CONFIG_PATH) -> dict:
@@ -174,6 +161,8 @@ def run_live_trading(config: dict):
 
 
 def main():
+    configure_logging()
+
     parser = argparse.ArgumentParser(description='量化交易系统')
     parser.add_argument('--config', '-c', default=DEFAULT_CONFIG_PATH, help='配置文件路径')
     parser.add_argument('--mode', '-m', choices=['backtest', 'live'], help='运行模式')

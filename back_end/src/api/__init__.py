@@ -34,6 +34,7 @@ import asyncio
 import json as _json
 import logging
 import os
+import threading
 import time
 import traceback
 from collections import deque
@@ -53,29 +54,19 @@ from ..strategy import Direction, StrategyBase
 from ..trading import AccountInfo, TradingEngine, TradingStatus
 from ..strategy import Signal, OrderType, OffsetFlag
 from ..observability import audit_log, metrics, new_request_id, structured_json
-from ..settings import ctp_defaults, ctp_server_presets
+from ..settings import (
+    ctp_defaults,
+    ctp_server_presets,
+    runtime_risk_defaults,
+    secure_session_cookie_enabled,
+    websocket_query_token_enabled,
+)
 from .backtest_service import STRATEGY_CATALOG, run_backtest_sync
 from .security import SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME, is_open_path, session_store
 
 logger = logging.getLogger(__name__)
 _CTP_DEFAULTS = ctp_defaults()
-_DEFAULT_RUNTIME_RISK = {
-    "enabled": True,
-    "max_order_volume": 1000,
-    "max_position_volume": 10000,
-    "max_active_orders": 200,
-    "max_orders_per_minute": 120,
-    "max_daily_loss_ratio": 0.03,
-    "max_order_value": 5_000_000,
-    "max_position_value": 10_000_000,
-    "max_price_deviation": 0.02,
-    "max_market_data_age_seconds": 0,
-    "duplicate_signal_window_seconds": 2,
-    "default_contract_multiplier": 1,
-    "allow_market_orders": True,
-    "allowed_symbols": [],
-    "blocked_symbols": [],
-}
+_DEFAULT_RUNTIME_RISK = runtime_risk_defaults()
 
 _DEFAULT_CORS_ORIGINS = (
     "http://localhost:5173,"
@@ -111,7 +102,6 @@ class LoginRequest(BaseModel):
 
 class LoginResponse(BaseModel):
     success:        bool
-    token:          str
     message:        str
     gateway_status: str
     account_id:     str = ""
@@ -216,7 +206,7 @@ class BacktestRunRequest(BaseModel):
     contract_multiplier: float      = 1.0
     max_errors:      int            = 100
     sample_days:     int            = 700   # 模拟数据天数
-    allow_synthetic_data: bool      = True
+    allow_synthetic_data: bool      = False
 
 
 class ManualOrderRequest(BaseModel):
@@ -473,6 +463,7 @@ class TradingState:
     EQUITY_MAXLEN = 300   # 保留最近 300 个快照（1s 间隔 ≈ 5 分钟窗口）
 
     def __init__(self):
+        self._lock = threading.RLock()
         self._entries:             Dict[str, _StrategyEntry]  = {}
         self._main_engine:         Optional[TradingEngine]    = None
         self._main_config:         Dict[str, Any]             = {}
@@ -484,8 +475,9 @@ class TradingState:
 
     # ── 主引擎（登录产生的 CTP 引擎）────────────────────────────────────────
     def set_main_engine(self, engine: TradingEngine, config: Dict[str, Any] = None):
-        self._main_engine = engine
-        self._main_config = config or {}
+        with self._lock:
+            self._main_engine = engine
+            self._main_config = config or {}
         # 安装订单广播钩子
         if _event_loop and not _event_loop.is_closed():
             _install_hook_on_engine(engine)
@@ -493,84 +485,101 @@ class TradingState:
 
     def clear_main(self):
         """断开并清理主引擎"""
-        if self._main_engine:
+        with self._lock:
+            engine = self._main_engine
+            self._main_engine = None
+            self._main_config = {}
+            self._entries.clear()
+            self._weights.clear()
+        if engine:
             try:
-                self._main_engine.stop()
+                engine.stop()
             except Exception:
                 pass
-        self._main_engine = None
-        self._main_config = {}
 
     # ── 连接日志 ──────────────────────────────────────────────────────────────
     def add_log(self, msg: str):
         ts = datetime.now().strftime("%H:%M:%S")
         entry = f"[{ts}] {msg}"
-        self._connect_log.append(entry)
+        with self._lock:
+            self._connect_log.append(entry)
+            if len(self._connect_log) > 200:
+                self._connect_log = self._connect_log[-100:]
         logger.info(f"[ConnLog] {msg}")
-        if len(self._connect_log) > 200:
-            self._connect_log = self._connect_log[-100:]
 
     def clear_log(self):
-        self._connect_log = []
+        with self._lock:
+            self._connect_log = []
 
     def get_log(self) -> List[str]:
-        return list(self._connect_log)
+        with self._lock:
+            return list(self._connect_log)
 
     # ── 策略权重 ──────────────────────────────────────────────────────────────
     def set_weights(self, weights: Dict[str, float]):
-        for sid, w in weights.items():
-            self._weights[sid] = max(0.0, min(1.0, float(w)))
+        with self._lock:
+            for sid, w in weights.items():
+                self._weights[sid] = max(0.0, min(1.0, float(w)))
 
     def get_weight(self, strategy_id: str) -> float:
-        if strategy_id in self._weights:
-            return self._weights[strategy_id]
-        n = max(len(self._entries), 1)
-        return round(1.0 / n, 4)
+        with self._lock:
+            if strategy_id in self._weights:
+                return self._weights[strategy_id]
+            n = max(len(self._entries), 1)
+            return round(1.0 / n, 4)
 
     def all_weights(self) -> Dict[str, float]:
-        ids = list(self._entries.keys())
-        if not ids:
-            return {}
-        if self._weights:
-            return {sid: self._weights.get(sid, round(1.0 / len(ids), 4)) for sid in ids}
-        w = round(1.0 / len(ids), 4)
-        return {sid: w for sid in ids}
+        with self._lock:
+            ids = list(self._entries.keys())
+            if not ids:
+                return {}
+            if self._weights:
+                return {sid: self._weights.get(sid, round(1.0 / len(ids), 4)) for sid in ids}
+            w = round(1.0 / len(ids), 4)
+            return {sid: w for sid in ids}
 
     # ── 权益曲线历史 ──────────────────────────────────────────────────────────
     def push_equity(self, pnl: float, balance: float):
         """记录一个权益快照（每秒由广播循环调用）。"""
         ts = datetime.now().strftime("%H:%M:%S")
-        self._equity_curve.append({"ts": ts, "p": round(pnl, 2), "b": round(balance, 2)})
-        # 记录当天首次有效余额作为日内基准
-        if self._day_open_balance == 0.0 and balance > 0:
-            self._day_open_balance = balance
+        with self._lock:
+            self._equity_curve.append({"ts": ts, "p": round(pnl, 2), "b": round(balance, 2)})
+            # 记录当天首次有效余额作为日内基准
+            if self._day_open_balance == 0.0 and balance > 0:
+                self._day_open_balance = balance
 
     def get_equity_data(self) -> list:
-        return list(self._equity_curve)
+        with self._lock:
+            return list(self._equity_curve)
 
     # ── 策略注册 ──────────────────────────────────────────────────────────────
     def register(self, strategy_id, strategy, engine, config=None):
         entry = _StrategyEntry(strategy_id, strategy, engine, config or {})
-        self._entries[strategy_id] = entry
+        with self._lock:
+            self._entries[strategy_id] = entry
         if _event_loop and not _event_loop.is_closed():
             _install_order_hook(entry)
         logger.info(f"[API] 策略已注册: {strategy_id}")
 
     def unregister(self, strategy_id: str):
-        self._entries.pop(strategy_id, None)
+        with self._lock:
+            self._entries.pop(strategy_id, None)
 
     def get(self, strategy_id: str) -> Optional[_StrategyEntry]:
-        return self._entries.get(strategy_id)
+        with self._lock:
+            return self._entries.get(strategy_id)
 
     def all_entries(self) -> List[_StrategyEntry]:
-        return list(self._entries.values())
+        with self._lock:
+            return list(self._entries.values())
 
     def primary_engine(self) -> Optional[TradingEngine]:
-        if self._main_engine:
-            return self._main_engine
-        for entry in self._entries.values():
-            return entry.engine
-        return None
+        with self._lock:
+            if self._main_engine:
+                return self._main_engine
+            for entry in self._entries.values():
+                return entry.engine
+            return None
 
 
 trading_state = TradingState()
@@ -584,7 +593,12 @@ def _websocket_session_token(ws: WebSocket) -> str:
     auth = ws.headers.get("authorization", "")
     if auth.lower().startswith("bearer "):
         return auth[7:]
-    return ws.cookies.get(SESSION_COOKIE_NAME, "") or ws.query_params.get("token", "")
+    cookie_token = ws.cookies.get(SESSION_COOKIE_NAME, "")
+    if cookie_token:
+        return cookie_token
+    if websocket_query_token_enabled():
+        return ws.query_params.get("token", "")
+    return ""
 
 
 async def _require_websocket_session(ws: WebSocket) -> bool:
@@ -1586,6 +1600,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             max_age=SESSION_COOKIE_MAX_AGE,
             httponly=True,
             samesite="lax",
+            secure=secure_session_cookie_enabled(),
         )
 
         _record_audit(
@@ -1599,7 +1614,6 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
 
         return LoginResponse(
             success        = True,
-            token          = token,
             message        = "登录成功，策略已启动" if strategy_started else "登录成功",
             gateway_status = gateway.status.value,
             account_id     = account_id,

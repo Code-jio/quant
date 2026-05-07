@@ -3,21 +3,15 @@
  *
  * - 开发环境：请求通过 Vite proxy 转发（/api → http://localhost:8000）
  * - 生产环境：设置 VITE_API_BASE_URL=http://<backend>:<port>
- * - 登录后优先使用后端 HttpOnly Cookie，保留 sessionStorage token 作为兼容兜底
+ * - 登录后使用后端 HttpOnly Cookie，前端不保存会话 token
  * - 收到 401 时自动清除会话状态并跳转登录页
  */
 
 import { buildApiUrl } from '@/config/network.js'
 
-function getToken() {
-  return sessionStorage.getItem('quant_token') ?? ''
-}
-
 async function request(path, options = {}) {
-  const token   = getToken()
   const headers = {
     'Content-Type': 'application/json',
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...options.headers,
   }
 
@@ -33,10 +27,8 @@ async function request(path, options = {}) {
   if (res.status === 401) {
     let detail = '未登录或登录失败'
     try { detail = (await res.json()).detail ?? detail } catch { /* ignore */ }
-    sessionStorage.removeItem('quant_token')
     sessionStorage.removeItem('quant_account_id')
     sessionStorage.removeItem('quant_session_active')
-    localStorage.removeItem('quant_token')
     localStorage.removeItem('quant_account_id')
     if (path !== '/auth/login') window.location.href = '/login'
     throw new Error(detail)

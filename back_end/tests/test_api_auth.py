@@ -3,7 +3,7 @@ from starlette.websockets import WebSocketDisconnect
 import pytest
 
 from src.api import create_app
-from src.api.security import SESSION_COOKIE_NAME
+from src.api.security import SESSION_COOKIE_NAME, session_store
 from src.trading import GatewayBase
 from src.trading.types import AccountInfo, TradingStatus
 
@@ -74,6 +74,19 @@ def test_websocket_requires_session():
                 pass
 
 
+def test_websocket_query_token_is_disabled_by_default():
+    app = create_app()
+    token = session_store.create()
+
+    try:
+        with TestClient(app) as client:
+            with pytest.raises(WebSocketDisconnect):
+                with client.websocket_connect(f"/ws/system?token={token}"):
+                    pass
+    finally:
+        session_store.revoke(token)
+
+
 def test_vnpy_login_sets_cookie_and_allows_protected_endpoint(monkeypatch):
     install_fake_vnpy_gateway(monkeypatch)
     app = create_app()
@@ -89,7 +102,9 @@ def test_vnpy_login_sets_cookie_and_allows_protected_endpoint(monkeypatch):
             },
         )
         assert login_response.status_code == 200
-        assert login_response.json()["success"] is True
+        body = login_response.json()
+        assert body["success"] is True
+        assert "token" not in body
         assert SESSION_COOKIE_NAME in client.cookies
 
         status_response = client.get("/system/status")
@@ -213,6 +228,38 @@ def test_runtime_risk_config_can_be_tightened(monkeypatch):
 
     assert order_response.status_code == 400
     assert "volume" in order_response.json()["detail"].lower()
+
+
+def test_default_runtime_risk_blocks_market_orders(monkeypatch):
+    install_fake_vnpy_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login_response = client.post(
+            "/auth/login",
+            json={
+                "username": "test-account",
+                "password": "test-password",
+                "broker_id": "2071",
+                "gateway_type": "vnpy",
+            },
+        )
+        assert login_response.status_code == 200
+
+        order_response = client.post(
+            "/orders",
+            json={
+                "symbol": "rb2505",
+                "direction": "long",
+                "offset": "open",
+                "price": 0,
+                "volume": 1,
+                "order_type": "market",
+            },
+        )
+
+    assert order_response.status_code == 400
+    assert "Market orders are disabled" in order_response.json()["detail"]
 
 
 def test_trading_reconcile_reports_account_orders_and_positions(monkeypatch):

@@ -10,7 +10,7 @@ export const DEFAULT_BACKTEST_FORM = {
   contract_multiplier: 1,
   max_errors: 100,
   sample_days: 700,
-  allow_synthetic_data: true,
+  allow_synthetic_data: false,
 }
 
 export const COMMON_PARAM_KEYS = new Set(['symbol'])
