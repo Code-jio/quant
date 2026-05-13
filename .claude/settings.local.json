@@ -14,7 +14,19 @@
       "WebFetch(domain:github.com)",
       "Bash(python -c ' *)",
       "Bash(d:/quant/.venv/Scripts/python -c \"import vnpy; print\\('vnpy version:', vnpy.__version__\\)\")",
-      "Bash(d:/quant/.venv/Scripts/python -c ' *)"
+      "Bash(d:/quant/.venv/Scripts/python -c ' *)",
+      "Bash(python3 -c ' *)",
+      "Bash(python -c \"_DEFAULT_CORS_ORIGINS = \\('http://localhost:5173,''http://127.0.0.1:5173,''http://localhost:5174,''http://127.0.0.1:5174'\\); print\\(type\\(_DEFAULT_CORS_ORIGINS\\)\\); print\\(repr\\(_DEFAULT_CORS_ORIGINS\\)\\)\")",
+      "Bash(python -m pytest tests/ -x --timeout=30 -q)",
+      "Bash(python -m pytest tests/ -x -q)",
+      "Bash(python -m pytest tests/ -x -v)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(python -m pytest tests/ -q)",
+      "Bash(python -m pytest tests/ -v)",
+      "Bash(python -m pytest tests/test_security_and_risk.py tests/test_api_auth.py -v)",
+      "Bash(pip show *)",
+      "Bash(git checkout *)"
     ]
   }
 }
