@@ -2,40 +2,9 @@ from fastapi.testclient import TestClient
 
 from src.api import create_app, trading_state
 from src.strategy import Direction, OffsetFlag, Order, OrderStatus, OrderType, Position
-from src.trading import GatewayBase
-from src.trading.types import AccountInfo, TradingStatus
+from src.trading.types import TradingStatus
 
-
-class RecordingGateway(GatewayBase):
-    def __init__(self):
-        super().__init__("VNPY_CTP")
-        self.sent_signals = []
-        self.cancelled_order_ids = []
-
-    def connect(self, config):
-        self.status = TradingStatus.CONNECTED
-        self.account = AccountInfo(account_id="TEST001", balance=100000.0, available=100000.0)
-        return True
-
-    def disconnect(self):
-        self.status = TradingStatus.STOPPED
-
-    def send_order(self, signal):
-        self.sent_signals.append(signal)
-        return f"TEST_ORDER_{len(self.sent_signals)}"
-
-    def cancel_order(self, order_id):
-        self.cancelled_order_ids.append(order_id)
-        return True
-
-    def query_account(self):
-        return self.account
-
-    def query_positions(self):
-        return list(self.positions.values())
-
-    def query_orders(self):
-        return list(self.orders.values())
+from tests.helpers import RecordingGateway
 
 
 def install_gateway(monkeypatch):

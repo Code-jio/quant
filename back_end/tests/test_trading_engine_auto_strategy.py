@@ -3,38 +3,10 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 from src.strategy import Direction, Order, OrderStatus, OrderType, StrategyBase
-from src.trading import GatewayBase, TradingEngine
-from src.trading.types import AccountInfo, MarketData, TradingStatus
+from src.trading import TradingEngine
+from src.trading.types import MarketData
 
-
-class RecordingGateway(GatewayBase):
-    def __init__(self):
-        super().__init__("TEST")
-        self.sent_signals = []
-
-    def connect(self, config):
-        self.status = TradingStatus.CONNECTED
-        self.account = AccountInfo(account_id="TEST001", balance=100000.0, available=100000.0)
-        return True
-
-    def disconnect(self):
-        self.status = TradingStatus.STOPPED
-
-    def send_order(self, signal):
-        self.sent_signals.append(signal)
-        return f"ORDER_{len(self.sent_signals)}"
-
-    def cancel_order(self, order_id):
-        return True
-
-    def query_account(self):
-        return self.account
-
-    def query_positions(self):
-        return list(self.positions.values())
-
-    def query_orders(self):
-        return list(self.orders.values())
+from tests.helpers import RecordingGateway
 
 
 class LiveDataSignalStrategy(StrategyBase):

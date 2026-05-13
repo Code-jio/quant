@@ -66,6 +66,7 @@ def test_save_bars_records_metadata_and_quality():
         assert report["gaps"]["missing_count"] == 1
         assert report["quality"]["rows"] == 2
     finally:
+        manager.close()
         db_path.unlink(missing_ok=True)
 
 
@@ -105,8 +106,9 @@ def test_database_manager_upgrades_legacy_bars_table_with_ingested_at():
     conn.commit()
     conn.close()
 
+    db_mgr = None
     try:
-        DatabaseManager(str(db_path))
+        db_mgr = DatabaseManager(str(db_path))
 
         conn = sqlite3.connect(db_path)
         columns = {row[1] for row in conn.execute("PRAGMA table_info(bars)").fetchall()}
@@ -118,6 +120,8 @@ def test_database_manager_upgrades_legacy_bars_table_with_ingested_at():
         assert ingested_at
         assert user_version >= 3
     finally:
+        if db_mgr:
+            db_mgr.close()
         db_path.unlink(missing_ok=True)
 
 
@@ -136,6 +140,7 @@ def test_generate_sample_data_marks_synthetic_source(monkeypatch):
         assert len(generated) == 10
         assert metadata["data_source"] == "synthetic"
     finally:
+        manager.close()
         db_path.unlink(missing_ok=True)
 
 
@@ -152,4 +157,5 @@ def test_generate_sample_data_can_be_disabled_for_production(monkeypatch):
         assert generated.empty
         assert manager.db.get_metadata("rb2505") is None
     finally:
+        manager.close()
         db_path.unlink(missing_ok=True)

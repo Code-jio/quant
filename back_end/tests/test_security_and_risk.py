@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 import unittest
 from datetime import datetime, timedelta
 
@@ -29,8 +30,15 @@ class SafeDefaultsTest(unittest.TestCase):
 
 
 class SessionStoreTest(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._db_path = os.path.join(self._tmpdir.name, "sessions.db")
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
     def test_session_create_validate_and_revoke(self):
-        store = SessionStore(ttl=timedelta(minutes=5))
+        store = SessionStore(ttl=timedelta(minutes=5), db_path=self._db_path)
 
         token = store.create()
 
@@ -43,12 +51,20 @@ class SessionStoreTest(unittest.TestCase):
         self.assertFalse(store.has_active_sessions())
 
     def test_expired_session_is_rejected(self):
-        store = SessionStore(ttl=timedelta(seconds=-1))
+        store = SessionStore(ttl=timedelta(seconds=-1), db_path=self._db_path)
 
         token = store.create()
 
         self.assertFalse(store.is_valid(token))
         self.assertFalse(store.has_active_sessions())
+
+    def test_sessions_survive_reload(self):
+        store1 = SessionStore(ttl=timedelta(minutes=5), db_path=self._db_path)
+        token = store1.create()
+        self.assertTrue(store1.is_valid(token))
+
+        store2 = SessionStore(ttl=timedelta(minutes=5), db_path=self._db_path)
+        self.assertTrue(store2.is_valid(token))
 
 
 class RiskManagerTest(unittest.TestCase):

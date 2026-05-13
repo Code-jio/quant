@@ -63,11 +63,14 @@ def teardown_function():
     trading_state.clear_main()
 
 
-def test_watch_tick_requires_connected_gateway():
+def test_watch_tick_requires_connected_gateway(monkeypatch):
+    install_gateway(monkeypatch)
     trading_state.clear_main()
     app = create_app()
 
     with TestClient(app) as client:
+        login(client)
+        trading_state.clear_main()
         response = client.get("/watch/tick?symbols=rb2505")
 
     assert response.status_code == 503

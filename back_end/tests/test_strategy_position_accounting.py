@@ -48,11 +48,12 @@ def test_strategy_capital_deducts_commission_when_trade_has_no_pnl():
     assert strategy.current_capital == pytest.approx(998)
 
 
-def test_partial_close_keeps_remaining_long_cost_unchanged():
+def test_get_position_reads_from_bound_source():
+    """get_position() prefers _position_source over local state."""
     strategy = PositionProbeStrategy("probe", {"symbol": "rb2505"})
-
-    strategy.update_position("rb2505", trade(Direction.LONG, 100, 10))
-    strategy.update_position("rb2505", trade(Direction.SHORT, 120, 5))
+    strategy.set_position_source({
+        "rb2505_long": Position(symbol="rb2505", direction=Direction.LONG, volume=5, cost=100, price=100)
+    })
 
     pos = strategy.get_position("rb2505")
     assert pos.direction == Direction.LONG
@@ -60,11 +61,12 @@ def test_partial_close_keeps_remaining_long_cost_unchanged():
     assert pos.cost == pytest.approx(100)
 
 
-def test_reversal_uses_new_trade_price_as_cost_for_new_side():
+def test_get_position_uses_source_for_reversed_side():
+    """When source has a short position, get_position() returns short."""
     strategy = PositionProbeStrategy("probe", {"symbol": "rb2505"})
-
-    strategy.update_position("rb2505", trade(Direction.LONG, 100, 10))
-    strategy.update_position("rb2505", trade(Direction.SHORT, 90, 15))
+    strategy.set_position_source({
+        "rb2505_short": Position(symbol="rb2505", direction=Direction.SHORT, volume=5, cost=90, price=90)
+    })
 
     pos = strategy.get_position("rb2505")
     assert pos.direction == Direction.SHORT
