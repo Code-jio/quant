@@ -15,7 +15,7 @@ from src.strategy import create_strategy
 from src.backtest import BacktestEngine, BacktestConfig
 from src.trading import TradingEngine, create_gateway
 from src.analysis import Analyzer
-from src.settings import ctp_defaults, runtime_risk_defaults
+from src.settings import ctp_defaults, runtime_risk_defaults, warn_production_risk_defaults
 
 
 logger = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ DEFAULT_CONFIG = {
         "commission_rate": 0.0003,
         "slip_rate": 0.0001,
         "margin_rate": 0.12,
-        "contract_multiplier": 1,
+        "contract_multiplier": 10,
         "max_errors": 100
     },
     "strategy": {
@@ -83,15 +83,22 @@ def run_backtest(config: dict):
     logger.info("开始回测")
     logger.info("=" * 60)
 
+    strategy_params = config.get('strategy', {})
+    backtest_params = config.get('backtest', {})
+    resolved_multiplier = float(
+        strategy_params.get('contract_multiplier',
+            backtest_params.get('contract_multiplier', 10))
+    )
+
     bt_config = BacktestConfig(
-        start_date=config['backtest']['start_date'],
-        end_date=config['backtest']['end_date'],
-        initial_capital=config['backtest']['initial_capital'],
-        commission_rate=config['backtest']['commission_rate'],
-        slip_rate=config['backtest']['slip_rate'],
-        margin_rate=config['backtest']['margin_rate'],
-        contract_multiplier=config['backtest'].get('contract_multiplier', 1),
-        max_errors=config['backtest'].get('max_errors', 100)
+        start_date=backtest_params['start_date'],
+        end_date=backtest_params['end_date'],
+        initial_capital=backtest_params['initial_capital'],
+        commission_rate=backtest_params['commission_rate'],
+        slip_rate=backtest_params['slip_rate'],
+        margin_rate=backtest_params['margin_rate'],
+        contract_multiplier=resolved_multiplier,
+        max_errors=backtest_params.get('max_errors', 100)
     )
 
     data_manager = DataManager()
@@ -162,6 +169,9 @@ def run_live_trading(config: dict):
 
 def main():
     configure_logging()
+
+    for warning in warn_production_risk_defaults():
+        logger.warning("风控配置: %s", warning)
 
     parser = argparse.ArgumentParser(description='量化交易系统')
     parser.add_argument('--config', '-c', default=DEFAULT_CONFIG_PATH, help='配置文件路径')

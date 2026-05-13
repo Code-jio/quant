@@ -23,6 +23,7 @@ STRATEGY_CATALOG = [
             "fast_period": 10,
             "slow_period": 20,
             "position_ratio": 0.8,
+            "contract_multiplier": 10,
         },
     },
     {
@@ -35,6 +36,7 @@ STRATEGY_CATALOG = [
             "oversold": 30,
             "overbought": 70,
             "position_ratio": 0.8,
+            "contract_multiplier": 10,
         },
     },
     {
@@ -45,6 +47,7 @@ STRATEGY_CATALOG = [
             "symbol": "IF9999",
             "lookback_period": 20,
             "position_ratio": 0.8,
+            "contract_multiplier": 10,
         },
     },
 ]
@@ -52,6 +55,10 @@ STRATEGY_CATALOG = [
 
 def run_backtest_sync(body: Any) -> Dict[str, Any]:
     """Run a backtest in a worker thread and return JSON-serializable data."""
+    resolved_multiplier = body.contract_multiplier
+    if body.strategy_params and 'contract_multiplier' in body.strategy_params:
+        resolved_multiplier = float(body.strategy_params['contract_multiplier'])
+
     bt_cfg = BacktestConfig(
         start_date=body.start_date,
         end_date=body.end_date,
@@ -59,7 +66,7 @@ def run_backtest_sync(body: Any) -> Dict[str, Any]:
         commission_rate=body.commission_rate,
         slip_rate=body.slip_rate,
         margin_rate=body.margin_rate,
-        contract_multiplier=body.contract_multiplier,
+        contract_multiplier=resolved_multiplier,
         max_errors=body.max_errors,
     )
 

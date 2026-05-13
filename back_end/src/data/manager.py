@@ -82,7 +82,7 @@ class DataManager:
 
     def generate_sample_data(self, symbol: str, days: int = 500,
                              timeframe: str = "1d") -> pd.DataFrame:
-        """生成模拟K线数据用于测试"""
+        """生成严格满足 OHLC 有效性约束的模拟K线数据。"""
         if not synthetic_data_enabled():
             logger.warning("模拟数据生成已禁用: %s %s", symbol, timeframe)
             return pd.DataFrame()
@@ -92,28 +92,43 @@ class DataManager:
             dates = pd.date_range(end=datetime.now(), periods=days, freq='D')
 
             initial_price = 100.0
-            returns = rng.standard_normal(days) * 0.02
-            close_prices = initial_price * np.exp(np.cumsum(returns))
+            log_returns = rng.standard_normal(days) * 0.02
+            close_prices = initial_price * np.exp(np.cumsum(log_returns))
 
-            high_mult = 1 + np.abs(rng.standard_normal(days)) * 0.015 + 0.003
-            low_mult = 1 - np.abs(rng.standard_normal(days)) * 0.015 - 0.003
-            high_prices = close_prices * high_mult
-            low_prices = close_prices * low_mult
+            o_arr = np.empty(days, dtype=float)
+            h_arr = np.empty(days, dtype=float)
+            l_arr = np.empty(days, dtype=float)
 
-            open_prices = close_prices * (1 + rng.standard_normal(days) * 0.008)
-            open_prices = np.clip(open_prices, low_prices, high_prices)
+            for i in range(days):
+                c = close_prices[i]
+                prev_c = close_prices[i - 1] if i > 0 else initial_price
+                gap_pct = rng.standard_normal() * 0.008
+                o = prev_c * (1 + gap_pct)
 
-            high_prices = np.maximum(high_prices, np.maximum(open_prices, close_prices))
-            low_prices = np.minimum(low_prices, np.minimum(open_prices, close_prices))
-            same_mask = (open_prices == close_prices)
-            open_prices[same_mask] *= 1.001
+                bar_range = abs(c - o) + abs(c) * rng.uniform(0.003, 0.03)
+                half_range = bar_range / 2
+                mid = (o + c) / 2
+                h = mid + half_range
+                l = mid - half_range
+
+                h = max(h, o, c) + abs(c) * 0.0005
+                l = min(l, o, c) - abs(c) * 0.0005
+                if l <= 0:
+                    l = min(o, c) * 0.99
+
+                if o == c:
+                    o *= 1.0005
+
+                o_arr[i] = o
+                h_arr[i] = h
+                l_arr[i] = l
 
             df = pd.DataFrame({
                 'datetime': dates,
-                'open': open_prices,
-                'high': high_prices,
-                'low': low_prices,
-                'close': close_prices,
+                'open': np.round(o_arr, 4),
+                'high': np.round(h_arr, 4),
+                'low': np.round(l_arr, 4),
+                'close': np.round(close_prices, 4),
                 'volume': rng.integers(1000, 10000, days),
                 'open_interest': rng.integers(5000, 50000, days)
             })
@@ -148,11 +163,14 @@ class DataManager:
             "cache": self.cache.stats(),
         }
 
+    def close(self):
+        """清理资源"""
+        self.db.close()
+        self.cache.clear()
+
     def clear_cache(self):
         """清空缓存"""
         self.cache.clear()
 
     def _invalidate_cache_for_symbol(self, symbol: str) -> None:
-        for key in list(self.cache.cache.keys()):
-            if key.startswith(f"{symbol}_"):
-                self.cache.remove(key)
+        self.cache.invalidate_by_prefix(f"{symbol}_")

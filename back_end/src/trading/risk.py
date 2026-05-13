@@ -30,7 +30,7 @@ class RiskConfig:
     max_price_deviation: float = 0.0
     max_market_data_age_seconds: float = 0.0
     duplicate_signal_window_seconds: float = 0.0
-    default_contract_multiplier: float = 1.0
+    default_contract_multiplier: float = 10.0
     contract_multipliers: Dict[str, float] = field(default_factory=dict)
     allow_market_orders: bool = True
     allowed_symbols: set[str] = field(default_factory=set)
@@ -54,7 +54,7 @@ class RiskConfig:
             max_price_deviation=max(0.0, float(raw.get("max_price_deviation", 0.0))),
             max_market_data_age_seconds=max(0.0, float(raw.get("max_market_data_age_seconds", 0.0))),
             duplicate_signal_window_seconds=max(0.0, float(raw.get("duplicate_signal_window_seconds", 0.0))),
-            default_contract_multiplier=max(1.0, float(raw.get("default_contract_multiplier", 1.0))),
+            default_contract_multiplier=max(1.0, float(raw.get("default_contract_multiplier", 10.0))),
             contract_multipliers={
                 str(symbol).strip(): max(1.0, float(value))
                 for symbol, value in multipliers.items()

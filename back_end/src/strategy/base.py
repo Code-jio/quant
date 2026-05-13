@@ -3,6 +3,7 @@
 """
 
 import logging
+from collections import deque
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List, Mapping
 
@@ -11,6 +12,8 @@ logger = logging.getLogger(__name__)
 import pandas as pd
 from .types import Direction, OrderType, OffsetFlag, Signal, Order, Trade, Position
 from .errors import StrategyError
+
+_SIGNAL_HISTORY_MAXLEN = 1000
 
 
 class StrategyBase(ABC):
@@ -21,6 +24,7 @@ class StrategyBase(ABC):
         self.params = params or {}
         self.indicators: Dict[str, pd.DataFrame] = {}
         self.signals: List[Signal] = []
+        self._signal_history: deque = deque(maxlen=_SIGNAL_HISTORY_MAXLEN)
         self.positions: Dict[str, Position] = {}
         self._position_source: Optional[Mapping[str, Position]] = None
         self.orders: Dict[str, Order] = {}
@@ -91,6 +95,7 @@ class StrategyBase(ABC):
                 return None
 
             self.signals.append(signal)
+            self._signal_history.append(signal)
             return signal
 
         except Exception as e:
@@ -121,6 +126,7 @@ class StrategyBase(ABC):
                 return None
 
             self.signals.append(signal)
+            self._signal_history.append(signal)
             return signal
 
         except Exception as e:
@@ -150,6 +156,7 @@ class StrategyBase(ABC):
                 return None
 
             self.signals.append(signal)
+            self._signal_history.append(signal)
             return signal
 
         except Exception as e:
@@ -180,6 +187,7 @@ class StrategyBase(ABC):
                 return None
 
             self.signals.append(signal)
+            self._signal_history.append(signal)
             return signal
 
         except Exception as e:
@@ -255,59 +263,18 @@ class StrategyBase(ABC):
         return self.data.get(symbol)
 
     def update_position(self, symbol: str, trade: 'Trade'):
-        """更新持仓"""
+        """Record a fill and update available capital (live-trading path only).
+
+        Position state is owned by the gateway/engine, not the strategy.
+        Use get_position() to read the authoritative position from the bound source.
+        """
         try:
-            if symbol not in self.positions:
-                self.positions[symbol] = Position(symbol=symbol, direction=Direction.NET, volume=0)
-
-            pos = self.positions[symbol]
-            old_volume = self._signed_position_volume(pos)
-            old_cost = float(pos.cost if pos.cost is not None else (pos.price if pos.price is not None else 0.0))
-            delta = int(trade.volume) if trade.direction == Direction.LONG else -int(trade.volume)
-            new_volume = old_volume + delta
-
-            if old_volume == 0 or old_volume * delta > 0:
-                old_abs = abs(old_volume)
-                new_abs = abs(new_volume)
-                pos.cost = (
-                    (old_cost * old_abs + float(trade.price) * abs(delta)) / new_abs
-                    if new_abs else 0.0
-                )
-            elif new_volume == 0:
-                pos.cost = 0
-            elif old_volume * new_volume > 0:
-                pos.cost = old_cost
-            else:
-                pos.cost = float(trade.price)
-
-            pos.volume = new_volume
-            if new_volume > 0:
-                pos.direction = Direction.LONG
-            elif new_volume < 0:
-                pos.direction = Direction.SHORT
-            else:
-                pos.direction = Direction.NET
-                pos.price = 0
-
-            if new_volume != 0:
-                pos.price = pos.cost
-
-            pos.pnl = 0
-
+            self.trades.append(trade)
             realized_pnl = float(getattr(trade, "pnl", 0) or 0)
             commission = float(getattr(trade, "commission", 0) or 0)
             self.current_capital += realized_pnl
             if realized_pnl == 0 and commission:
                 self.current_capital -= commission
-
         except Exception as e:
             self.on_error(e, "update_position")
 
-    @staticmethod
-    def _signed_position_volume(pos: Position) -> int:
-        volume = int(getattr(pos, "volume", 0) or 0)
-        if getattr(pos, "direction", Direction.NET) == Direction.SHORT:
-            return -abs(volume)
-        if getattr(pos, "direction", Direction.NET) == Direction.LONG:
-            return abs(volume)
-        return volume

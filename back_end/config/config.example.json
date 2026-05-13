@@ -7,7 +7,7 @@
     "commission_rate": 0.0003,
     "slip_rate": 0.0001,
     "margin_rate": 0.12,
-    "contract_multiplier": 1,
+    "contract_multiplier": 10,
     "max_errors": 100
   },
   "strategy": {
@@ -41,9 +41,9 @@
     "max_order_value": 5000000,
     "max_position_value": 10000000,
     "max_price_deviation": 0.02,
-    "max_market_data_age_seconds": 0,
+    "max_market_data_age_seconds": 5,
     "duplicate_signal_window_seconds": 2,
-    "default_contract_multiplier": 1,
+    "default_contract_multiplier": 10,
     "contract_multipliers": {},
     "allow_market_orders": true,
     "allowed_symbols": [],

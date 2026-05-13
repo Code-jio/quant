@@ -46,27 +46,66 @@ import numpy as np
 import pandas as pd
 import psutil
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from slowapi import Limiter
+from slowapi.util import get_ipaddr
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
-from pydantic import BaseModel, Field
-
 from ..strategy import Direction, StrategyBase
 from ..trading import AccountInfo, TradingEngine, TradingStatus
 from ..strategy import Signal, OrderType, OffsetFlag
 from ..observability import audit_log, metrics, new_request_id, structured_json
 from ..settings import (
-    ctp_defaults,
     ctp_server_presets,
     runtime_risk_defaults,
     secure_session_cookie_enabled,
+    warn_production_risk_defaults,
     websocket_query_token_enabled,
 )
 from .backtest_service import STRATEGY_CATALOG, run_backtest_sync
+from .models import (
+    ActionRequest,
+    ActionResponse,
+    AuthStatusResponse,
+    BacktestRunRequest,
+    ClosePositionRequest,
+    EmergencyStopRequest,
+    LoginRequest,
+    LoginResponse,
+    ManualOrderRequest,
+    ParamsUpdateRequest,
+    PositionInfo,
+    RiskConfigRequest,
+    SignalSchema,
+    StrategyDetailResponse,
+    StrategyInfo,
+    SystemStatusResponse,
+    WeightRequest,
+)
 from .security import SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME, is_open_path, session_store
 
 logger = logging.getLogger(__name__)
-_CTP_DEFAULTS = ctp_defaults()
 _DEFAULT_RUNTIME_RISK = runtime_risk_defaults()
+
+def _rate_limit_key(request: Request) -> str:
+    """Session-based key for trading endpoints; IP-based for everything else."""
+    path = request.url.path
+    if path.startswith("/orders") or path.startswith("/positions"):
+        auth = request.headers.get("authorization", "")
+        token = auth[7:] if auth.lower().startswith("bearer ") else request.cookies.get(SESSION_COOKIE_NAME, "")
+        if token and session_store.is_valid(token):
+            return f"session:{token}"
+    client = getattr(request, "client", None)
+    host = getattr(client, "host", "unknown") if client else "unknown"
+    return f"ip:{host}"
+
+
+def _rate_limit_enabled() -> bool:
+    return os.getenv("QUANT_RATE_LIMIT_ENABLED", "true").lower() not in ("0", "false", "no", "off")
+
+
+_limiter = Limiter(key_func=_rate_limit_key, enabled=_rate_limit_enabled())
 
 _DEFAULT_CORS_ORIGINS = (
     "http://localhost:5173,"
@@ -79,166 +118,6 @@ _DEFAULT_CORS_ORIGINS = (
 def _cors_origins() -> List[str]:
     raw = os.getenv("QUANT_CORS_ORIGINS", _DEFAULT_CORS_ORIGINS)
     return [item.strip() for item in raw.split(",") if item.strip()]
-
-# ---------------------------------------------------------------------------
-# Pydantic 模型
-# ---------------------------------------------------------------------------
-
-class LoginRequest(BaseModel):
-    username:   str
-    password:   str
-    broker_id:  str = _CTP_DEFAULTS["broker_id"]
-    td_server:  str = _CTP_DEFAULTS["td_server"]
-    md_server:  str = _CTP_DEFAULTS["md_server"]
-    app_id:     str = _CTP_DEFAULTS["app_id"]
-    auth_code:  str = _CTP_DEFAULTS["auth_code"]
-    gateway_type: str = "vnpy"   # "vnpy" | "ctp"
-    environment: str = _CTP_DEFAULTS["vnpy_environment"]     # vn.py CTP 柜台环境："实盘" | "测试"
-    auto_start_strategy: bool = False
-    strategy_name: str = "ma_cross"
-    strategy_params: Dict[str, Any] = Field(default_factory=dict)
-    risk: Dict[str, Any] = Field(default_factory=dict)
-
-
-class LoginResponse(BaseModel):
-    success:        bool
-    message:        str
-    gateway_status: str
-    account_id:     str = ""
-    balance:        float = 0.0
-    strategy_started: bool = False
-    strategy_id:      str = ""
-
-
-class AuthStatusResponse(BaseModel):
-    logged_in:         bool
-    gateway_connected: bool
-    gateway_status:    str
-    gateway_name:      str
-    account_id:        str
-    connect_log:       List[str]
-
-
-class SystemStatusResponse(BaseModel):
-    timestamp:        str
-    market_connected: bool
-    gateway_status:   str
-    gateway_name:     str
-    cpu_percent:      float
-    memory_percent:   float
-    active_strategies: int
-    account:          Optional[Dict[str, Any]] = None
-
-
-class PositionInfo(BaseModel):
-    symbol:     str
-    direction:  str
-    volume:     int
-    frozen:     int
-    cost_price: float
-    pnl:        float
-
-
-class StrategyInfo(BaseModel):
-    strategy_id: str
-    name:        str
-    status:      str
-    symbol:      Optional[str]
-    pnl:         float
-    positions:   List[PositionInfo]
-    trade_count: int
-    error_count: int
-
-
-class ActionRequest(BaseModel):
-    action: str   # "start" | "stop"
-
-
-class ActionResponse(BaseModel):
-    success:     bool
-    strategy_id: str
-    action:      str
-    message:     str
-
-
-class SignalSchema(BaseModel):
-    symbol:     str
-    time:       str
-    direction:  str
-    price:      float
-    volume:     int
-    comment:    str
-    order_type: str
-
-
-class StrategyDetailResponse(BaseModel):
-    strategy_id:    str
-    name:           str
-    status:         str
-    symbol:         Optional[str]
-    pnl:            float
-    trade_count:    int
-    error_count:    int
-    positions:      List[PositionInfo]
-    weight:         float
-    params:         Dict[str, Any]
-    recent_signals: List[SignalSchema]
-
-
-class ParamsUpdateRequest(BaseModel):
-    params:  Dict[str, Any]
-    restart: bool = False   # 如果策略正在运行，是否重启使新参数生效
-
-
-class WeightRequest(BaseModel):
-    weights: Dict[str, float]  # {strategy_id: 0.0~1.0}
-
-
-class BacktestRunRequest(BaseModel):
-    strategy_name:   str            = "ma_cross"
-    strategy_params: Dict[str, Any] = Field(default_factory=dict)
-    start_date:      str            = "2023-01-01"
-    end_date:        str            = "2024-12-31"
-    initial_capital: float          = 1_000_000
-    commission_rate: float          = 0.0003
-    slip_rate:       float          = 0.0001
-    margin_rate:     float          = 0.12
-    contract_multiplier: float      = 1.0
-    max_errors:      int            = 100
-    sample_days:     int            = 700   # 模拟数据天数
-    allow_synthetic_data: bool      = False
-
-
-class ManualOrderRequest(BaseModel):
-    """手动下单请求"""
-    symbol:     str
-    direction:  str         # "long" | "short"
-    offset:     str = "open"  # "open" | "close" | "close_today" | "close_yesterday"
-    price:      float = 0   # 0 = 市价
-    volume:     int = 1
-    order_type: str = "market"  # "market" | "limit"
-
-
-class ClosePositionRequest(BaseModel):
-    """快捷平仓请求"""
-    volume:     int = 0         # 0 = 全部平仓
-    price:      float = 0       # 0 = 市价
-    direction:  str = ""        # 可选："long" | "short"，用于锁定要平的持仓方向
-    offset:     str = "close"   # "close" | "close_today" | "close_yesterday"
-    order_type: str = ""        # "" 自动按 price 推断；也可传 "market" | "limit"
-
-
-class EmergencyStopRequest(BaseModel):
-    """交易急停请求。"""
-    reason: str = ""
-    cancel_orders: bool = True
-    stop_strategies: bool = False
-
-
-class RiskConfigRequest(BaseModel):
-    """运行时风控配置更新请求。"""
-    risk: Dict[str, Any] = Field(default_factory=dict)
-
 
 _MANUAL_DIRECTION_MAP = {"long": Direction.LONG, "short": Direction.SHORT}
 _MANUAL_OFFSET_MAP = {
@@ -360,6 +239,22 @@ _PRESET_MD = ctp_server_presets("md")
 # ---------------------------------------------------------------------------
 # WebSocket 连接管理器
 # ---------------------------------------------------------------------------
+
+async def _ws_keepalive(ws: WebSocket, timeout: float = 30.0) -> bool:
+    """Block until next client message or heartbeat timeout. Returns False on dead connection."""
+    try:
+        await asyncio.wait_for(ws.receive_text(), timeout=timeout)
+        return True
+    except asyncio.TimeoutError:
+        pass
+    except WebSocketDisconnect:
+        return False
+    try:
+        await ws.send_text("ping")
+        return True
+    except Exception:
+        return False
+
 
 class ConnectionManager:
     def __init__(self, channel: str, send_timeout: float = 1.0):
@@ -749,7 +644,7 @@ def _signal_to_schema(sig) -> SignalSchema:
 
 
 def _calc_strategy_pnl(entry: _StrategyEntry) -> float:
-    return sum(getattr(p, "pnl", 0.0) for p in entry.strategy.positions.values())
+    return sum(getattr(p, "pnl", 0.0) for p in entry.engine.gateway.positions.values())
 
 
 def _account_to_dict(account: AccountInfo) -> Dict[str, Any]:
@@ -935,14 +830,38 @@ def _build_system_snapshot() -> dict:
 async def _system_broadcast_loop():
     while True:
         try:
-            snapshot = _build_system_snapshot()
-            # 同步记录到权益历史（夏普/回撤计算用）
-            trading_state.push_equity(snapshot["total_pnl"], snapshot["balance"])
-            if system_manager.count > 0:
+            need_broadcast = system_manager.count > 0
+            snapshot = _build_system_snapshot() if need_broadcast else None
+            if snapshot:
+                trading_state.push_equity(snapshot["total_pnl"], snapshot["balance"])
+            else:
+                _push_equity_light()
+            if need_broadcast and snapshot:
                 await system_manager.broadcast(snapshot)
         except Exception as exc:
             logger.warning(f"[WS:system] 广播异常: {exc}")
         await asyncio.sleep(1)
+
+
+def _push_equity_light() -> None:
+    """Record equity for dashboard metrics without building the full system snapshot."""
+    engine = trading_state.primary_engine()
+    pnl = 0.0
+    balance = 0.0
+    if engine is not None:
+        try:
+            account = engine.get_account()
+            if not account.error_msg:
+                pnl = account.total_pnl
+                balance = account.balance
+        except Exception:
+            pass
+    if pnl == 0.0:
+        pnl = sum(
+            getattr(entry.strategy, "current_capital", 0.0) - getattr(entry.strategy, "initial_capital", 0.0)
+            for entry in trading_state.all_entries()
+        )
+    trading_state.push_equity(pnl, balance)
 
 
 # ---------------------------------------------------------------------------
@@ -1282,6 +1201,10 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         # 挂载日志缓冲 handler（异步队列必须在事件循环就绪后创建）
         log_buffer._queue = asyncio.Queue(maxsize=1000)
         logging.getLogger().addHandler(log_buffer)
+        # 风控启动告警（生产环境未显式设置的风险参数）
+        for warning in warn_production_risk_defaults():
+            logger.warning("风控配置: %s", warning)
+        logger.info("生效风控: %s", runtime_risk_defaults())
 
         broadcast_task   = asyncio.create_task(_system_broadcast_loop())
         dashboard_task   = asyncio.create_task(_dashboard_broadcast_loop())
@@ -1289,6 +1212,26 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         logs_task        = asyncio.create_task(_logs_broadcast_loop())
         logger.info("[API] WebSocket 广播任务已启动（system / dashboard / positions / logs）")
         yield
+        # ── 优雅关闭：撤单 → 停策略 → 断网关 ──────────────────────────
+        logger.info("[API] 开始优雅关闭…")
+        try:
+            _cancel_all_active_orders()
+        except Exception as exc:
+            logger.warning("[API] 关闭时撤单异常: %s", exc)
+        try:
+            for entry in trading_state.all_entries():
+                try:
+                    entry.engine.stop()
+                except Exception as exc:
+                    logger.warning("[API] 关闭时停止策略 %s 异常: %s", entry.strategy_id, exc)
+        except Exception as exc:
+            logger.warning("[API] 关闭时策略停止异常: %s", exc)
+        try:
+            trading_state.clear_main()
+        except Exception as exc:
+            logger.warning("[API] 关闭时清理主引擎异常: %s", exc)
+        logger.info("[API] 优雅关闭完成")
+
         logging.getLogger().removeHandler(log_buffer)
         for task in (broadcast_task, dashboard_task, positions_task, logs_task):
             task.cancel()
@@ -1303,6 +1246,13 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         description="量化交易系统 API：CTP 登录 · REST 控制 · WebSocket 实时推送",
         lifespan=lifespan,
     )
+
+    app.state.limiter = _limiter
+    app.add_exception_handler(RateLimitExceeded, lambda request, exc: JSONResponse(
+        status_code=429,
+        content={"detail": "请求过于频繁，请稍后再试"},
+    ))
+    app.add_middleware(SlowAPIMiddleware)
 
     app.add_middleware(
         CORSMiddleware,
@@ -1449,6 +1399,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         summary="CTP 账户登录",
         tags=["认证"],
     )
+    @_limiter.limit("5/minute")
     async def do_login(body: LoginRequest, response: Response, request: Request):
         """
         接受 CTP 账户配置，连接交易前置和行情前置。
@@ -1685,7 +1636,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         result: List[StrategyInfo] = []
         for entry in trading_state.all_entries():
             s         = entry.strategy
-            positions = [_position_to_schema(p) for p in s.positions.values() if p.volume != 0]
+            positions = [_position_to_schema(p) for p in entry.engine.gateway.positions.values() if p.volume != 0]
             result.append(StrategyInfo(
                 strategy_id = entry.strategy_id,
                 name        = s.name,
@@ -1709,7 +1660,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         if entry is None:
             raise HTTPException(status_code=404, detail=f"策略不存在: {strategy_id}")
         s         = entry.strategy
-        positions = [_position_to_schema(p) for p in s.positions.values() if p.volume != 0]
+        positions = [_position_to_schema(p) for p in entry.engine.gateway.positions.values() if p.volume != 0]
         signals   = [_signal_to_schema(sig) for sig in list(s.signals)[-10:]]
         return StrategyDetailResponse(
             strategy_id    = entry.strategy_id,
@@ -1921,6 +1872,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         }
 
     @app.delete("/orders/{order_id}", summary="撤销委托单", tags=["订单簿"])
+    @_limiter.limit("20/minute")
     def cancel_order(order_id: str, request: Request):
         """调用网关 cancel_order()，结果通过 /ws/orders 回调推送。"""
         engine = trading_state.primary_engine()
@@ -1954,6 +1906,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
     # ── 手动交易端点 ──────────────────────────────────────────────────────────
 
     @app.post("/orders", summary="手动下单", tags=["手动交易"])
+    @_limiter.limit("20/minute")
     def place_manual_order(body: ManualOrderRequest, request: Request):
         """
         手动下达交易指令（开仓/平仓）。
@@ -2036,7 +1989,8 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             raise HTTPException(status_code=500, detail=f"下单失败: {exc}")
 
     @app.post("/orders/cancel-all", summary="一键撤销所有活跃委托", tags=["手动交易"])
-    def cancel_all_orders():
+    @_limiter.limit("20/minute")
+    def cancel_all_orders(request: Request):
         """撤销所有活跃状态的委托单。"""
         engine = trading_state.primary_engine()
         if engine is None:
@@ -2051,6 +2005,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         return {"success": True, "cancelled": cancelled, "failed": failed}
 
     @app.post("/positions/{symbol}/close", summary="快捷平仓", tags=["手动交易"])
+    @_limiter.limit("20/minute")
     def close_position(symbol: str, request: Request, body: ClosePositionRequest = ClosePositionRequest()):
         """
         快捷平仓指定合约。自动推断持仓方向和数量。
@@ -2230,7 +2185,8 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         try:
             await ws.send_text(_json.dumps(_build_system_snapshot(), ensure_ascii=False, default=str))
             while True:
-                await ws.receive_text()
+                if not await _ws_keepalive(ws):
+                    break
         except WebSocketDisconnect:
             pass
         except Exception as exc:
@@ -2245,7 +2201,8 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         await orders_manager.connect(ws)
         try:
             while True:
-                await ws.receive_text()
+                if not await _ws_keepalive(ws):
+                    break
         except WebSocketDisconnect:
             pass
         except Exception as exc:
@@ -2264,7 +2221,8 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
                 _json.dumps(_build_positions_snapshot(), ensure_ascii=False, default=str)
             )
             while True:
-                await ws.receive_text()
+                if not await _ws_keepalive(ws):
+                    break
         except WebSocketDisconnect:
             pass
         except Exception as exc:
@@ -2283,7 +2241,8 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
                 _json.dumps(_build_dashboard_metrics(), ensure_ascii=False, default=str)
             )
             while True:
-                await ws.receive_text()
+                if not await _ws_keepalive(ws):
+                    break
         except WebSocketDisconnect:
             pass
         except Exception as exc:
@@ -2329,7 +2288,8 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
                 )
             )
             while True:
-                await ws.receive_text()
+                if not await _ws_keepalive(ws):
+                    break
         except WebSocketDisconnect:
             pass
         except Exception as exc:
@@ -2478,7 +2438,14 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         async def _recv_loop():
             try:
                 while True:
-                    raw = await ws.receive_text()
+                    try:
+                        raw = await asyncio.wait_for(ws.receive_text(), timeout=30.0)
+                    except asyncio.TimeoutError:
+                        try:
+                            await ws.send_text("ping")
+                        except Exception:
+                            break
+                        continue
                     if raw == "ping":
                         await ws.send_text("pong")
                         continue

@@ -29,19 +29,40 @@ def _validate_identifier(name: str) -> None:
 class DatabaseManager:
     """数据库管理器"""
 
-    def __init__(self, db_path: str = "data/historical/quotes.db",
+    def __init__(self, db_path: str = None,
                  max_retries: int = 3, timeout: float = 30.0):
-        self.db_path = db_path
+        if db_path is None:
+            db_path = os.getenv(
+                "QUANT_DB_PATH",
+                os.path.join(os.path.dirname(__file__), "..", "..", "data", "historical", "quotes.db"),
+            )
+        self.db_path = os.path.abspath(db_path)
         self.max_retries = max_retries
         self.timeout = timeout
+        self._conn = None
         self._init_database()
+
+    def _get_conn(self):
+        if self._conn is None:
+            self._conn = sqlite3.connect(self.db_path, timeout=self.timeout, check_same_thread=False)
+            self._conn.execute("PRAGMA journal_mode=WAL")
+        return self._conn
+
+    def close(self):
+        if self._conn:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            finally:
+                self._conn = None
 
     @retry(max_retries=3, initial_delay=0.5, backoff_factor=1.5)
     def _init_database(self):
         """初始化数据库"""
         try:
             os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-            conn = sqlite3.connect(self.db_path, timeout=self.timeout)
+            conn = self._get_conn()
             cursor = conn.cursor()
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bars (
@@ -112,7 +133,6 @@ class DatabaseManager:
             )
             cursor.execute("PRAGMA user_version = " + str(CURRENT_SCHEMA_VERSION))
             conn.commit()
-            conn.close()
             logger.info(f"数据库初始化完成: {self.db_path}")
         except sqlite3.Error as e:
             logger.error(f"数据库初始化失败: {e}")
@@ -144,7 +164,7 @@ class DatabaseManager:
             return False
 
         try:
-            conn = sqlite3.connect(self.db_path, timeout=self.timeout)
+            conn = self._get_conn()
             df = df.copy()
             if "datetime" not in df.columns and isinstance(df.index, pd.DatetimeIndex):
                 df = df.reset_index().rename(columns={df.index.name or "index": "datetime"})
@@ -186,8 +206,10 @@ class DatabaseManager:
             )
             self._upsert_metadata(conn, metadata)
             conn.commit()
-            conn.close()
             logger.info(f"保存 {symbol} {timeframe} 数据 {len(df)} 条")
+            return True
+
+        except sqlite3.IntegrityError:
             return True
 
         except sqlite3.IntegrityError:
@@ -244,7 +266,7 @@ class DatabaseManager:
                   timeframe: str = "1d") -> pd.DataFrame:
         """加载K线数据"""
         try:
-            conn = sqlite3.connect(self.db_path, timeout=self.timeout)
+            conn = self._get_conn()
             query = """
                 SELECT datetime, open, high, low, close, volume, open_interest
                 FROM bars
@@ -252,7 +274,6 @@ class DatabaseManager:
                 ORDER BY datetime
             """
             df = pd.read_sql_query(query, conn, params=(symbol, timeframe, start_date, end_date))
-            conn.close()
 
             if not df.empty:
                 df['datetime'] = pd.to_datetime(df['datetime'])
@@ -272,11 +293,10 @@ class DatabaseManager:
     def get_available_symbols(self) -> List[str]:
         """获取可用合约列表"""
         try:
-            conn = sqlite3.connect(self.db_path, timeout=self.timeout)
+            conn = self._get_conn()
             cursor = conn.cursor()
             cursor.execute("SELECT DISTINCT symbol FROM bars")
             symbols = [row[0] for row in cursor.fetchall()]
-            conn.close()
             return symbols
         except sqlite3.Error as e:
             logger.error(f"查询合约列表失败: {e}")
@@ -285,7 +305,7 @@ class DatabaseManager:
     def get_data_range(self, symbol: str, timeframe: str = "1d") -> Tuple[Optional[str], Optional[str]]:
         """获取数据日期范围"""
         try:
-            conn = sqlite3.connect(self.db_path, timeout=self.timeout)
+            conn = self._get_conn()
             query = """
                 SELECT MIN(datetime), MAX(datetime)
                 FROM bars
@@ -294,7 +314,6 @@ class DatabaseManager:
             cursor = conn.cursor()
             cursor.execute(query, (symbol, timeframe))
             result = cursor.fetchone()
-            conn.close()
             return result[0], result[1]
         except sqlite3.Error as e:
             logger.error(f"查询数据范围失败: {e}")
@@ -303,7 +322,7 @@ class DatabaseManager:
     def get_metadata(self, symbol: str, timeframe: str = "1d") -> Optional[dict]:
         """获取指定合约/周期的数据治理元信息。"""
         try:
-            conn = sqlite3.connect(self.db_path, timeout=self.timeout)
+            conn = self._get_conn()
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
@@ -315,7 +334,6 @@ class DatabaseManager:
                 (symbol, timeframe),
             )
             row = cursor.fetchone()
-            conn.close()
             return dict(row) if row else None
         except sqlite3.Error as e:
             logger.error(f"查询数据元信息失败: {e}")

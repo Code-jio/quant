@@ -205,6 +205,9 @@ class TradingEngine:
         try:
             bar = self._tick_to_bar(tick)
             self.strategy.current_date = tick.timestamp
+            available = getattr(self.gateway.account, "available", 0.0)
+            if available > 0:
+                self.strategy.current_capital = available
             self.strategy.on_bar(bar)
             self._dispatch_strategy_signals()
             self._append_live_bar(tick, bar)
@@ -228,7 +231,7 @@ class TradingEngine:
         })
 
     def _append_live_bar(self, tick: MarketData, bar=None):
-        """Append the processed tick to rolling live data after strategy.on_bar."""
+        """Append the processed tick to a bounded rolling window of live data."""
         import pandas as pd
 
         if bar is None:
@@ -241,6 +244,10 @@ class TradingEngine:
         else:
             updated = pd.concat([existing, bar_frame])
             updated = updated[~updated.index.duplicated(keep="last")].sort_index()
+
+        # Keep only the tail to bound memory usage (1000 bars ≈ 1 trading day of 1m)
+        if len(updated) > 1000:
+            updated = updated.iloc[-1000:]
 
         self.strategy.data[tick.symbol] = updated
         return bar

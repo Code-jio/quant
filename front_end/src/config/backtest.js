@@ -7,7 +7,7 @@ export const DEFAULT_BACKTEST_FORM = {
   commission_rate: 0.0003,
   slip_rate: 0.0001,
   margin_rate: 0.12,
-  contract_multiplier: 1,
+  contract_multiplier: 10,
   max_errors: 100,
   sample_days: 700,
   allow_synthetic_data: false,

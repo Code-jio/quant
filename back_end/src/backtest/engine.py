@@ -59,6 +59,8 @@ class BacktestEngine:
         self.strategy = strategy
         self.strategy.initial_capital = self.config.initial_capital
         self.strategy.current_capital = self.config.initial_capital
+        self.strategy.contract_multiplier = self.config.contract_multiplier
+        strategy.set_position_source(self.positions)
 
     def run(self) -> BacktestResult:
         """运行回测"""
@@ -98,24 +100,43 @@ class BacktestEngine:
 
             sorted_dates = sorted(list(common_dates))
 
+            pending_signals = []
             for date in sorted_dates:
                 try:
                     self._current_date = date
-
-                    for symbol, df in all_data.items():
-                        self.strategy.data[symbol] = df.loc[df.index < date]
-
-                    self.strategy.current_date = date
 
                     bar = {}
                     for symbol, df in all_data.items():
                         if date in df.index:
                             bar[symbol] = df.loc[date]
 
+                    # Execute signals pending from the previous bar at this bar's open
+                    for signal in pending_signals:
+                        try:
+                            sym = signal.symbol
+                            if sym in bar:
+                                signal.price = bar[sym]["open"]
+                                self.strategy.signals = [signal]
+                                self._process_signals()
+                        except Exception as exc:
+                            self._error_count += 1
+                            logger.error(f"处理待执行信号失败 [{signal.symbol}]: {exc}")
+                    self.strategy.signals = []
+                    pending_signals.clear()
+
+                    for symbol, df in all_data.items():
+                        self.strategy.data[symbol] = df.loc[df.index < date]
+
+                    self.strategy.current_date = date
+                    self.strategy.current_capital = self.available_capital
+
                     for symbol, series in bar.items():
                         self.strategy.on_bar(series)
 
-                    self._process_signals()
+                    # Queue signals for next-bar execution
+                    pending_signals = list(self.strategy.signals)
+                    self.strategy.signals.clear()
+
                     self._update_positions(bar)
                     self._record_equity(date, bar)
 
@@ -126,6 +147,16 @@ class BacktestEngine:
                         logger.error(f"错误次数过多 ({self._error_count}), 停止回测")
                         break
                     continue
+
+            if pending_signals:
+                for signal in pending_signals:
+                    try:
+                        self.strategy.signals = [signal]
+                        self._process_signals()
+                    except Exception as exc:
+                        self._error_count += 1
+                        logger.error(f"处理最终待执行信号失败 [{signal.symbol}]: {exc}")
+                self.strategy.signals.clear()
 
             self.strategy.on_stop()
             self._calculate_result(sorted_dates)

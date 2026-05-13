@@ -127,6 +127,30 @@ def _parse_server_presets(raw: str) -> List[Dict[str, str]]:
     return presets
 
 
+def warn_production_risk_defaults() -> list[str]:
+    """Return a list of risk parameters still at their built-in defaults.
+
+    Call once at startup so operators see which values were not explicitly set.
+    """
+    warnings: list[str] = []
+    if not is_production_env():
+        return warnings
+    checks = [
+        ("QUANT_RISK_MAX_ORDER_VOLUME", "max_order_volume"),
+        ("QUANT_RISK_MAX_POSITION_VOLUME", "max_position_volume"),
+        ("QUANT_RISK_MAX_ACTIVE_ORDERS", "max_active_orders"),
+        ("QUANT_RISK_MAX_ORDERS_PER_MINUTE", "max_orders_per_minute"),
+        ("QUANT_RISK_MAX_DAILY_LOSS_RATIO", "max_daily_loss_ratio"),
+        ("QUANT_RISK_MAX_MARKET_DATA_AGE_SECONDS", "max_market_data_age_seconds"),
+        ("QUANT_RISK_MAX_PRICE_DEVIATION", "max_price_deviation"),
+        ("QUANT_RISK_ALLOW_MARKET_ORDERS", "allow_market_orders"),
+    ]
+    for env_name, _param_name in checks:
+        if env_name not in os.environ:
+            warnings.append(f"PRODUCTION env但 {env_name} 未设置，使用内置默认值")
+    return warnings
+
+
 def ctp_server_presets(kind: str) -> List[Dict[str, str]]:
     env_name = "QUANT_CTP_TD_PRESETS" if kind.lower() == "td" else "QUANT_CTP_MD_PRESETS"
     return _parse_server_presets(os.getenv(env_name, ""))

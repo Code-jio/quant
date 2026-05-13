@@ -14,5 +14,5 @@ class BacktestConfig:
     commission_rate: float = 0.0003
     slip_rate: float = 0.0001
     margin_rate: float = 0.12
-    contract_multiplier: float = 1.0
+    contract_multiplier: float = 10.0
     max_errors: int = 100
