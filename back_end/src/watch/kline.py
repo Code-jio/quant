@@ -227,27 +227,6 @@ def _synthesize_intraday(
 # 技术指标计算
 # ---------------------------------------------------------------------------
 
-def _calc_rsi(close: pd.Series, period: int = 14) -> pd.Series:
-    delta = close.diff()
-    gain  = delta.clip(lower=0).ewm(com=period - 1, adjust=False).mean()
-    loss  = (-delta.clip(upper=0)).ewm(com=period - 1, adjust=False).mean()
-    rs    = gain / loss.replace(0, np.nan)
-    return (100 - 100 / (1 + rs)).fillna(50)
-
-
-def _calc_kdj(
-    high: pd.Series, low: pd.Series, close: pd.Series,
-    n: int = 9, m1: int = 3, m2: int = 3,
-) -> tuple[pd.Series, pd.Series, pd.Series]:
-    low_n  = low.rolling(n).min()
-    high_n = high.rolling(n).max()
-    rsv    = ((close - low_n) / (high_n - low_n).replace(0, np.nan) * 100).fillna(50)
-    k      = rsv.ewm(com=m1 - 1, adjust=False).mean()
-    d      = k.ewm(com=m2 - 1, adjust=False).mean()
-    j      = 3 * k - 2 * d
-    return k, d, j
-
-
 def _apply_indicators(df: pd.DataFrame, indicators: list[str]) -> pd.DataFrame:
     """
     根据 indicators 列表计算技术指标，追加到 df 并返回。
@@ -275,40 +254,40 @@ def _apply_indicators(df: pd.DataFrame, indicators: list[str]) -> pd.DataFrame:
         m = re.fullmatch(r"ma(\d+)", ind)
         if m:
             n = int(m.group(1))
-            df[f"ma{n}"] = close.rolling(n, min_periods=1).mean().round(4)
+            from ..data.indicators import calc_ma
+            df[f"ma{n}"] = calc_ma(close, n).round(4)
             continue
 
         # ── EMA ──────────────────────────────────────────────────────────────
         m = re.fullmatch(r"ema(\d+)", ind)
         if m:
             n = int(m.group(1))
-            df[f"ema{n}"] = close.ewm(span=n, adjust=False).mean().round(4)
+            from ..data.indicators import calc_ema
+            df[f"ema{n}"] = calc_ema(close, n).round(4)
             continue
 
         # ── MACD ─────────────────────────────────────────────────────────────
         if re.fullmatch(r"macd(\d*_?\d*_?\d*)?", ind):
             fast, slow, sig = 12, 26, 9
-            # 支持 macd_fast_slow_sig 格式，如 macd_12_26_9
             parts = ind.split("_")
             if len(parts) == 4:
                 try:
                     fast, slow, sig = int(parts[1]), int(parts[2]), int(parts[3])
                 except ValueError:
                     pass
-            ema_fast = close.ewm(span=fast, adjust=False).mean()
-            ema_slow = close.ewm(span=slow, adjust=False).mean()
-            macd_line = (ema_fast - ema_slow).round(4)
-            signal    = macd_line.ewm(span=sig, adjust=False).mean().round(4)
-            df["macd"]        = macd_line
-            df["macd_signal"] = signal
-            df["macd_hist"]   = (macd_line - signal).round(4)
+            from ..data.indicators import calc_macd
+            macd_line, signal_line, hist = calc_macd(close, fast, slow, sig)
+            df["macd"]        = macd_line.round(4)
+            df["macd_signal"] = signal_line.round(4)
+            df["macd_hist"]   = hist.round(4)
             continue
 
         # ── RSI ──────────────────────────────────────────────────────────────
         m = re.fullmatch(r"rsi(\d*)", ind)
         if m:
             n = int(m.group(1)) if m.group(1) else 14
-            df[f"rsi{n}"] = _calc_rsi(close, n).round(3)
+            from ..data.indicators import calc_rsi
+            df[f"rsi{n}"] = calc_rsi(close, n).round(3)
             continue
 
         # ── KDJ ──────────────────────────────────────────────────────────────
@@ -320,7 +299,8 @@ def _apply_indicators(df: pd.DataFrame, indicators: list[str]) -> pd.DataFrame:
                     n, m1, m2 = int(parts[1]), int(parts[2]), int(parts[3])
                 except ValueError:
                     pass
-            k, d, j = _calc_kdj(df["high"], df["low"], close, n, m1, m2)
+            from ..data.indicators import calc_kdj
+            k, d, j = calc_kdj(df["high"], df["low"], close, n, m1, m2)
             df["k"] = k.round(3)
             df["d"] = d.round(3)
             df["j"] = j.round(3)
@@ -329,12 +309,12 @@ def _apply_indicators(df: pd.DataFrame, indicators: list[str]) -> pd.DataFrame:
         # ── Bollinger Bands ───────────────────────────────────────────────────
         m = re.fullmatch(r"boll(\d*)", ind)
         if m:
-            n   = int(m.group(1)) if m.group(1) else 20
-            mid = close.rolling(n, min_periods=1).mean()
-            std = close.rolling(n, min_periods=1).std().fillna(0)
-            df[f"boll{n}_upper"] = (mid + 2 * std).round(4)
+            n = int(m.group(1)) if m.group(1) else 20
+            from ..data.indicators import calc_bollinger
+            upper, mid, lower = calc_bollinger(close, n)
+            df[f"boll{n}_upper"] = upper.round(4)
             df[f"boll{n}_mid"]   = mid.round(4)
-            df[f"boll{n}_lower"] = (mid - 2 * std).round(4)
+            df[f"boll{n}_lower"] = lower.round(4)
             continue
 
         # ── Volume MA ─────────────────────────────────────────────────────────

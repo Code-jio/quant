@@ -7,7 +7,16 @@ from .errors import DatabaseError, DataLoadError
 from .db import DatabaseManager
 from .cache import DataCache
 from .governance import BarDataMetadata, GapReport, detect_bar_gaps, summarize_ohlcv_quality
-from .indicators import add_technical_indicators, validate_data
+from .indicators import (
+    add_technical_indicators,
+    calc_bollinger,
+    calc_ema,
+    calc_kdj,
+    calc_ma,
+    calc_macd,
+    calc_rsi,
+    validate_data,
+)
 from .manager import DataManager
 
 __all__ = [
@@ -20,6 +29,12 @@ __all__ = [
     "detect_bar_gaps",
     "summarize_ohlcv_quality",
     "add_technical_indicators",
+    "calc_bollinger",
+    "calc_ema",
+    "calc_kdj",
+    "calc_ma",
+    "calc_macd",
+    "calc_rsi",
     "validate_data",
     "DataManager",
 ]
