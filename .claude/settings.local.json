@@ -26,7 +26,23 @@
       "Bash(python -m pytest tests/ -v)",
       "Bash(python -m pytest tests/test_security_and_risk.py tests/test_api_auth.py -v)",
       "Bash(pip show *)",
-      "Bash(git checkout *)"
+      "Bash(git checkout *)",
+      "Bash(python -c \"from src.api import create_app; print\\('backend import ok'\\)\")",
+      "Bash(python -m uvicorn src.api:create_app --factory --host 0.0.0.0 --port 8000)",
+      "Bash(npx vite *)",
+      "Bash(curl -s http://localhost:8000/health)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:5173)",
+      "Bash(bash \"C:/Users/f/.claude/skills/brainstorming/scripts/start-server.sh\" --project-dir \"e:/test/quant\")",
+      "Bash(python -m pytest tests/test_bar_aggregator.py -v)",
+      "Bash(python -m pytest tests/test_verify_strategy.py -v)",
+      "Bash(python -c \"from src.strategy import create_strategy; s = create_strategy\\('verify', {'symbol': 'rb2510'}\\); print\\(type\\(s\\).__name__\\)\")",
+      "Bash(python -m pytest tests/test_trading_engine_auto_strategy.py tests/test_market_ticks.py -v)",
+      "Bash(python -c \"from main import run_live_trading; print\\('import OK'\\)\")",
+      "Bash(python -c \"import json; c=json.load\\(open\\('config/config_production.json'\\)\\); print\\(c['mode'], c['strategy']['symbol'], c['trading']['broker_id']\\)\")",
+      "Bash(python -m pytest tests/ -v --tb=short)",
+      "Bash(python -c \"from vnpy.event import EventEngine; from vnpy.trader.engine import MainEngine; print\\('vnpy OK'\\)\")",
+      "Bash(python -c \"from src.strategy import create_strategy; s=create_strategy\\('verify', {'symbol':'rb2510','warmup_bars':20,'hold_bars':10,'volume':1}\\); s.on_init\\(\\); print\\('init OK, bars:', s._bar_count\\)\")",
+      "Bash(gh pr create --title 'feat: 实盘自动交易CLI验证 — BarAggregator + VerifyStrategy' --body ' *)"
     ]
   }
 }

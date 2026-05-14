@@ -1,0 +1,42 @@
+<h2>Three approaches to get the live trading loop working</h2>
+<p class="subtitle">Goal: strategy → signal → risk → order → fill → position, end-to-end on rb2510</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>CLI-first，前后端分离验证（推荐）</h3>
+      <p>先不管前端 UI，专注打通 CLI 路径：<code>python main.py -m live -c config/config_production.json</code></p>
+      <p>终端日志输出全链路：tick → bar → signal → order → fill。等引擎跑通后，再用前端 Dashboard 做可视化监控。</p>
+      <div class="pros-cons">
+        <div class="pros"><h4>Pros</h4><ul><li>最快到达"能下单"状态</li><li>调试链路短，出问题容易定位</li><li>前端改动独立排期，不阻塞引擎验证</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>首轮验证只有终端日志，体验简陋</li><li>前端监控要等第二轮才能用</li></ul></div>
+      </div>
+      <p><strong>工作量：</strong>约 3-4 天（配置 + 引擎修复 + 端到端验证）</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>前后端一起上，完整 Web 控制台</h3>
+      <p>同时修复 CLI 引擎路径 + 前端 TradingPanel/Dashboard，用户通过浏览器完成从登录到下单的全部操作。</p>
+      <div class="pros-cons">
+        <div class="pros"><h4>Pros</h4><ul><li>一次性交付完整可用产品</li><li>前端实时订单/持仓/日志面板提升信心</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>工作量大，约 7-10 天</li><li>前端和后端问题交织，调试复杂</li><li>WebSocket 断线重连等前端问题可能拖慢进度</li></ul></div>
+      </div>
+      <p><strong>工作量：</strong>约 7-10 天</p>
+    </div>
+  </div>
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>最小 CLI + 精简监控页面</h3>
+      <p>打通 CLI 引擎，同时做一个极简的单页监控（只读：当前持仓 + 最近订单 + 日志流），不做完整的交易面板。</p>
+      <div class="pros-cons">
+        <div class="pros"><h4>Pros</h4><ul><li>有基本的可视化监控，不依赖纯终端</li><li>前端范围小，不容易出 bug</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>仍然需要做前后端联调</li><li>后续需要补全交易面板时会有部分返工</li></ul></div>
+      </div>
+      <p><strong>工作量：</strong>约 5-6 天</p>
+    </div>
+  </div>
+</div>
