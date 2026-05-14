@@ -1,0 +1,30 @@
+{
+  "mode": "live",
+  "strategy": {
+    "name": "verify",
+    "symbol": "rb2510",
+    "warmup_bars": 20,
+    "hold_bars": 10,
+    "volume": 1,
+    "contract_multiplier": 10
+  },
+  "trading": {
+    "gateway": "vnpy",
+    "broker_id": "2071",
+    "td_server": "tcp://114.94.128.1:42205",
+    "md_server": "tcp://114.94.128.1:42213",
+    "app_id": "client_TraderMaster_v1.0.0",
+    "auth_code": "20260324LHJYMHBG",
+    "vnpy_environment": "仿真",
+    "bar_interval_minutes": 1,
+    "initial_capital": 100000,
+    "max_errors": 10
+  },
+  "risk": {
+    "max_position_per_symbol": 1,
+    "max_order_volume": 5,
+    "max_daily_loss": 5000,
+    "max_order_rate": 5,
+    "price_deviation_pct": 0.5
+  }
+}

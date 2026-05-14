@@ -7,6 +7,7 @@ import sys
 import json
 import logging
 import argparse
+from getpass import getpass
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -140,6 +141,13 @@ def run_live_trading(config: dict):
     trading_config = dict(config.get('trading', {}))
     if 'risk' in config:
         trading_config['risk'] = config['risk']
+
+    # Interactive credential input — not stored in config file
+    if not trading_config.get("username"):
+        trading_config["username"] = input("CTP 账号: ").strip()
+    if not trading_config.get("password"):
+        trading_config["password"] = getpass("CTP 密码: ")
+
     gateway_type = trading_config.get('gateway', 'vnpy')
     logger.info(f"使用交易网关: {gateway_type}")
 
