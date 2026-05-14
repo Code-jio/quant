@@ -6,7 +6,7 @@ from .errors import SignalError, OrderError, StrategyError
 from .types import Direction, OrderType, OrderStatus, OffsetFlag, Signal, Order, Trade, Position
 from .base import StrategyBase
 from .registry import STRATEGY_REGISTRY, create_strategy
-from .strategies import MACrossStrategy, RSIStrategy, BreakoutStrategy
+from .strategies import MACrossStrategy, RSIStrategy, BreakoutStrategy, VerifyStrategy
 
 __all__ = [
     "SignalError",
@@ -26,4 +26,5 @@ __all__ = [
     "MACrossStrategy",
     "RSIStrategy",
     "BreakoutStrategy",
+    "VerifyStrategy",
 ]

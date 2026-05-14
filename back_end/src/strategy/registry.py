@@ -6,12 +6,13 @@ from typing import Dict, Any
 
 from .base import StrategyBase
 from .errors import StrategyError
-from .strategies import MACrossStrategy, RSIStrategy, BreakoutStrategy
+from .strategies import MACrossStrategy, RSIStrategy, BreakoutStrategy, VerifyStrategy
 
 STRATEGY_REGISTRY: Dict[str, type] = {
     'ma_cross': MACrossStrategy,
     'rsi': RSIStrategy,
     'breakout': BreakoutStrategy,
+    'verify': VerifyStrategy,
 }
 
 
