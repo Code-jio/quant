@@ -56,16 +56,26 @@ def test_live_ticks_update_strategy_data_and_dispatch_new_signals_once():
     assert engine.start({"initial_capital": 100000.0}) is True
 
     start = datetime(2026, 4, 29, 9, 30)
+    # Bar 1 (9:30): ticks within same bar — no on_bar call yet
     engine.on_tick(make_tick("rb2505", 3800.0, start))
-    engine.on_tick(make_tick("rb2505", 3810.0, start + timedelta(seconds=1)))
-    engine.on_tick(make_tick("rb2505", 3820.0, start + timedelta(seconds=2)))
+    engine.on_tick(make_tick("rb2505", 3810.0, start + timedelta(seconds=15)))
+    assert list(strategy.data) == []
+    assert len(strategy.signals) == 0
+
+    # Cross into bar 2 (9:31) — bar 1 completes, on_bar fires (len=1, no signal yet)
+    engine.on_tick(make_tick("rb2505", 3815.0, start + timedelta(minutes=1)))
+    assert len(strategy.data["rb2505"]) == 1
+    assert len(strategy.signals) == 0  # strategy wants len(data) >= 2
+
+    # Cross into bar 3 (9:32) — bar 2 completes, on_bar fires (len=2, signal!)
+    engine.on_tick(make_tick("rb2505", 3820.0, start + timedelta(minutes=2)))
 
     assert list(strategy.data) == ["rb2505"]
-    assert len(strategy.data["rb2505"]) == 3
+    assert len(strategy.data["rb2505"]) == 2  # two completed bars
     assert len(strategy.signals) == 1
     assert len(gateway.sent_signals) == 1
     assert gateway.sent_signals[0].symbol == "rb2505"
-    assert gateway.sent_signals[0].price == 3820.0
+    assert gateway.sent_signals[0].price == 3815.0  # bar 2 close
     assert gateway.orders["ORDER_1"].status == OrderStatus.SUBMITTING
 
 
@@ -78,11 +88,20 @@ def test_live_on_bar_sees_only_prior_ticks_in_strategy_data():
     assert engine.start({"initial_capital": 100000.0}) is True
 
     start = datetime(2026, 4, 29, 9, 30)
+    # Bar 1: 2 ticks within same interval, no on_bar yet
     engine.on_tick(make_tick("rb2505", 3800.0, start))
     engine.on_tick(make_tick("rb2505", 3810.0, start + timedelta(seconds=1)))
+    assert strategy.observed_lengths == []  # on_bar not called yet
 
-    assert strategy.observed_lengths == [0, 1]
-    assert strategy.current_seen == [False, False]
+    # Cross into bar 2 — bar 1 completes, on_bar called with 1 bar in data
+    engine.on_tick(make_tick("rb2505", 3815.0, start + timedelta(minutes=1)))
+    assert strategy.observed_lengths == [1]
+    assert strategy.current_seen == [True]
+
+    # Cross into bar 3 — bar 2 completes, on_bar called with 2 bars in data
+    engine.on_tick(make_tick("rb2505", 3820.0, start + timedelta(minutes=2)))
+    assert strategy.observed_lengths == [1, 2]
+    assert strategy.current_seen == [True, True]
 
 
 def test_broker_order_callback_updates_order_manager_books():

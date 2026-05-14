@@ -20,6 +20,7 @@ from .gateway import GatewayBase, create_gateway
 from .errors import TradingError
 from .order_manager import OrderManager, PreOrder
 from .risk import RiskManager
+from .bar_aggregator import BarAggregator
 from ..common.exceptions import ExceptionHandler
 
 
@@ -43,6 +44,9 @@ class TradingEngine:
         self.order_manager.on_pre_order_status_change = self._on_pre_order_status_change
 
         self.risk_manager = RiskManager()
+        self.bar_aggregator: BarAggregator = None  # set in start()
+        self._bar_interval: int = 1
+
         self.last_reject_reason = ""
         self._error_count = 0
         self._max_errors = 10
@@ -71,6 +75,11 @@ class TradingEngine:
 
             config = config or {}
             self.configure_risk(config)
+            self._bar_interval = max(1, int(config.get("bar_interval_minutes", 1)))
+            self.bar_aggregator = BarAggregator(
+                interval_minutes=self._bar_interval,
+                on_bar=self._on_bar_completed,
+            )
             self._max_errors = max(1, int(config.get("max_errors", self._max_errors)))
 
             self.status = TradingStatus.CONNECTING
@@ -113,6 +122,10 @@ class TradingEngine:
                     logger.error(f"策略停止失败: {e}")
 
             self.order_manager.stop()
+
+            if self.bar_aggregator and self.strategy:
+                for sym in list(self.bar_aggregator._current.keys()):
+                    self.bar_aggregator.flush(sym)
 
             self.gateway.disconnect()
             self.status = TradingStatus.STOPPED
@@ -200,19 +213,18 @@ class TradingEngine:
             "ask_price_1": tick.ask_price_1,
             "timestamp": tick.timestamp,
         })
-        if not self.strategy:
-            return
-        try:
-            bar = self._tick_to_bar(tick)
-            self.strategy.current_date = tick.timestamp
+        # Update strategy capital from live account (per-tick)
+        if self.strategy:
             available = getattr(self.gateway.account, "available", 0.0)
             if available > 0:
                 self.strategy.current_capital = available
-            self.strategy.on_bar(bar)
-            self._dispatch_strategy_signals()
-            self._append_live_bar(tick, bar)
-        except Exception as e:
-            logger.error(f"处理行情数据失败: {e}")
+
+        # Bar aggregation — only calls on_bar when a bar completes
+        if self.bar_aggregator:
+            try:
+                self.bar_aggregator.push(tick)
+            except Exception as e:
+                logger.error(f"Bar 聚合失败: {e}")
 
     def _tick_to_bar(self, tick: MarketData):
         """Convert a live tick into the bar passed to strategy.on_bar."""
@@ -251,6 +263,33 @@ class TradingEngine:
 
         self.strategy.data[tick.symbol] = updated
         return bar
+
+    def _on_bar_completed(self, symbol: str, bar):
+        """Called by BarAggregator when a bar completes."""
+        if not self.strategy:
+            return
+        try:
+            self.strategy.current_date = bar["datetime"]
+            self._append_live_bar_via_bar(symbol, bar)
+            self.strategy.on_bar(bar)
+            self._dispatch_strategy_signals()
+        except Exception as e:
+            logger.error(f"处理 Bar 回调失败: {e}")
+
+    def _append_live_bar_via_bar(self, symbol: str, bar):
+        """Append a completed bar to strategy data."""
+        import pandas as pd
+
+        bar_frame = pd.DataFrame([bar.to_dict()], index=[bar["datetime"]])
+        existing = self.strategy.data.get(symbol)
+        if existing is None or existing.empty:
+            updated = bar_frame
+        else:
+            updated = pd.concat([existing, bar_frame])
+            updated = updated[~updated.index.duplicated(keep="last")].sort_index()
+        if len(updated) > 1000:
+            updated = updated.iloc[-1000:]
+        self.strategy.data[symbol] = updated
 
     def _dispatch_strategy_signals(self):
         """Send newly generated strategy signals to the broker gateway."""
