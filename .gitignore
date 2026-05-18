@@ -6,6 +6,7 @@
 # ── 含凭据的配置文件（绝对不提交）────────────────────────────
 back_end/config/config_production.jsonc
 back_end/config/config_example.jsonc
+back_end/config/config.local.json
 # 提交示例配置供参考，但真实账户信息必须排除
 
 # ── 后端数据文件 ─────────────────────────────────────────────

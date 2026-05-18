@@ -23,6 +23,8 @@ OPEN_PATHS: FrozenSet[str] = frozenset(
         "/auth/servers",
         "/health",
         "/metrics",
+        "/trial-run/config",
+        "/trial-run/status",
         "/docs",
         "/openapi.json",
         "/redoc",

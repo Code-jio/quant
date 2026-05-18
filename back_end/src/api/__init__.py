@@ -84,6 +84,7 @@ from .models import (
     WeightRequest,
 )
 from .security import SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME, is_open_path, session_store
+from .trial_run import register_trial_run_routes, trial_run_manual_open_enabled
 
 logger = logging.getLogger(__name__)
 _DEFAULT_RUNTIME_RISK = runtime_risk_defaults()
@@ -1326,6 +1327,13 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             response.headers["X-Request-ID"] = request_id
         return response
 
+    register_trial_run_routes(
+        app,
+        trading_state=trading_state,
+        subscribe_market_ticks=_subscribe_market_ticks,
+        record_audit=_record_audit,
+    )
+
     # ==================================================================
     # Auth 端点
     # ==================================================================
@@ -1927,6 +1935,8 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             order_type_name, order_type = _normalize_choice(body.order_type, _MANUAL_ORDER_TYPE_MAP, "订单类型")
             volume = _positive_volume(body.volume)
             price = _manual_order_price(order_type, body.price)
+            if offset_name == "open" and not trial_run_manual_open_enabled():
+                raise HTTPException(status_code=400, detail="试运行模式禁止手动开仓")
         except HTTPException as exc:
             _record_audit(
                 "order",

@@ -10,8 +10,8 @@ class RecordingGateway(GatewayBase):
 
     def __init__(self, name: str = "VNPY_CTP"):
         super().__init__(name)
-        self.sent_signals = []
-        self.cancelled_order_ids = []
+        self.sent_signals: list[object] = []
+        self.cancelled_order_ids: list[str] = []
 
     def connect(self, config):
         self.status = TradingStatus.CONNECTED

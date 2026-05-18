@@ -1,3 +1,7 @@
+import json
+import uuid
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from src.api import create_app, trading_state
@@ -5,6 +9,32 @@ from src.strategy import Direction, OffsetFlag, Order, OrderStatus, OrderType, P
 from src.trading.types import TradingStatus
 
 from tests.helpers import RecordingGateway
+
+
+def _config_path(name):
+    root = Path(__file__).resolve().parents[1] / ".test-artifacts" / "trial-run-tests"
+    root.mkdir(parents=True, exist_ok=True)
+    return root / f"{name}-{uuid.uuid4().hex}.json"
+
+
+def _write_trial_config(path, *, enabled):
+    payload = {
+        "trial_run": {"enabled": enabled, "allowed_symbol": "rb2505"},
+        "strategy": {"name": "verify", "symbol": "rb2505", "volume": 1},
+        "trading": {"gateway": "vnpy", "username": "trial-account"},
+        "risk": {
+            "enabled": True,
+            "allowed_symbols": ["rb2505"],
+            "max_order_volume": 1,
+            "max_position_volume": 1,
+            "max_orders_per_minute": 5,
+            "max_active_orders": 2,
+            "max_market_data_age_seconds": 5,
+            "allow_market_orders": True,
+        },
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
 
 
 def install_gateway(monkeypatch):
@@ -104,6 +134,40 @@ def test_manual_market_order_forces_zero_price_and_strips_symbol(monkeypatch):
     assert signal.volume == 2
     assert signal.order_type == OrderType.MARKET
     assert signal.offset == OffsetFlag.OPEN
+
+
+def test_trial_run_blocks_manual_open_orders(monkeypatch):
+    config_path = _write_trial_config(_config_path("manual-block"), enabled=True)
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    gateway = install_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client)
+        allow_market_orders(client)
+        response = client.post(
+            "/orders",
+            json={
+                "symbol": "rb2505",
+                "direction": "long",
+                "offset": "open",
+                "price": 0,
+                "volume": 1,
+                "order_type": "market",
+            },
+        )
+        audit = client.get("/audit/events?event_type=order")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "试运行模式禁止手动开仓"
+    assert gateway.sent_signals == []
+    events = audit.json()["events"]
+    assert any(
+        event["action"] == "manual_order"
+        and event["status"] == "rejected"
+        and event["detail"].get("reason") == "试运行模式禁止手动开仓"
+        for event in events
+    )
 
 
 def test_quick_close_short_position_uses_buy_direction_and_requested_offset(monkeypatch):

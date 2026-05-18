@@ -159,3 +159,57 @@ class EmergencyStopRequest(BaseModel):
 
 class RiskConfigRequest(BaseModel):
     risk: Dict[str, Any] = Field(default_factory=dict)
+
+
+class TrialRunConfigResponse(BaseModel):
+    enabled: bool = False
+    ready: bool = False
+    valid: bool
+    config_source: str = ""
+    config_path: str
+    account_id: str = ""
+    masked_account_id: str = ""
+    gateway: str = "vnpy"
+    environment: str = "测试"
+    allowed_symbol: str = ""
+    manual_open_enabled: bool = False
+    trading: Dict[str, Any] = Field(default_factory=dict)
+    strategy: Dict[str, Any] = Field(default_factory=dict)
+    risk: Dict[str, Any] = Field(default_factory=dict)
+    validation_errors: List[str] = Field(default_factory=list)
+    config: Dict[str, Any] = Field(default_factory=dict)
+    errors: List[str] = Field(default_factory=list)
+
+
+class TrialRunStatusResponse(BaseModel):
+    state: str
+    connected: bool = False
+    gateway_status: str = "stopped"
+    strategy_id: str = ""
+    strategy_name: str = "verify"
+    symbol: str = ""
+    allowed_symbol: str = ""
+    config_valid: bool = False
+    gateway_connected: bool = False
+    prepared: bool = False
+    authorized: bool = False
+    ready_to_arm: bool = False
+    completed: bool = False
+    running: bool = False
+    bar_count: int = 0
+    warmup_bars: int = 0
+    hold_bars: int = 0
+    bars_since_entry: int = 0
+    position_volume: int = 0
+    last_reject_reason: str = ""
+    risk: Dict[str, Any] = Field(default_factory=dict)
+    validation_errors: List[str] = Field(default_factory=list)
+    snapshot: Dict[str, Any] = Field(default_factory=dict)
+    errors: List[str] = Field(default_factory=list)
+
+
+class TrialRunActionResponse(BaseModel):
+    success: bool
+    action: str
+    message: str
+    status: TrialRunStatusResponse

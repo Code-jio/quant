@@ -301,6 +301,9 @@ class TradingEngine:
         for signal in new_signals:
             order_id = self.send_signal(signal)
             if not order_id:
+                reject_callback = getattr(self.strategy, "mark_signal_rejected", None)
+                if callable(reject_callback):
+                    reject_callback(getattr(self, "last_reject_reason", ""))
                 logger.warning(
                     "Strategy signal rejected: %s %s %s",
                     signal.symbol, signal.direction, signal.volume,

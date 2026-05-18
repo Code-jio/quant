@@ -33,6 +33,19 @@ class LiveBiasProbeStrategy(StrategyBase):
         self.current_seen.append(False if data is None else self.current_date in data.index)
 
 
+class RejectedSignalStrategy(StrategyBase):
+    def on_init(self):
+        self.symbol = self.params.get("symbol", "rb2505")
+        self.reject_reason = ""
+        self._initialized = True
+
+    def on_bar(self, bar: pd.Series):
+        pass
+
+    def mark_signal_rejected(self, reason: str = ""):
+        self.reject_reason = reason
+
+
 def make_tick(symbol: str, price: float, timestamp: datetime) -> MarketData:
     return MarketData(
         symbol=symbol,
@@ -125,3 +138,18 @@ def test_broker_order_callback_updates_order_manager_books():
 
     assert "ORDER_1" not in engine.order_manager.active_orders
     assert engine.order_manager.completed_orders["ORDER_1"].status == OrderStatus.FILLED
+
+
+def test_strategy_is_notified_when_auto_signal_is_rejected_by_risk():
+    gateway = RecordingGateway()
+    engine = TradingEngine(gateway)
+    strategy = RejectedSignalStrategy("reject_probe", {"symbol": "rb2505"})
+    engine.set_strategy(strategy)
+
+    assert engine.start({"initial_capital": 100000.0, "allow_market_orders": False}) is True
+
+    strategy.buy("rb2505", 0, 1, OrderType.MARKET)
+    engine._dispatch_strategy_signals()
+
+    assert gateway.sent_signals == []
+    assert strategy.reject_reason == "Market orders are disabled by risk config"

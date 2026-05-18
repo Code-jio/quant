@@ -2,6 +2,7 @@ import os
 import sys
 import tempfile
 import unittest
+import json
 from datetime import datetime, timedelta
 
 
@@ -27,6 +28,20 @@ class SafeDefaultsTest(unittest.TestCase):
         self.assertEqual(request.environment, "测试")
         self.assertEqual(DEFAULT_CONFIG["trading"]["auth_code"], "")
         self.assertEqual(DEFAULT_CONFIG["trading"]["vnpy_environment"], "测试")
+
+    def test_example_config_does_not_include_password(self):
+        config_path = os.path.join(ROOT, "config", "config.example.json")
+        with open(config_path, encoding="utf-8") as handle:
+            config = json.load(handle)
+
+        self.assertNotIn("password", config.get("trading", {}))
+        self.assertEqual(config["trial_run"]["manual_open_enabled"], False)
+        self.assertEqual(config["strategy"]["name"], "verify")
+        self.assertEqual(config["strategy"]["volume"], 1)
+        self.assertEqual(config["risk"]["max_order_volume"], 1)
+        self.assertEqual(config["risk"]["max_position_volume"], 1)
+        self.assertEqual(config["risk"]["allowed_symbols"], [config["trial_run"]["allowed_symbol"]])
+        self.assertEqual(config["strategy"]["symbol"], config["trial_run"]["allowed_symbol"])
 
 
 class SessionStoreTest(unittest.TestCase):

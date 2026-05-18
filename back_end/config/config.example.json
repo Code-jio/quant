@@ -1,5 +1,13 @@
 {
-  "mode": "backtest",
+  "mode": "live",
+  "trial_run": {
+    "enabled": true,
+    "account_id": "",
+    "gateway": "vnpy",
+    "vnpy_environment": "测试",
+    "allowed_symbol": "rb2601",
+    "manual_open_enabled": false
+  },
   "backtest": {
     "start_date": "2023-01-01",
     "end_date": "2024-12-31",
@@ -11,17 +19,18 @@
     "max_errors": 100
   },
   "strategy": {
-    "name": "ma_cross",
-    "symbol": "IF9999",
-    "fast_period": 10,
-    "slow_period": 20,
-    "position_ratio": 0.8,
+    "name": "verify",
+    "symbol": "rb2601",
+    "volume": 1,
+    "warmup_bars": 20,
+    "hold_bars": 10,
+    "contract_multiplier": 10,
+    "order_type": "limit",
     "max_errors": 10
   },
   "trading": {
     "gateway": "vnpy",
     "username": "",
-    "password": "",
     "broker_id": "",
     "td_server": "",
     "md_server": "",
@@ -33,20 +42,20 @@
   },
   "risk": {
     "enabled": true,
-    "max_order_volume": 1000,
-    "max_position_volume": 10000,
-    "max_active_orders": 200,
-    "max_orders_per_minute": 120,
-    "max_daily_loss_ratio": 0.1,
-    "max_order_value": 5000000,
-    "max_position_value": 10000000,
-    "max_price_deviation": 0.02,
+    "max_order_volume": 1,
+    "max_position_volume": 1,
+    "max_active_orders": 2,
+    "max_orders_per_minute": 5,
+    "max_daily_loss_ratio": 0.03,
+    "max_order_value": 50000,
+    "max_position_value": 50000,
+    "max_price_deviation": 0.01,
     "max_market_data_age_seconds": 5,
-    "duplicate_signal_window_seconds": 2,
+    "duplicate_signal_window_seconds": 5,
     "default_contract_multiplier": 10,
     "contract_multipliers": {},
-    "allow_market_orders": true,
-    "allowed_symbols": [],
+    "allow_market_orders": false,
+    "allowed_symbols": ["rb2601"],
     "blocked_symbols": []
   }
 }
