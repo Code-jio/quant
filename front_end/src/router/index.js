@@ -37,6 +37,12 @@ const routes = [
     component: () => import('@/views/WatchView.vue'),
     meta: { requiresAuth: false, title: '盯盘系统' },
   },
+  {
+    path: '/trial-run',
+    name: 'TrialRun',
+    component: () => import('@/views/TrialRunView.vue'),
+    meta: { requiresAuth: false, title: '试运行操作台' },
+  },
   // 未匹配的路由重定向到首页
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]

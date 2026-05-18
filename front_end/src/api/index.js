@@ -10,14 +10,19 @@
 import { buildApiUrl } from '@/config/network.js'
 
 async function request(path, options = {}) {
+  const {
+    redirectOn401 = true,
+    headers: customHeaders = {},
+    ...fetchOptions
+  } = options
   const headers = {
     'Content-Type': 'application/json',
-    ...options.headers,
+    ...customHeaders,
   }
 
   let res
   try {
-    res = await fetch(buildApiUrl(path), { ...options, headers, credentials: 'include' })
+    res = await fetch(buildApiUrl(path), { ...fetchOptions, headers, credentials: 'include' })
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
     throw new Error(`网络请求失败: ${message}`, { cause: e })
@@ -30,7 +35,7 @@ async function request(path, options = {}) {
     sessionStorage.removeItem('quant_account_id')
     sessionStorage.removeItem('quant_session_active')
     localStorage.removeItem('quant_account_id')
-    if (path !== '/auth/login') window.location.href = '/login'
+    if (redirectOn401 && path !== '/auth/login') window.location.href = '/login'
     throw new Error(detail)
   }
 
@@ -99,7 +104,7 @@ export const updateWeights = (weights) =>
 export const fetchDashboardMetrics = () => request('/dashboard/metrics')
 
 // ── 风控 / 对账 ────────────────────────────────────────────────────────────
-export const fetchRiskStatus = () => request('/risk/status')
+export const fetchRiskStatus = (options = {}) => request('/risk/status', options)
 
 export const updateRiskConfig = (risk) =>
   request('/risk/config', { method: 'PUT', body: JSON.stringify({ risk }) })
@@ -112,12 +117,29 @@ export const resumeTrading = () =>
 
 export const fetchTradingReconcile = () => request('/trading/reconcile')
 
+// ── 试运行操作台 ──────────────────────────────────────────────────────────
+export const fetchTrialRunConfig = () => request('/trial-run/config')
+
+export const fetchTrialRunStatus = () => request('/trial-run/status')
+
+export const prepareTrialRun = (body = {}) =>
+  request('/trial-run/prepare', { method: 'POST', body: JSON.stringify(body) })
+
+export const armTrialRun = (body = {}) =>
+  request('/trial-run/arm', { method: 'POST', body: JSON.stringify(body) })
+
+export const stopTrialRun = () =>
+  request('/trial-run/stop', { method: 'POST' })
+
+export const resetTrialRun = () =>
+  request('/trial-run/reset', { method: 'POST' })
+
 // ── 订单簿 ────────────────────────────────────────────────────────────────
 /** 所有委托单（最近 500 条） */
-export const fetchOrders = () => request('/orders')
+export const fetchOrders = (options = {}) => request('/orders', options)
 
 /** 所有成交记录（最近 500 条） */
-export const fetchTrades = () => request('/trades')
+export const fetchTrades = (options = {}) => request('/trades', options)
 
 /** 撤销委托单 */
 export const cancelOrder = (orderId) =>
@@ -153,16 +175,16 @@ export const closePosition = (symbol, body = {}) =>
   })
 
 // ── 持仓 ──────────────────────────────────────────────────────────────────
-export const fetchPositions = () => request('/positions')
+export const fetchPositions = (options = {}) => request('/positions', options)
 
 // ── 系统日志 ──────────────────────────────────────────────────────────────
 /** 查询系统日志；level: DEBUG/INFO/WARNING/ERROR，q: 关键词 */
-export const fetchSystemLogs = ({ level = '', q = '', limit = 200 } = {}) => {
+export const fetchSystemLogs = ({ level = '', q = '', limit = 200 } = {}, options = {}) => {
   const params = new URLSearchParams()
   if (level) params.set('level', level)
   if (q)     params.set('q', q)
   if (limit) params.set('limit', limit)
-  return request(`/system/logs?${params}`)
+  return request(`/system/logs?${params}`, options)
 }
 
 // ── 回测 ──────────────────────────────────────────────────────────────────
