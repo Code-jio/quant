@@ -6,6 +6,7 @@ import pandas as pd
 from fastapi.testclient import TestClient
 
 from src.api import create_app, trading_state
+import src.api.trial_run as trial_run_module
 from src.api.trial_run import trial_run_state
 
 from tests.helpers import RecordingGateway
@@ -93,7 +94,7 @@ def teardown_function():
     trial_run_state.reset()
 
 
-def test_trial_run_config_is_public_and_masks_sensitive_fields(monkeypatch):
+def test_trial_run_config_is_public_and_prefills_non_password_connection_fields(monkeypatch):
     config_path = _trial_config(_config_path("config"))
     monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
     app = create_app()
@@ -108,10 +109,12 @@ def test_trial_run_config_is_public_and_masks_sensitive_fields(monkeypatch):
     assert body["account_id"] == ""
     assert body["masked_account_id"] == "tr****nt"
     assert "password" not in body["config"]["trading"]
-    assert "auth_code" not in response.text
+    assert body["trading"]["broker_id"] == "2071"
+    assert body["trading"]["td_server"] == "tcp://td.example:123"
+    assert body["trading"]["md_server"] == "tcp://md.example:123"
+    assert body["trading"]["app_id"] == "trial-app"
+    assert body["trading"]["auth_code"] == "trial-auth-code"
     assert "secret-password" not in response.text
-    assert "trial-auth-code" not in response.text
-    assert "tcp://td.example:123" not in response.text
     assert "trial-account" not in response.text
 
 
@@ -171,6 +174,24 @@ def test_trial_run_prepare_and_arm(monkeypatch):
         armed = client.post("/trial-run/arm")
         assert armed.status_code == 200
         assert armed.json()["status"]["state"] == "armed"
+
+
+def test_trial_run_prepare_can_use_example_config_when_local_missing(monkeypatch):
+    config_path = _trial_config(_config_path("example-fallback"))
+    monkeypatch.delenv("QUANT_TRIAL_CONFIG", raising=False)
+    monkeypatch.setattr(trial_run_module, "_LOCAL_CONFIG", _config_path("missing-local"))
+    monkeypatch.setattr(trial_run_module, "_EXAMPLE_CONFIG", config_path)
+    gateway = install_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client)
+
+        prepared = client.post("/trial-run/prepare")
+
+    assert prepared.status_code == 200
+    assert prepared.json()["status"]["strategy_id"] == "verify_trial"
+    assert gateway.subscribed_symbols == [["rb2510"]]
 
 
 def test_trial_run_arm_returns_conflict_when_strategy_refuses(monkeypatch):

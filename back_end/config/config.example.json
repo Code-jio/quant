@@ -4,8 +4,8 @@
     "enabled": true,
     "account_id": "",
     "gateway": "vnpy",
-    "vnpy_environment": "测试",
-    "allowed_symbol": "rb2601",
+    "vnpy_environment": "实盘",
+    "allowed_symbol": "rb2610",
     "manual_open_enabled": false
   },
   "backtest": {
@@ -20,7 +20,7 @@
   },
   "strategy": {
     "name": "verify",
-    "symbol": "rb2601",
+    "symbol": "rb2610",
     "volume": 1,
     "warmup_bars": 20,
     "hold_bars": 10,
@@ -31,12 +31,50 @@
   "trading": {
     "gateway": "vnpy",
     "username": "",
-    "broker_id": "",
-    "td_server": "",
-    "md_server": "",
-    "app_id": "",
-    "auth_code": "",
-    "vnpy_environment": "测试",
+    "broker_id": "2071",
+    "td_server": "tcp://114.94.128.1:42205",
+    "md_server": "tcp://114.94.128.1:42213",
+    "app_id": "client_TraderMaster_v1.0.0",
+    "auth_code": "20260324LHJYMHBG",
+    "vnpy_environment": "实盘",
+    "fronts": [
+      {
+        "label": "电信 114.94.128.1",
+        "td_server": "tcp://114.94.128.1:42205",
+        "md_server": "tcp://114.94.128.1:42213",
+        "environment": "实盘"
+      },
+      {
+        "label": "联通 140.206.34.161",
+        "td_server": "tcp://140.206.34.161:42205",
+        "md_server": "tcp://140.206.34.161:42213",
+        "environment": "实盘"
+      },
+      {
+        "label": "电信 114.94.128.5",
+        "td_server": "tcp://114.94.128.5:42205",
+        "md_server": "tcp://114.94.128.5:42213",
+        "environment": "实盘"
+      },
+      {
+        "label": "联通 140.206.34.165",
+        "td_server": "tcp://140.206.34.165:42205",
+        "md_server": "tcp://140.206.34.165:42213",
+        "environment": "实盘"
+      },
+      {
+        "label": "电信 114.94.128.6",
+        "td_server": "tcp://114.94.128.6:42205",
+        "md_server": "tcp://114.94.128.6:42213",
+        "environment": "实盘"
+      },
+      {
+        "label": "联通 140.206.34.166",
+        "td_server": "tcp://140.206.34.166:42205",
+        "md_server": "tcp://140.206.34.166:42213",
+        "environment": "实盘"
+      }
+    ],
     "initial_capital": 1000000,
     "max_errors": 10
   },
@@ -55,7 +93,7 @@
     "default_contract_multiplier": 10,
     "contract_multipliers": {},
     "allow_market_orders": false,
-    "allowed_symbols": ["rb2601"],
+    "allowed_symbols": ["rb2610"],
     "blocked_symbols": []
   }
 }

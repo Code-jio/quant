@@ -217,7 +217,11 @@ def _safe_config_response(path: Path, config: Dict[str, Any], allowed_symbol: st
         },
     )
     gateway = str(trial_run.get("gateway") or trading.get("gateway") or "vnpy")
-    safe_trading = {"gateway": gateway, "vnpy_environment": environment, "environment": environment}
+    safe_trading = _safe_subset(
+        trading,
+        {"gateway", "broker_id", "td_server", "md_server", "app_id", "auth_code", "vnpy_environment", "environment", "fronts"},
+    )
+    safe_trading.update({"gateway": gateway, "vnpy_environment": environment, "environment": environment})
     safe_trial_run = {
         "enabled": trial_run.get("enabled") is True,
         "allowed_symbol": allowed_symbol,
@@ -428,7 +432,7 @@ def register_trial_run_routes(
     )
     def prepare_trial_run(request: Request):
         try:
-            path, config, allowed_symbol, errors = _read_trial_config(allow_example=False)
+            path, config, allowed_symbol, errors = _read_trial_config(allow_example=True)
         except FileNotFoundError as exc:
             trial_run_state.update(state="error", errors=[str(exc)], authorized=False)
             raise HTTPException(status_code=400, detail=str(exc)) from exc
