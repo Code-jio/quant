@@ -9,6 +9,16 @@
 
 import { buildApiUrl } from '@/config/network.js'
 
+function readableDetail(value, fallback) {
+  if (value === undefined || value === null || value === '') return fallback
+  if (typeof value === 'string') return value
+  try {
+    return JSON.stringify(value)
+  } catch {
+    return String(value)
+  }
+}
+
 async function request(path, options = {}) {
   const {
     redirectOn401 = true,
@@ -21,28 +31,51 @@ async function request(path, options = {}) {
   }
 
   let res
+  const method = fetchOptions.method || 'GET'
+  const url = buildApiUrl(path)
   try {
-    res = await fetch(buildApiUrl(path), { ...fetchOptions, headers, credentials: 'include' })
+    res = await fetch(url, { ...fetchOptions, headers, credentials: 'include' })
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
-    throw new Error(`网络请求失败: ${message}`, { cause: e })
+    console.error('[Quant API Network Error]', { path, url, method, message, error: e })
+    const error = new Error(`网络请求失败: ${message}`, { cause: e })
+    error.path = path
+    error.url = url
+    error.method = method
+    throw error
   }
 
   // 401：清除凭证并跳转登录页
   if (res.status === 401) {
-    let detail = '未登录或登录失败'
-    try { detail = (await res.json()).detail ?? detail } catch { /* ignore */ }
+    let detailPayload = '未登录或登录失败'
+    try { detailPayload = (await res.json()).detail ?? detailPayload } catch { /* ignore */ }
+    const detail = readableDetail(detailPayload, '未登录或登录失败')
+    console.error('[Quant API Error]', { path, url, method, status: res.status, detail: detailPayload, message: detail })
     sessionStorage.removeItem('quant_account_id')
     sessionStorage.removeItem('quant_session_active')
     localStorage.removeItem('quant_account_id')
     if (redirectOn401 && path !== '/auth/login') window.location.href = '/login'
-    throw new Error(detail)
+    const error = new Error(detail)
+    error.status = res.status
+    error.path = path
+    error.url = url
+    error.method = method
+    error.detail = detailPayload
+    throw error
   }
 
   if (!res.ok) {
-    let detail = `HTTP ${res.status}`
-    try { detail = (await res.json()).detail ?? detail } catch { /* ignore */ }
-    throw new Error(detail)
+    let detailPayload = `HTTP ${res.status}`
+    try { detailPayload = (await res.json()).detail ?? detailPayload } catch { /* ignore */ }
+    const detail = readableDetail(detailPayload, `HTTP ${res.status}`)
+    console.error('[Quant API Error]', { path, url, method, status: res.status, detail: detailPayload, message: detail })
+    const error = new Error(detail)
+    error.status = res.status
+    error.path = path
+    error.url = url
+    error.method = method
+    error.detail = detailPayload
+    throw error
   }
 
   return res.json()

@@ -324,6 +324,13 @@ onUnmounted(stopPolling)
 // ── 登录处理 ──────────────────────────────────────────────────────────────
 const LOGIN_TIMEOUT = 35_000
 
+function safeLoginPayload(payload) {
+  return {
+    ...payload,
+    password: payload.password ? '<hidden>' : '',
+  }
+}
+
 async function handleLogin() {
   try {
     await formRef.value.validate()
@@ -337,7 +344,7 @@ async function handleLogin() {
   startPolling()
 
   try {
-    const loginPromise = login({
+    const payload = {
       username:  form.username,
       password:  form.password,
       broker_id: form.broker_id,
@@ -351,7 +358,8 @@ async function handleLogin() {
       strategy_params: {
         symbol: form.strategy_symbol,
       },
-    })
+    }
+    const loginPromise = login(payload)
 
     const timeoutPromise = new Promise((_, reject) => {
       setTimeout(() => reject(new Error('登录超时（35s），请检查网络和服务器地址')), LOGIN_TIMEOUT)
@@ -368,6 +376,26 @@ async function handleLogin() {
     router.push({ name: 'Dashboard' })
 
   } catch (err) {
+    console.error('[Login Error]', {
+      message: err?.message || String(err),
+      status: err?.status,
+      path: err?.path,
+      detail: err?.detail,
+      form: safeLoginPayload({
+        username: form.username,
+        password: form.password,
+        broker_id: form.broker_id,
+        td_server: form.td_server,
+        md_server: form.md_server,
+        app_id: form.app_id,
+        auth_code: form.auth_code,
+        environment: form.environment,
+        auto_start_strategy: form.auto_start_strategy,
+        strategy_name: form.strategy_name,
+        strategy_params: { symbol: form.strategy_symbol },
+      }),
+      error: err,
+    })
     errorMsg.value = err.message ?? '连接失败，请检查账户信息或网络'
     connectLog.value.push(`[错误] ${errorMsg.value}`)
   } finally {

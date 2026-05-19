@@ -65,6 +65,21 @@
               <el-form-item label="Broker" prop="broker_id">
                 <el-input v-model="accountForm.broker_id" :disabled="actionLoading.connect" />
               </el-form-item>
+              <el-form-item label="线路">
+                <el-select
+                  v-model="selectedFrontKey"
+                  placeholder="选择前置线路"
+                  :disabled="actionLoading.connect || frontOptions.length === 0"
+                  @change="applyFrontPreset"
+                >
+                  <el-option
+                    v-for="front in frontOptions"
+                    :key="front.key"
+                    :label="front.label"
+                    :value="front.key"
+                  />
+                </el-select>
+              </el-form-item>
               <el-form-item label="TD Server" prop="td_server">
                 <el-input v-model="accountForm.td_server" :disabled="actionLoading.connect" />
               </el-form-item>
@@ -78,7 +93,10 @@
                 <el-input v-model="accountForm.auth_code" :disabled="actionLoading.connect" />
               </el-form-item>
               <el-form-item label="环境">
-                <el-input v-model="accountForm.environment" :disabled="actionLoading.connect" />
+                <el-select v-model="accountForm.environment" :disabled="actionLoading.connect">
+                  <el-option label="实盘（生产版 API）" value="实盘" />
+                  <el-option label="测试" value="测试" />
+                </el-select>
               </el-form-item>
             </div>
 
@@ -319,6 +337,7 @@ const activeTab = ref('orders')
 const pollingActive = ref(false)
 const refreshing = ref(false)
 const config = ref({})
+const selectedFrontKey = ref('')
 const trialStatus = ref({})
 const authStatus = ref({})
 const riskStatus = ref({})
@@ -391,6 +410,18 @@ const connected = computed(() => {
 const riskConfig = computed(() => {
   const risk = riskStatus.value?.risk ?? riskStatus.value ?? {}
   return Object.keys(risk).length ? risk : (config.value?.risk ?? {})
+})
+
+const frontOptions = computed(() => {
+  const fronts = config.value?.trading?.fronts
+  if (!Array.isArray(fronts)) return []
+  return fronts
+    .map((front, index) => ({
+      ...front,
+      key: front.key || `${front.td_server || ''}|${front.md_server || ''}|${index}`,
+      label: front.label || `${front.td_server || '--'} / ${front.md_server || '--'}`,
+    }))
+    .filter(front => front.td_server && front.md_server)
 })
 
 const allowedSymbols = computed(() => {
@@ -518,6 +549,29 @@ function displayValue(value) {
   return value === undefined || value === null || value === '' ? '--' : String(value)
 }
 
+function syncSelectedFront() {
+  const matched = frontOptions.value.find(front => (
+    front.td_server === accountForm.td_server
+    && front.md_server === accountForm.md_server
+  ))
+  selectedFrontKey.value = matched?.key || ''
+}
+
+function applyFrontPreset(key) {
+  const front = frontOptions.value.find(item => item.key === key)
+  if (!front) return
+  accountForm.td_server = front.td_server
+  accountForm.md_server = front.md_server
+  accountForm.environment = front.environment || accountForm.environment
+}
+
+function safeLoginPayload(payload) {
+  return {
+    ...payload,
+    password: payload.password ? '<hidden>' : '',
+  }
+}
+
 function matchesAllowedSymbol(row) {
   return String(row?.symbol || '') === allowedSymbol.value
 }
@@ -576,6 +630,7 @@ function applyConfig(data = {}) {
   accountForm.app_id = pick(loginConfig, ['app_id', 'appid', 'app'], accountForm.app_id)
   accountForm.auth_code = pick(loginConfig, ['auth_code', 'auth', 'authcode'], accountForm.auth_code)
   accountForm.environment = pick(loginConfig, ['environment', 'env'], accountForm.environment)
+  syncSelectedFront()
 }
 
 async function loadConfig() {
@@ -663,7 +718,7 @@ async function handleLogin() {
   }
 
   await runAction('connect', async () => {
-    const res = await login({
+    const payload = {
       username: accountForm.username,
       password: accountForm.password,
       broker_id: accountForm.broker_id,
@@ -673,7 +728,21 @@ async function handleLogin() {
       auth_code: accountForm.auth_code,
       environment: accountForm.environment,
       auto_start_strategy: false,
-    })
+    }
+    let res
+    try {
+      res = await login(payload)
+    } catch (err) {
+      console.error('[TrialRun Login Error]', {
+        message: err?.message || String(err),
+        status: err?.status,
+        path: err?.path,
+        detail: err?.detail,
+        form: safeLoginPayload(payload),
+        error: err,
+      })
+      throw err
+    }
     authStore.setAuth({
       accountId: res.account_id || accountForm.username,
       balance: res.balance,
