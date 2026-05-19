@@ -47,7 +47,7 @@ class DataManager:
 
             return df
 
-        except DataLoadError as e:
+        except DatabaseError as e:
             logger.error(f"加载数据失败: {e}")
             return pd.DataFrame()
         except Exception as e:
@@ -74,7 +74,7 @@ class DataManager:
                 adjustment=adjustment,
                 rollover_rule=rollover_rule,
             )
-            self.cache.clear()
+            self._invalidate_cache_for_symbol(symbol)
             return result
         except DatabaseError as e:
             logger.error(f"保存数据失败: {e}")
@@ -88,19 +88,19 @@ class DataManager:
             return pd.DataFrame()
 
         try:
-            np.random.seed(42)
+            rng = np.random.default_rng(42)
             dates = pd.date_range(end=datetime.now(), periods=days, freq='D')
 
             initial_price = 100.0
-            returns = np.random.randn(days) * 0.02
+            returns = rng.standard_normal(days) * 0.02
             close_prices = initial_price * np.exp(np.cumsum(returns))
 
-            high_mult = 1 + np.abs(np.random.randn(days)) * 0.015 + 0.003
-            low_mult = 1 - np.abs(np.random.randn(days)) * 0.015 - 0.003
+            high_mult = 1 + np.abs(rng.standard_normal(days)) * 0.015 + 0.003
+            low_mult = 1 - np.abs(rng.standard_normal(days)) * 0.015 - 0.003
             high_prices = close_prices * high_mult
             low_prices = close_prices * low_mult
 
-            open_prices = close_prices * (1 + np.random.randn(days) * 0.008)
+            open_prices = close_prices * (1 + rng.standard_normal(days) * 0.008)
             open_prices = np.clip(open_prices, low_prices, high_prices)
 
             high_prices = np.maximum(high_prices, np.maximum(open_prices, close_prices))
@@ -114,8 +114,8 @@ class DataManager:
                 'high': high_prices,
                 'low': low_prices,
                 'close': close_prices,
-                'volume': np.random.randint(1000, 10000, days),
-                'open_interest': np.random.randint(5000, 50000, days)
+                'volume': rng.integers(1000, 10000, days),
+                'open_interest': rng.integers(5000, 50000, days)
             })
 
             self.save_bars(df, symbol, timeframe, data_source="synthetic")
@@ -151,3 +151,8 @@ class DataManager:
     def clear_cache(self):
         """清空缓存"""
         self.cache.clear()
+
+    def _invalidate_cache_for_symbol(self, symbol: str) -> None:
+        for key in list(self.cache.cache.keys()):
+            if key.startswith(f"{symbol}_"):
+                self.cache.remove(key)

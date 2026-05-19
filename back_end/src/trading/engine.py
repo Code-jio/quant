@@ -52,6 +52,8 @@ class TradingEngine:
         """设置策略"""
         self.strategy = strategy
         self._processed_signal_count = len(getattr(strategy, "signals", []))
+        if hasattr(strategy, "set_position_source"):
+            strategy.set_position_source(self.gateway.positions)
 
     def configure_risk(self, config: Dict[str, Any] = None):
         """Configure pre-order risk controls."""
@@ -69,6 +71,7 @@ class TradingEngine:
 
             config = config or {}
             self.configure_risk(config)
+            self._max_errors = max(1, int(config.get("max_errors", self._max_errors)))
 
             self.status = TradingStatus.CONNECTING
 
@@ -134,6 +137,7 @@ class TradingEngine:
                 positions=self.gateway.positions,
                 active_orders=self.gateway.orders.values(),
                 account=getattr(self.gateway, "account", None),
+                market_data=self._market_data_for_symbol(signal.symbol),
             )
             if not risk_result.allowed:
                 self.last_reject_reason = risk_result.reason
@@ -142,7 +146,7 @@ class TradingEngine:
 
             order_id = self.order_manager.submit_order(signal)
             if order_id:
-                self.risk_manager.record_order()
+                self.risk_manager.record_order(signal)
                 logger.info(f"发送信号: {signal.symbol} {signal.direction.value} {signal.volume}@{signal.price}")
             return order_id
         except Exception as e:
@@ -194,22 +198,24 @@ class TradingEngine:
             "last_price": tick.last_price,
             "bid_price_1": tick.bid_price_1,
             "ask_price_1": tick.ask_price_1,
+            "timestamp": tick.timestamp,
         })
         if not self.strategy:
             return
         try:
-            bar = self._append_live_bar(tick)
+            bar = self._tick_to_bar(tick)
             self.strategy.current_date = tick.timestamp
             self.strategy.on_bar(bar)
             self._dispatch_strategy_signals()
+            self._append_live_bar(tick, bar)
         except Exception as e:
             logger.error(f"处理行情数据失败: {e}")
 
-    def _append_live_bar(self, tick: MarketData):
-        """Convert a live tick into a strategy bar and keep rolling live data."""
+    def _tick_to_bar(self, tick: MarketData):
+        """Convert a live tick into the bar passed to strategy.on_bar."""
         import pandas as pd
 
-        bar = pd.Series({
+        return pd.Series({
             "symbol": tick.symbol,
             "datetime": tick.timestamp,
             "open": tick.last_price,
@@ -220,6 +226,13 @@ class TradingEngine:
             "bid": tick.bid_price_1,
             "ask": tick.ask_price_1,
         })
+
+    def _append_live_bar(self, tick: MarketData, bar=None):
+        """Append the processed tick to rolling live data after strategy.on_bar."""
+        import pandas as pd
+
+        if bar is None:
+            bar = self._tick_to_bar(tick)
         bar_frame = pd.DataFrame([bar.to_dict()], index=[tick.timestamp])
 
         existing = self.strategy.data.get(tick.symbol)
@@ -236,13 +249,39 @@ class TradingEngine:
         """Send newly generated strategy signals to the broker gateway."""
         signals = getattr(self.strategy, "signals", [])
         if self._processed_signal_count > len(signals):
-            self._processed_signal_count = 0
+            self._processed_signal_count = len(signals)
 
         new_signals = signals[self._processed_signal_count:]
+        for signal in new_signals:
+            order_id = self.send_signal(signal)
+            if not order_id:
+                logger.warning(
+                    "Strategy signal rejected: %s %s %s",
+                    signal.symbol, signal.direction, signal.volume,
+                )
         self._processed_signal_count = len(signals)
 
-        for signal in new_signals:
-            self.send_signal(signal)
+    def _market_data_for_symbol(self, symbol: str) -> Dict[str, Any]:
+        data = self.order_manager.market_data.get(symbol)
+        if data:
+            return data
+
+        latest_ticks = getattr(self.gateway, "latest_ticks", {})
+        tick = latest_ticks.get(symbol) if isinstance(latest_ticks, dict) else None
+        if tick:
+            return {
+                "last_price": getattr(tick, "last_price", 0.0),
+                "bid_price_1": getattr(tick, "bid_price_1", 0.0),
+                "ask_price_1": getattr(tick, "ask_price_1", 0.0),
+                "timestamp": getattr(tick, "timestamp", None),
+            }
+
+        snapshots = getattr(self.gateway, "latest_tick_snapshots", {})
+        snapshot = snapshots.get(symbol) if isinstance(snapshots, dict) else None
+        if snapshot:
+            return snapshot
+
+        return {}
 
     def get_account(self) -> AccountInfo:
         """获取账户信息"""
@@ -266,6 +305,7 @@ class TradingEngine:
 
     def _on_order(self, order: 'Order'):
         """订单回调"""
+        self.order_manager.update_order(order)
         if self.strategy:
             try:
                 self.strategy.on_order(order)

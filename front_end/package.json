@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "lint": "eslint .",
-    "test": "vitest run",
+    "test": "vitest run --pool=threads --maxWorkers=1 --no-file-parallelism",
     "test:watch": "vitest",
     "typecheck": "vue-tsc --noEmit",
     "e2e": "playwright test",

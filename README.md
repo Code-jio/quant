@@ -1,18 +1,67 @@
-# 量化交易系统
+# 期货量化交易系统 — 项目文档
 
-中国期货量化交易系统，支持回测和实盘交易，前后端分离架构。
+## 一、系统架构总览
 
-## 技术栈
+┌──────────────────────────────────────────────────────────┐
+│                    期货量化交易系统                        │
+├──────────┬──────────┬───────────┬───────────┬────────────┤
+│ 数据层    │ 策略层   │ 回测层     │ 执行层     │ 监控层     │
+│          │          │           │           │            │
+│ Tick/Bar │ 因子计算  │ 历史回测   │ CTP交易网关│ 风控模块   │
+│ 合约管理  │ 信号生成  │ 绩效归因   │ 订单路由   │ 持仓监控   │
+│ 主力换月  │ 仓位计算  │ 滑点模拟   │ 模拟/实盘  │ 盈亏告警   │
+└──────────┴──────────┴───────────┴───────────┴────────────┘
 
-| 层级 | 技术 |
-|------|------|
-| 后端 | Python 3.13 · FastAPI · vn.py CTP · SQLite |
-| 前端 | Vue 3 · Vite · Element Plus · ECharts · Pinia |
-| 测试 | pytest · Vitest · Playwright · ruff · mypy |
+## 二、项目结构
 
-## 快速开始
+quant-trading-system/
+├── config/                  # 配置文件
+│   ├── settings.yaml        # 全局配置（数据库连接、API密钥等）
+│   └── contracts.yaml       # 合约信息表（乘数、保证金率、手续费）
+├── data/
+│   ├── fetcher.py           # 数据采集（Tick / K线）
+│   ├── cleaner.py           # 数据清洗（夜盘时间归属、异常值处理）
+│   ├── storage.py           # 数据存储（时序数据库读写）
+│   └── contract_manager.py  # 主力合约换月 & 价格复权
+├── strategy/
+│   ├── base.py              # 策略基类（统一接口）
+│   ├── factors.py           # 因子计算
+│   ├── cta_strategy.py      # CTA趋势策略（均线、通道突破等）
+│   ├── spread_strategy.py   # 套利策略（跨期、跨品种）
+│   ├── ml_strategy.py       # 机器学习策略
+│   └── signals.py           # 信号生成 & 仓位计算
+├── backtest/
+│   ├── engine.py            # 回测引擎
+│   ├── analyzer.py          # 绩效分析（夏普、Calmar、最大回撤）
+│   └── visualizer.py        # 回测可视化（K线 + 信号标注 + 净值曲线）
+├── execution/
+│   ├── gateway.py           # CTP 交易网关封装
+│   ├── order_manager.py     # 订单管理（下单、撤单、状态追踪）
+│   ├── position_manager.py  # 持仓管理
+│   └── risk.py              # 风控模块
+├── monitor/
+│   ├── logger.py            # 日志记录
+│   ├── alert.py             # 告警推送（钉钉/企业微信）
+│   └── dashboard.py         # Web 仪表盘（FastAPI）
+├── notebooks/               # Jupyter 策略研究笔记
+├── tests/                   # 单元测试
+├── main.py                  # 系统入口
+└── requirements.txt         # 依赖清单
 
-### 后端
+```
+---
+
+## 三、技术选型与依赖库
+
+### 3.1 数据层
+
+| 用途 | 推荐方案 | 说明 |
+|------|---------|------|
+| 实时行情 | CTP 接口（`vnpy_ctp`） | 期货公司提供的标准接口，Tick 级数据 |
+| 历史数据 | `tqsdk` / `akshare` / vnpy 自带录制 | tqsdk 历史数据质量好，免费版有限制 |
+| 数据存储 | `InfluxDB` / `PostgreSQL + TimescaleDB` | Tick 数据量大，时序数据库是刚需 |
+| 内存缓存 | `Redis` | 实时行情分发、最新持仓缓存 |
+| 数据处理 | `pandas` / `polars` / `numpy` | 日常计算 |
 
 ```bash
 cd back_end

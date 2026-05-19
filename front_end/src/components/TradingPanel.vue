@@ -9,6 +9,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   placeOrder, cancelAllOrders, closePosition,
   fetchPositions, searchContracts,
+  fetchRiskStatus, emergencyStop, resumeTrading, fetchTradingReconcile,
 } from '@/api/index.js'
 
 // ── 下单表单 ─────────────────────────────────────────────────────────────────
@@ -23,7 +24,10 @@ const form = ref({
 
 const submitting    = ref(false)
 const cancellingAll = ref(false)
+const emergencyLoading = ref(false)
 const quickCloseOffset = ref('close')
+const riskState = ref(null)
+const reconcileState = ref(null)
 
 const QUICK_VOLUMES = [1, 3, 5, 10]
 const OFFSET_LABELS = {
@@ -99,6 +103,13 @@ const orderValidation = computed(() => {
 })
 
 const canSubmit = computed(() => orderValidation.value.valid && !submitting.value)
+const emergencyActive = computed(() => Boolean(riskState.value?.risk?.emergency_stop))
+const riskSummary = computed(() => {
+  const risk = riskState.value?.risk
+  if (!risk) return '风控未连接'
+  if (risk.emergency_stop) return `急停中${risk.emergency_reason ? `：${risk.emergency_reason}` : ''}`
+  return `单笔≤${risk.max_order_volume}手 / 日亏损≤${Math.round((risk.max_daily_loss_ratio || 0) * 100)}%`
+})
 
 const orderPreview = computed(() => {
   const isLong = form.value.direction === 'long'
@@ -218,6 +229,58 @@ async function handleCancelAll() {
   }
 }
 
+async function loadRiskStatus() {
+  try {
+    riskState.value = await fetchRiskStatus()
+    reconcileState.value = await fetchTradingReconcile().catch(() => null)
+  } catch {
+    riskState.value = null
+    reconcileState.value = null
+  }
+}
+
+async function handleEmergencyStop() {
+  try {
+    await ElMessageBox.confirm('确认立即开启交易急停并撤销所有活跃委托？', '交易急停', {
+      confirmButtonText: '立即急停', cancelButtonText: '取消', type: 'error',
+    })
+  } catch {
+    return
+  }
+
+  emergencyLoading.value = true
+  try {
+    const res = await emergencyStop({ reason: 'operator_panel', cancel_orders: true, stop_strategies: false })
+    ElMessage.success(`急停已开启，撤单 ${res.cancelled || 0} 笔，失败 ${res.failed || 0} 笔`)
+    await loadRiskStatus()
+  } catch (err) {
+    ElMessage.error(`急停失败: ${err.message}`)
+  } finally {
+    emergencyLoading.value = false
+  }
+}
+
+async function handleResumeTrading() {
+  try {
+    await ElMessageBox.confirm('确认解除交易急停？解除后策略和手动下单会继续受风控约束。', '解除急停', {
+      confirmButtonText: '解除急停', cancelButtonText: '取消', type: 'warning',
+    })
+  } catch {
+    return
+  }
+
+  emergencyLoading.value = true
+  try {
+    await resumeTrading()
+    ElMessage.success('交易急停已解除')
+    await loadRiskStatus()
+  } catch (err) {
+    ElMessage.error(`解除失败: ${err.message}`)
+  } finally {
+    emergencyLoading.value = false
+  }
+}
+
 // ── 快捷平仓 ─────────────────────────────────────────────────────────────────
 async function handleClosePosition(pos) {
   const available = availableVolume(pos)
@@ -258,12 +321,16 @@ async function handleClosePosition(pos) {
 
 // ── 定时刷新持仓 ─────────────────────────────────────────────────────────────
 let posTimer = null
+let riskTimer = null
 onMounted(() => {
   loadPositions()
+  loadRiskStatus()
   posTimer = setInterval(loadPositions, 5000)
+  riskTimer = setInterval(loadRiskStatus, 5000)
 })
 onUnmounted(() => {
   clearInterval(posTimer)
+  clearInterval(riskTimer)
   if (searchTimer) clearTimeout(searchTimer)
 })
 </script>
@@ -277,6 +344,36 @@ onUnmounted(() => {
         <span class="c-muted">CTP / vn.py</span>
       </div>
       <div class="status-right">
+        <span
+          class="validation-pill"
+          :class="emergencyActive ? 'pill-danger' : 'pill-ok'"
+        >
+          {{ riskSummary }}
+        </span>
+        <span v-if="reconcileState" class="c-muted">
+          活跃委托 {{ reconcileState.orders?.active_count ?? 0 }}
+        </span>
+        <el-button
+          v-if="!emergencyActive"
+          size="small"
+          type="danger"
+          plain
+          :loading="emergencyLoading"
+          @click="handleEmergencyStop"
+        >
+          <el-icon><CloseBold /></el-icon>
+          急停
+        </el-button>
+        <el-button
+          v-else
+          size="small"
+          type="success"
+          plain
+          :loading="emergencyLoading"
+          @click="handleResumeTrading"
+        >
+          恢复
+        </el-button>
         <span
           class="validation-pill"
           :class="orderValidation.valid ? 'pill-ok' : 'pill-warn'"
@@ -559,6 +656,12 @@ onUnmounted(() => {
   color: var(--q-yellow);
   border-color: rgba(210,153,34,.35);
   background: rgba(210,153,34,.08);
+}
+
+.pill-danger {
+  color: var(--q-red);
+  border-color: rgba(248,81,73,.4);
+  background: rgba(248,81,73,.1);
 }
 
 .tp-body {

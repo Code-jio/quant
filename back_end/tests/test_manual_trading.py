@@ -59,6 +59,14 @@ def login(client):
     assert response.status_code == 200
 
 
+def allow_market_orders(client):
+    response = client.put(
+        "/risk/config",
+        json={"risk": {"allow_market_orders": True, "max_market_data_age_seconds": 0}},
+    )
+    assert response.status_code == 200
+
+
 def teardown_function():
     trading_state.clear_main()
 
@@ -69,6 +77,7 @@ def test_manual_order_rejects_invalid_payloads(monkeypatch):
 
     with TestClient(app) as client:
         login(client)
+        allow_market_orders(client)
         base = {
             "symbol": "rb2505",
             "direction": "long",
@@ -101,6 +110,7 @@ def test_manual_market_order_forces_zero_price_and_strips_symbol(monkeypatch):
 
     with TestClient(app) as client:
         login(client)
+        allow_market_orders(client)
         response = client.post(
             "/orders",
             json={
@@ -133,6 +143,7 @@ def test_quick_close_short_position_uses_buy_direction_and_requested_offset(monk
 
     with TestClient(app) as client:
         login(client)
+        allow_market_orders(client)
         gateway.positions["rb2505.short"] = Position(symbol="rb2505", direction=Direction.SHORT, volume=2)
 
         response = client.post(
@@ -165,6 +176,7 @@ def test_quick_close_rejects_ambiguous_direction_and_over_volume(monkeypatch):
 
     with TestClient(app) as client:
         login(client)
+        allow_market_orders(client)
         engine = trading_state.primary_engine()
         engine.gateway.positions["rb2505.long"] = Position(symbol="rb2505", direction=Direction.LONG, volume=1)
         engine.gateway.positions["rb2505.short"] = Position(symbol="rb2505", direction=Direction.SHORT, volume=1)
@@ -187,6 +199,7 @@ def test_cancel_all_counts_active_orders_once(monkeypatch):
 
     with TestClient(app) as client:
         login(client)
+        allow_market_orders(client)
         gateway.orders["A1"] = Order(
             order_id="A1",
             symbol="rb2505",

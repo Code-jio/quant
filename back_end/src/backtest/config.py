@@ -15,3 +15,4 @@ class BacktestConfig:
     slip_rate: float = 0.0001
     margin_rate: float = 0.12
     contract_multiplier: float = 1.0
+    max_errors: int = 100

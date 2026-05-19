@@ -34,6 +34,7 @@ import asyncio
 import json as _json
 import logging
 import os
+import threading
 import time
 import traceback
 from collections import deque
@@ -41,6 +42,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 
+import numpy as np
+import pandas as pd
 import psutil
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -48,15 +51,22 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from ..strategy import Direction, StrategyBase
-from ..trading import AccountInfo, GatewayBase, TradingEngine, TradingStatus
+from ..trading import AccountInfo, TradingEngine, TradingStatus
 from ..strategy import Signal, OrderType, OffsetFlag
 from ..observability import audit_log, metrics, new_request_id, structured_json
-from ..settings import ctp_defaults, ctp_server_presets
+from ..settings import (
+    ctp_defaults,
+    ctp_server_presets,
+    runtime_risk_defaults,
+    secure_session_cookie_enabled,
+    websocket_query_token_enabled,
+)
 from .backtest_service import STRATEGY_CATALOG, run_backtest_sync
 from .security import SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME, is_open_path, session_store
 
 logger = logging.getLogger(__name__)
 _CTP_DEFAULTS = ctp_defaults()
+_DEFAULT_RUNTIME_RISK = runtime_risk_defaults()
 
 _DEFAULT_CORS_ORIGINS = (
     "http://localhost:5173,"
@@ -87,11 +97,11 @@ class LoginRequest(BaseModel):
     auto_start_strategy: bool = False
     strategy_name: str = "ma_cross"
     strategy_params: Dict[str, Any] = Field(default_factory=dict)
+    risk: Dict[str, Any] = Field(default_factory=dict)
 
 
 class LoginResponse(BaseModel):
     success:        bool
-    token:          str
     message:        str
     gateway_status: str
     account_id:     str = ""
@@ -194,8 +204,9 @@ class BacktestRunRequest(BaseModel):
     slip_rate:       float          = 0.0001
     margin_rate:     float          = 0.12
     contract_multiplier: float      = 1.0
+    max_errors:      int            = 100
     sample_days:     int            = 700   # 模拟数据天数
-    allow_synthetic_data: bool      = True
+    allow_synthetic_data: bool      = False
 
 
 class ManualOrderRequest(BaseModel):
@@ -215,6 +226,18 @@ class ClosePositionRequest(BaseModel):
     direction:  str = ""        # 可选："long" | "short"，用于锁定要平的持仓方向
     offset:     str = "close"   # "close" | "close_today" | "close_yesterday"
     order_type: str = ""        # "" 自动按 price 推断；也可传 "market" | "limit"
+
+
+class EmergencyStopRequest(BaseModel):
+    """交易急停请求。"""
+    reason: str = ""
+    cancel_orders: bool = True
+    stop_strategies: bool = False
+
+
+class RiskConfigRequest(BaseModel):
+    """运行时风控配置更新请求。"""
+    risk: Dict[str, Any] = Field(default_factory=dict)
 
 
 _MANUAL_DIRECTION_MAP = {"long": Direction.LONG, "short": Direction.SHORT}
@@ -440,6 +463,7 @@ class TradingState:
     EQUITY_MAXLEN = 300   # 保留最近 300 个快照（1s 间隔 ≈ 5 分钟窗口）
 
     def __init__(self):
+        self._lock = threading.RLock()
         self._entries:             Dict[str, _StrategyEntry]  = {}
         self._main_engine:         Optional[TradingEngine]    = None
         self._main_config:         Dict[str, Any]             = {}
@@ -451,8 +475,9 @@ class TradingState:
 
     # ── 主引擎（登录产生的 CTP 引擎）────────────────────────────────────────
     def set_main_engine(self, engine: TradingEngine, config: Dict[str, Any] = None):
-        self._main_engine = engine
-        self._main_config = config or {}
+        with self._lock:
+            self._main_engine = engine
+            self._main_config = config or {}
         # 安装订单广播钩子
         if _event_loop and not _event_loop.is_closed():
             _install_hook_on_engine(engine)
@@ -460,84 +485,101 @@ class TradingState:
 
     def clear_main(self):
         """断开并清理主引擎"""
-        if self._main_engine:
+        with self._lock:
+            engine = self._main_engine
+            self._main_engine = None
+            self._main_config = {}
+            self._entries.clear()
+            self._weights.clear()
+        if engine:
             try:
-                self._main_engine.stop()
+                engine.stop()
             except Exception:
                 pass
-        self._main_engine = None
-        self._main_config = {}
 
     # ── 连接日志 ──────────────────────────────────────────────────────────────
     def add_log(self, msg: str):
         ts = datetime.now().strftime("%H:%M:%S")
         entry = f"[{ts}] {msg}"
-        self._connect_log.append(entry)
+        with self._lock:
+            self._connect_log.append(entry)
+            if len(self._connect_log) > 200:
+                self._connect_log = self._connect_log[-100:]
         logger.info(f"[ConnLog] {msg}")
-        if len(self._connect_log) > 200:
-            self._connect_log = self._connect_log[-100:]
 
     def clear_log(self):
-        self._connect_log = []
+        with self._lock:
+            self._connect_log = []
 
     def get_log(self) -> List[str]:
-        return list(self._connect_log)
+        with self._lock:
+            return list(self._connect_log)
 
     # ── 策略权重 ──────────────────────────────────────────────────────────────
     def set_weights(self, weights: Dict[str, float]):
-        for sid, w in weights.items():
-            self._weights[sid] = max(0.0, min(1.0, float(w)))
+        with self._lock:
+            for sid, w in weights.items():
+                self._weights[sid] = max(0.0, min(1.0, float(w)))
 
     def get_weight(self, strategy_id: str) -> float:
-        if strategy_id in self._weights:
-            return self._weights[strategy_id]
-        n = max(len(self._entries), 1)
-        return round(1.0 / n, 4)
+        with self._lock:
+            if strategy_id in self._weights:
+                return self._weights[strategy_id]
+            n = max(len(self._entries), 1)
+            return round(1.0 / n, 4)
 
     def all_weights(self) -> Dict[str, float]:
-        ids = list(self._entries.keys())
-        if not ids:
-            return {}
-        if self._weights:
-            return {sid: self._weights.get(sid, round(1.0 / len(ids), 4)) for sid in ids}
-        w = round(1.0 / len(ids), 4)
-        return {sid: w for sid in ids}
+        with self._lock:
+            ids = list(self._entries.keys())
+            if not ids:
+                return {}
+            if self._weights:
+                return {sid: self._weights.get(sid, round(1.0 / len(ids), 4)) for sid in ids}
+            w = round(1.0 / len(ids), 4)
+            return {sid: w for sid in ids}
 
     # ── 权益曲线历史 ──────────────────────────────────────────────────────────
     def push_equity(self, pnl: float, balance: float):
         """记录一个权益快照（每秒由广播循环调用）。"""
         ts = datetime.now().strftime("%H:%M:%S")
-        self._equity_curve.append({"ts": ts, "p": round(pnl, 2), "b": round(balance, 2)})
-        # 记录当天首次有效余额作为日内基准
-        if self._day_open_balance == 0.0 and balance > 0:
-            self._day_open_balance = balance
+        with self._lock:
+            self._equity_curve.append({"ts": ts, "p": round(pnl, 2), "b": round(balance, 2)})
+            # 记录当天首次有效余额作为日内基准
+            if self._day_open_balance == 0.0 and balance > 0:
+                self._day_open_balance = balance
 
     def get_equity_data(self) -> list:
-        return list(self._equity_curve)
+        with self._lock:
+            return list(self._equity_curve)
 
     # ── 策略注册 ──────────────────────────────────────────────────────────────
     def register(self, strategy_id, strategy, engine, config=None):
         entry = _StrategyEntry(strategy_id, strategy, engine, config or {})
-        self._entries[strategy_id] = entry
+        with self._lock:
+            self._entries[strategy_id] = entry
         if _event_loop and not _event_loop.is_closed():
             _install_order_hook(entry)
         logger.info(f"[API] 策略已注册: {strategy_id}")
 
     def unregister(self, strategy_id: str):
-        self._entries.pop(strategy_id, None)
+        with self._lock:
+            self._entries.pop(strategy_id, None)
 
     def get(self, strategy_id: str) -> Optional[_StrategyEntry]:
-        return self._entries.get(strategy_id)
+        with self._lock:
+            return self._entries.get(strategy_id)
 
     def all_entries(self) -> List[_StrategyEntry]:
-        return list(self._entries.values())
+        with self._lock:
+            return list(self._entries.values())
 
     def primary_engine(self) -> Optional[TradingEngine]:
-        if self._main_engine:
-            return self._main_engine
-        for entry in self._entries.values():
-            return entry.engine
-        return None
+        with self._lock:
+            if self._main_engine:
+                return self._main_engine
+            for entry in self._entries.values():
+                return entry.engine
+            return None
 
 
 trading_state = TradingState()
@@ -551,7 +593,12 @@ def _websocket_session_token(ws: WebSocket) -> str:
     auth = ws.headers.get("authorization", "")
     if auth.lower().startswith("bearer "):
         return auth[7:]
-    return ws.cookies.get(SESSION_COOKIE_NAME, "") or ws.query_params.get("token", "")
+    cookie_token = ws.cookies.get(SESSION_COOKIE_NAME, "")
+    if cookie_token:
+        return cookie_token
+    if websocket_query_token_enabled():
+        return ws.query_params.get("token", "")
+    return ""
 
 
 async def _require_websocket_session(ws: WebSocket) -> bool:
@@ -904,9 +951,6 @@ async def _system_broadcast_loop():
 
 def _build_dashboard_metrics() -> dict:
     """计算实时 PnL、收益率、夏普比率、最大回撤、仓位概览。"""
-    import numpy as np      # noqa: PLC0415
-    import pandas as pd     # noqa: PLC0415
-
     engine          = trading_state.primary_engine()
     total_pnl       = 0.0
     balance         = 0.0
@@ -1058,6 +1102,42 @@ def _collect_all_trades() -> list:
                 result.append(_trade_to_dict(t))
     result.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
     return result
+
+
+def _unique_engines() -> list:
+    """Return connected engines without duplicate object references."""
+    engines = []
+    seen: set[int] = set()
+    primary = trading_state.primary_engine()
+    if primary:
+        engines.append(primary)
+        seen.add(id(primary))
+    for entry in trading_state.all_entries():
+        if id(entry.engine) not in seen:
+            engines.append(entry.engine)
+            seen.add(id(entry.engine))
+    return engines
+
+
+def _cancel_all_active_orders() -> dict:
+    cancelled = 0
+    failed = 0
+    seen: set[str] = set()
+    for engine in _unique_engines():
+        for oid, order in list(engine.gateway.orders.items()):
+            if oid in seen:
+                continue
+            seen.add(oid)
+            if not order.is_active():
+                continue
+            try:
+                if engine.gateway.cancel_order(oid):
+                    cancelled += 1
+                else:
+                    failed += 1
+            except Exception:
+                failed += 1
+    return {"cancelled": cancelled, "failed": failed}
 
 
 def _build_positions_snapshot() -> dict:
@@ -1413,6 +1493,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             "vnpy_environment": body.environment,
             "connect_timeout": 25,
             "initial_capital": 0.0,
+            "risk": {**_DEFAULT_RUNTIME_RISK, **dict(body.risk or {})},
             "log_callback": trading_state.add_log,
         }
 
@@ -1519,6 +1600,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             max_age=SESSION_COOKIE_MAX_AGE,
             httponly=True,
             samesite="lax",
+            secure=secure_session_cookie_enabled(),
         )
 
         _record_audit(
@@ -1532,7 +1614,6 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
 
         return LoginResponse(
             success        = True,
-            token          = token,
             message        = "登录成功，策略已启动" if strategy_started else "登录成功",
             gateway_status = gateway.status.value,
             account_id     = account_id,
@@ -1593,7 +1674,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             market_connected = market_connected,
             gateway_status   = gateway_status,
             gateway_name     = gateway_name,
-            cpu_percent      = psutil.cpu_percent(interval=0.1),
+            cpu_percent      = psutil.cpu_percent(interval=None),
             memory_percent   = psutil.virtual_memory().percent,
             active_strategies = active_count,
             account          = account_dict,
@@ -1730,6 +1811,115 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         """返回所有已成交记录，按时间倒序，最多 500 条。"""
         return _collect_all_trades()[:500]
 
+    @app.get("/risk/status", summary="风控状态", tags=["风控"])
+    def risk_status():
+        engine = trading_state.primary_engine()
+        if engine is None:
+            return {"connected": False, "risk": None}
+        return {
+            "connected": True,
+            "gateway_status": engine.gateway.status.value if hasattr(engine.gateway.status, "value") else str(engine.gateway.status),
+            "risk": engine.risk_manager.status(),
+            "last_reject_reason": getattr(engine, "last_reject_reason", ""),
+        }
+
+    @app.put("/risk/config", summary="更新运行时风控配置", tags=["风控"])
+    def update_risk_config(body: RiskConfigRequest, request: Request):
+        engines = _unique_engines()
+        if not engines:
+            raise HTTPException(status_code=503, detail="交易引擎未连接")
+        merged = {**_DEFAULT_RUNTIME_RISK, **dict(body.risk or {})}
+        for engine in engines:
+            engine.configure_risk({"risk": merged})
+        if trading_state._main_config is not None:
+            trading_state._main_config["risk"] = merged
+        _record_audit("risk", "update_config", "success", request=request, detail={"risk": merged})
+        return {"success": True, "risk": engines[0].risk_manager.status()}
+
+    @app.post("/risk/emergency-stop", summary="交易急停", tags=["风控"])
+    def emergency_stop(body: EmergencyStopRequest, request: Request):
+        engines = _unique_engines()
+        if not engines:
+            raise HTTPException(status_code=503, detail="交易引擎未连接")
+
+        reason = body.reason.strip() or "operator emergency stop"
+        for engine in engines:
+            engine.risk_manager.set_emergency_stop(True, reason)
+
+        cancel_result = _cancel_all_active_orders() if body.cancel_orders else {"cancelled": 0, "failed": 0}
+        stopped = 0
+        if body.stop_strategies:
+            for entry in trading_state.all_entries():
+                try:
+                    entry.engine.stop()
+                    stopped += 1
+                except Exception:
+                    logger.exception("[risk] 急停策略停止失败: %s", entry.strategy_id)
+
+        trading_state.add_log(f"交易急停已触发: {reason}")
+        _record_audit(
+            "risk",
+            "emergency_stop",
+            "success",
+            request=request,
+            detail={**cancel_result, "stopped_strategies": stopped, "reason": reason},
+        )
+        return {
+            "success": True,
+            "emergency_stop": True,
+            "reason": reason,
+            **cancel_result,
+            "stopped_strategies": stopped,
+        }
+
+    @app.post("/risk/resume", summary="解除交易急停", tags=["风控"])
+    def resume_trading(request: Request):
+        engines = _unique_engines()
+        if not engines:
+            raise HTTPException(status_code=503, detail="交易引擎未连接")
+        for engine in engines:
+            engine.risk_manager.set_emergency_stop(False, "")
+        trading_state.add_log("交易急停已解除")
+        _record_audit("risk", "resume", "success", request=request)
+        return {"success": True, "emergency_stop": False}
+
+    @app.get("/trading/reconcile", summary="账户/委托/持仓对账快照", tags=["风控"])
+    def trading_reconcile():
+        engine = trading_state.primary_engine()
+        if engine is None:
+            raise HTTPException(status_code=503, detail="交易引擎未连接")
+        account = engine.get_account()
+        positions_snapshot = _build_positions_snapshot()
+        orders = _collect_all_orders()
+        active_orders = [order for order in orders if order.get("status") in {"submitting", "submitted", "partfilled"}]
+        return {
+            "timestamp": datetime.now().isoformat(),
+            "connected": engine.gateway.status in (TradingStatus.CONNECTED, TradingStatus.TRADING),
+            "gateway_status": engine.gateway.status.value if hasattr(engine.gateway.status, "value") else str(engine.gateway.status),
+            "account": _account_to_dict(account) if not getattr(account, "error_msg", "") else {"error_msg": account.error_msg},
+            "risk": engine.risk_manager.status(),
+            "orders": {
+                "active_count": len(active_orders),
+                "total_count": len(orders),
+                "active": active_orders[:100],
+            },
+            "positions": {
+                "count": len(positions_snapshot.get("positions", [])),
+                "items": positions_snapshot.get("positions", []),
+            },
+            "strategies": [
+                {
+                    "strategy_id": entry.strategy_id,
+                    "name": entry.strategy.name,
+                    "status": entry.status,
+                    "signal_count": len(getattr(entry.strategy, "signals", [])),
+                    "trade_count": len(getattr(entry.strategy, "trades", [])),
+                    "error_count": getattr(entry.strategy, "_error_count", 0),
+                }
+                for entry in trading_state.all_entries()
+            ],
+        }
+
     @app.delete("/orders/{order_id}", summary="撤销委托单", tags=["订单簿"])
     def cancel_order(order_id: str, request: Request):
         """调用网关 cancel_order()，结果通过 /ws/orders 回调推送。"""
@@ -1854,29 +2044,9 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
 
         cancelled = 0
         failed = 0
-
-        # 主引擎订单
-        for oid, order in list(engine.gateway.orders.items()):
-            if order.is_active():
-                try:
-                    if engine.gateway.cancel_order(oid):
-                        cancelled += 1
-                    else:
-                        failed += 1
-                except Exception:
-                    failed += 1
-
-        # 各策略引擎订单
-        for entry in trading_state.all_entries():
-            for oid, order in list(entry.engine.gateway.orders.items()):
-                if order.is_active():
-                    try:
-                        if entry.engine.gateway.cancel_order(oid):
-                            cancelled += 1
-                        else:
-                            failed += 1
-                    except Exception:
-                        failed += 1
+        result = _cancel_all_active_orders()
+        cancelled = result["cancelled"]
+        failed = result["failed"]
 
         return {"success": True, "cancelled": cancelled, "failed": failed}
 

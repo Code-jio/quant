@@ -4,6 +4,7 @@ vnpy>=4.3.0
 vnpy_ctp>=6.7.11.4
 loguru>=0.7.3
 plotly>=6.0.0
+typing_extensions>=4.0.0
 
 # REST API
 fastapi>=0.110.0

@@ -360,7 +360,6 @@ async function handleLogin() {
     const res = await Promise.race([loginPromise, timeoutPromise])
 
     authStore.setAuth({
-      token:     res.token,
       accountId: res.account_id,
       balance:   res.balance,
     })

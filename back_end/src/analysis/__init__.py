@@ -28,7 +28,10 @@ class RiskAnalyzer:
     def calculate_cvar(returns: pd.Series, confidence: float = 0.95) -> float:
         """计算CVaR (Conditional VaR) / Expected Shortfall"""
         var = RiskAnalyzer.calculate_var(returns, confidence)
-        return returns[returns <= var].mean()
+        tail = returns[returns <= var]
+        if len(tail) == 0:
+            return var
+        return tail.mean()
 
     @staticmethod
     def calculate_max_drawdown(equity_curve: pd.Series) -> tuple:
@@ -81,7 +84,7 @@ class RiskAnalyzer:
         metrics.cvar_95 = RiskAnalyzer.calculate_cvar(returns, 0.95)
 
         metrics.max_drawdown, _, _ = RiskAnalyzer.calculate_max_drawdown(equity_curve)
-        metrics.max_drawdown_pct = metrics.max_drawdown
+        metrics.max_drawdown_pct = metrics.max_drawdown * 100
 
         metrics.sharpe_ratio = RiskAnalyzer.calculate_sharpe_ratio(returns)
         metrics.sortino_ratio = RiskAnalyzer.calculate_sortino_ratio(returns)
@@ -150,8 +153,7 @@ class PerformanceAnalyzer:
         return max_wins, max_losses
 
     @staticmethod
-    def analyze(equity_curve: pd.Series, trades: List[Dict],
-                initial_capital: float) -> PerformanceMetrics:
+    def analyze(equity_curve: pd.Series, trades: List[Dict]) -> PerformanceMetrics:
         """综合绩效分析"""
         metrics = PerformanceMetrics()
 
@@ -240,11 +242,7 @@ class Analyzer:
             )
 
         risk_metrics = RiskAnalyzer.analyze(self.returns, self.equity_curve)
-        perf_metrics = PerformanceAnalyzer.analyze(
-            self.equity_curve,
-            self.trades,
-            self.initial_capital
-        )
+        perf_metrics = PerformanceAnalyzer.analyze(self.equity_curve, self.trades)
 
         return AnalysisResult(risk=risk_metrics, performance=perf_metrics)
 

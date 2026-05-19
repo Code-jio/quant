@@ -414,7 +414,6 @@ def get_kline(
         df = _load_daily(symbol, days_back)
         if df.empty:
             return {"code": 1, "msg": f"无法加载 {symbol} 数据"}
-        df = df.tail(limit)
 
     else:
         # 分钟线：从日线合成
@@ -427,16 +426,17 @@ def get_kline(
         df = _synthesize_intraday(daily_df, interval_min, limit * 2)
         if df.empty:
             return {"code": 1, "msg": "合成分钟线失败"}
-        df = df.tail(limit)
 
     # 确保列存在
     for col in ("open", "high", "low", "close", "volume"):
         if col not in df.columns:
             return {"code": 1, "msg": f"数据缺少字段: {col}"}
 
-    # ── 技术指标计算 ─────────────────────────────────────────────────────────
+    # ── 技术指标计算（在 tail 之前，利用预热数据）─────────────────────────────
     if ind_list:
         df = _apply_indicators(df, ind_list)
+
+    df = df.tail(limit)
 
     # ── 序列化 ────────────────────────────────────────────────────────────────
     df = df.replace({np.nan: None})   # NaN → None → JSON null

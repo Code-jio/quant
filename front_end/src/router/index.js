@@ -51,13 +51,13 @@ router.beforeEach((to) => {
   // 更新页面标题
   if (to.meta.title) document.title = `${to.meta.title} · 量化交易系统`
 
-  const token = sessionStorage.getItem('quant_token') || sessionStorage.getItem('quant_session_active')
+  const sessionActive = sessionStorage.getItem('quant_session_active')
 
   // 需要登录但未登录 → 跳到登录页
-  if (to.meta.requiresAuth && !token) return { name: 'Login' }
+  if (to.meta.requiresAuth && !sessionActive) return { name: 'Login' }
 
   // 已登录但访问登录页 → 跳到仪表盘
-  if (to.name === 'Login' && token) return { name: 'Dashboard' }
+  if (to.name === 'Login' && sessionActive) return { name: 'Dashboard' }
 })
 
 export default router

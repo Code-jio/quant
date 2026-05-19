@@ -15,12 +15,9 @@ from src.strategy import create_strategy
 from src.backtest import BacktestEngine, BacktestConfig
 from src.trading import TradingEngine, create_gateway
 from src.analysis import Analyzer
+from src.settings import ctp_defaults
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_PATH = "config/config_production.json"
@@ -33,25 +30,27 @@ DEFAULT_CONFIG = {
         "initial_capital": 1000000,
         "commission_rate": 0.0003,
         "slip_rate": 0.0001,
-        "margin_rate": 0.12
+        "margin_rate": 0.12,
+        "contract_multiplier": 1
     },
     "strategy": {
         "name": "ma_cross",
         "symbol": "IF9999",
         "fast_period": 10,
         "slow_period": 20,
-        "position_ratio": 0.8
+        "position_ratio": 0.8,
+        "max_errors": 10
     },
     "trading": {
         "gateway": "vnpy",
         "username": "",
         "password": "",
-        "broker_id": "2071",
-        "td_server": "tcp://114.94.128.1:42205",
-        "md_server": "tcp://114.94.128.1:42213",
-        "app_id": "",
-        "auth_code": "",
-        "vnpy_environment": "实盘",
+        "broker_id": _CTP_DEFAULTS["broker_id"],
+        "td_server": _CTP_DEFAULTS["td_server"],
+        "md_server": _CTP_DEFAULTS["md_server"],
+        "app_id": _CTP_DEFAULTS["app_id"],
+        "auth_code": _CTP_DEFAULTS["auth_code"],
+        "vnpy_environment": _CTP_DEFAULTS["vnpy_environment"],
         "initial_capital": 1000000
     },
     "risk": {
@@ -89,7 +88,8 @@ def run_backtest(config: dict):
         initial_capital=config['backtest']['initial_capital'],
         commission_rate=config['backtest']['commission_rate'],
         slip_rate=config['backtest']['slip_rate'],
-        margin_rate=config['backtest']['margin_rate']
+        margin_rate=config['backtest']['margin_rate'],
+        contract_multiplier=config['backtest'].get('contract_multiplier', 1)
     )
 
     data_manager = DataManager()
@@ -159,6 +159,8 @@ def run_live_trading(config: dict):
 
 
 def main():
+    configure_logging()
+
     parser = argparse.ArgumentParser(description='量化交易系统')
     parser.add_argument('--config', '-c', default=DEFAULT_CONFIG_PATH, help='配置文件路径')
     parser.add_argument('--mode', '-m', choices=['backtest', 'live'], help='运行模式')

@@ -3,10 +3,6 @@
 """
 
 import logging
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from ..base import StrategyBase
 
 import pandas as pd
 from ..base import StrategyBase
@@ -62,16 +58,18 @@ class MACrossStrategy(StrategyBase):
 
             if prev_fast <= prev_slow and curr_fast > curr_slow:
                 if pos.is_short or pos.is_empty:
-                    volume = int((self.initial_capital * self.position_ratio) / bar['close'] / 100) * 100
+                    volume = int((self.current_capital * self.position_ratio) / bar['close'] / 100) * 100
                     if volume > 0:
-                        self.cover(symbol, bar['close'], abs(pos.volume))
+                        if pos.volume != 0:
+                            self.cover(symbol, bar['close'], abs(pos.volume))
                         self.buy(symbol, bar['close'], volume)
 
             elif prev_fast >= prev_slow and curr_fast < curr_slow:
                 if pos.is_long or pos.is_empty:
-                    volume = int((self.initial_capital * self.position_ratio) / bar['close'] / 100) * 100
+                    volume = int((self.current_capital * self.position_ratio) / bar['close'] / 100) * 100
                     if volume > 0:
-                        self.sell(symbol, bar['close'], pos.volume)
+                        if pos.volume != 0:
+                            self.sell(symbol, bar['close'], abs(pos.volume))
                         self.short(symbol, bar['close'], volume)
 
         except Exception as e:

@@ -60,6 +60,7 @@ def run_backtest_sync(body: Any) -> Dict[str, Any]:
         slip_rate=body.slip_rate,
         margin_rate=body.margin_rate,
         contract_multiplier=body.contract_multiplier,
+        max_errors=body.max_errors,
     )
 
     strategy = create_strategy(body.strategy_name, body.strategy_params or {})
@@ -196,6 +197,7 @@ def run_backtest_sync(body: Any) -> Dict[str, Any]:
             "slip_rate": body.slip_rate,
             "margin_rate": body.margin_rate,
             "contract_multiplier": body.contract_multiplier,
+            "max_errors": body.max_errors,
         },
         "data_source": "synthetic" if synthetic_data_used else "historical",
         "synthetic_data_used": synthetic_data_used,
