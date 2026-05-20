@@ -13,7 +13,17 @@
       "Bash(.venv/Scripts/python.exe -c \"import sys; sys.path.insert\\(0, r''D:\\\\quant\\\\.venv\\\\Lib\\\\site-packages''\\); from ctpplus.CTP import TdApi; print\\(''OK''\\)\")",
       "Bash(.venv/Scripts/python.exe -c \"import site; print\\(site.getsitepackages\\(\\)\\)\")",
       "Bash(.venv/Scripts/python.exe -c \":*)",
-      "Bash(cat /d/quant/.venv/Lib/site-packages/CtpPlus/examples/*.py)"
+      "Bash(cat /d/quant/.venv/Lib/site-packages/CtpPlus/examples/*.py)",
+      "Bash(d:/quant/.venv/Scripts/python.exe -m uvicorn src.api:create_app --factory --host 0.0.0.0 --port 8000)",
+      "Bash(npm run *)",
+      "Bash(d:/quant/.venv/Scripts/python.exe -m pip install slowapi)",
+      "Bash(d:/quant/.venv/Scripts/python.exe -c \"import vnpy; print\\('vnpy version:', vnpy.__version__\\)\")",
+      "Bash(d:/quant/.venv/Scripts/python.exe -m pip install vnpy vnpy_ctp)",
+      "Bash(d:/quant/.venv/Scripts/python.exe --version)",
+      "Bash(d:/quant/.venv/Scripts/python.exe -m pip index versions vnpy_ctp)",
+      "Bash(curl -s \"https://pypi.org/pypi/vnpy-ctp/6.7.11.4/json\")",
+      "Bash(d:/quant/.venv/Scripts/python.exe -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(u['filename']\\) for u in d['urls'] if 'cp31' in u['filename'] or 'cp3' in u['filename']]\")",
+      "Bash(git commit -m ' *)"
     ]
   }
 }
