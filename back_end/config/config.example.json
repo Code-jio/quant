@@ -5,8 +5,10 @@
     "account_id": "",
     "gateway": "vnpy",
     "vnpy_environment": "实盘",
-    "allowed_symbol": "rb2610",
-    "manual_open_enabled": false
+    "allowed_symbol": "au2606",
+    "manual_open_enabled": false,
+    "auto_arm": true,
+    "bar_timeout_seconds": 90
   },
   "backtest": {
     "start_date": "2023-01-01",
@@ -20,11 +22,11 @@
   },
   "strategy": {
     "name": "verify",
-    "symbol": "rb2610",
+    "symbol": "au2606",
     "volume": 1,
-    "warmup_bars": 20,
-    "hold_bars": 10,
-    "contract_multiplier": 10,
+    "warmup_bars": 1,
+    "hold_bars": 3,
+    "contract_multiplier": 1000,
     "order_type": "limit",
     "max_errors": 10
   },
@@ -85,15 +87,18 @@
     "max_active_orders": 2,
     "max_orders_per_minute": 5,
     "max_daily_loss_ratio": 0.03,
-    "max_order_value": 50000,
-    "max_position_value": 50000,
+    "max_order_value": 2000000,
+    "max_position_value": 2000000,
     "max_price_deviation": 0.01,
     "max_market_data_age_seconds": 5,
     "duplicate_signal_window_seconds": 5,
-    "default_contract_multiplier": 10,
-    "contract_multipliers": {},
+    "default_contract_multiplier": 1000,
+    "contract_multipliers": {
+      "AU": 1000,
+      "au2606": 1000
+    },
     "allow_market_orders": false,
-    "allowed_symbols": ["rb2610"],
+    "allowed_symbols": ["au2606"],
     "blocked_symbols": []
   }
 }
