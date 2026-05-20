@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 from src.strategy import Direction, Order, OrderStatus, OrderType, StrategyBase
+from src.strategy.strategies.verify import VerifyStrategy
 from src.trading import TradingEngine
 from src.trading.types import MarketData
 
@@ -115,6 +116,31 @@ def test_live_on_bar_sees_only_prior_ticks_in_strategy_data():
     engine.on_tick(make_tick("rb2505", 3820.0, start + timedelta(minutes=2)))
     assert strategy.observed_lengths == [1, 2]
     assert strategy.current_seen == [True, True]
+
+
+def test_verify_strategy_can_warm_up_from_first_tick():
+    gateway = RecordingGateway()
+    engine = TradingEngine(gateway)
+    strategy = VerifyStrategy("verify", {
+        "symbol": "rb2505",
+        "warmup_bars": 1,
+        "hold_bars": 3,
+        "volume": 1,
+        "auto_arm": True,
+        "order_type": "limit",
+    })
+    engine.set_strategy(strategy)
+
+    assert engine.start({"initial_capital": 100000.0, "emit_first_tick_bar": True}) is True
+
+    engine.on_tick(make_tick("rb2505", 3800.0, datetime.now()))
+
+    assert strategy.snapshot()["bar_count"] == 1
+    assert strategy.snapshot()["state"] == "entry_pending"
+    assert len(strategy.signals) == 1
+    assert len(gateway.sent_signals) == 1
+    assert gateway.sent_signals[0].symbol == "rb2505"
+    assert gateway.sent_signals[0].price == 3800.0
 
 
 def test_broker_order_callback_updates_order_manager_books():

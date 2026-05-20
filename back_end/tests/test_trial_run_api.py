@@ -18,10 +18,23 @@ def _config_path(name):
     return root / f"{name}-{uuid.uuid4().hex}.json"
 
 
-def _trial_config(path, password="secret-password"):
+def _trial_config(path, password="secret-password", *, auto_arm=True, warmup_bars=1, hold_bars=3, bar_timeout_seconds=90):
     payload = {
-        "trial_run": {"enabled": True, "allowed_symbol": "rb2510", "account_id": "trial-account"},
-        "strategy": {"name": "verify", "symbol": "rb2510", "volume": 1, "warmup_bars": 2, "hold_bars": 2, "order_type": "limit"},
+        "trial_run": {
+            "enabled": True,
+            "allowed_symbol": "rb2510",
+            "account_id": "trial-account",
+            "auto_arm": auto_arm,
+            "bar_timeout_seconds": bar_timeout_seconds,
+        },
+        "strategy": {
+            "name": "verify",
+            "symbol": "rb2510",
+            "volume": 1,
+            "warmup_bars": warmup_bars,
+            "hold_bars": hold_bars,
+            "order_type": "limit",
+        },
         "trading": {
             "gateway": "vnpy",
             "username": "trial-account",
@@ -106,6 +119,8 @@ def test_trial_run_config_is_public_and_prefills_non_password_connection_fields(
     body = response.json()
     assert body["valid"] is True
     assert body["allowed_symbol"] == "rb2510"
+    assert body["auto_arm"] is True
+    assert body["bar_timeout_seconds"] == 90
     assert body["account_id"] == ""
     assert body["masked_account_id"] == "tr****nt"
     assert "password" not in body["config"]["trading"]
@@ -146,7 +161,7 @@ def test_trial_run_mutations_require_login(monkeypatch):
             assert response.status_code == 401
 
 
-def test_trial_run_prepare_and_arm(monkeypatch):
+def test_trial_run_prepare_auto_arms_and_sends_entry_after_first_bar(monkeypatch):
     config_path = _trial_config(_config_path("prepare"))
     monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
     gateway = install_gateway(monkeypatch)
@@ -164,6 +179,31 @@ def test_trial_run_prepare_and_arm(monkeypatch):
         assert prepared.json()["success"] is True
         assert prepared.json()["status"]["state"] == "warming"
         assert prepared.json()["status"]["strategy_id"] == "verify_trial"
+        assert prepared.json()["status"]["auto_arm"] is True
+        assert gateway.subscribed_symbols == [["rb2510"]]
+
+        entry = trading_state.get("verify_trial")
+        assert entry is not None
+        entry.strategy.on_bar(_bar(3130))
+
+        status = client.get("/trial-run/status")
+        assert status.status_code == 200
+        assert status.json()["state"] == "entry_pending"
+        assert status.json()["bar_count"] == 1
+        assert len(entry.strategy.signals) == 1
+
+
+def test_trial_run_manual_arm_when_auto_arm_disabled(monkeypatch):
+    config_path = _trial_config(_config_path("manual-arm"), auto_arm=False, warmup_bars=2)
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    gateway = install_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client)
+        prepared = client.post("/trial-run/prepare")
+        assert prepared.status_code == 200
+        assert prepared.json()["status"]["auto_arm"] is False
         assert gateway.subscribed_symbols == [["rb2510"]]
 
         entry = trading_state.get("verify_trial")
@@ -195,7 +235,7 @@ def test_trial_run_prepare_can_use_example_config_when_local_missing(monkeypatch
 
 
 def test_trial_run_arm_returns_conflict_when_strategy_refuses(monkeypatch):
-    config_path = _trial_config(_config_path("conflict"))
+    config_path = _trial_config(_config_path("conflict"), auto_arm=False, warmup_bars=2)
     monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
     install_gateway(monkeypatch)
     app = create_app()

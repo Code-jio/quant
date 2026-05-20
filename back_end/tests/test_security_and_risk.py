@@ -36,8 +36,11 @@ class SafeDefaultsTest(unittest.TestCase):
 
         self.assertNotIn("password", config.get("trading", {}))
         self.assertEqual(config["trial_run"]["manual_open_enabled"], False)
+        self.assertEqual(config["trial_run"]["auto_arm"], True)
+        self.assertEqual(config["trial_run"]["bar_timeout_seconds"], 90)
         self.assertEqual(config["strategy"]["name"], "verify")
         self.assertEqual(config["strategy"]["volume"], 1)
+        self.assertEqual(config["strategy"]["warmup_bars"], 1)
         self.assertEqual(config["risk"]["max_order_volume"], 1)
         self.assertEqual(config["risk"]["max_position_volume"], 1)
         self.assertEqual(config["risk"]["allowed_symbols"], [config["trial_run"]["allowed_symbol"]])

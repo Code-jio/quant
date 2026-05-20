@@ -71,6 +71,21 @@ def test_buy_signal_on_next_bar_after_authorization():
     assert s.snapshot()["state"] == "holding"
 
 
+def test_auto_arm_sends_entry_on_warmup_bar():
+    """Auto-arm mode emits the verification entry as soon as warmup completes."""
+    s = VerifyStrategy("verify", {"warmup_bars": 1, "hold_bars": 3, "volume": 1, "auto_arm": True})
+    s.on_init()
+
+    s.on_bar(_bar(3130))
+
+    assert len(s.signals) == 1
+    assert s.signals[0].direction.value == "long"
+    assert s.trade_authorized is True
+    assert s.ready_to_arm is True
+    assert s.snapshot()["state"] == "entry_pending"
+    assert s.snapshot()["auto_arm"] is True
+
+
 def test_sell_signal_after_hold():
     """Strategy emits close signal after holding for hold_bars."""
     s = VerifyStrategy("verify", {"warmup_bars": 3, "hold_bars": 5, "volume": 1})
