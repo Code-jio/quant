@@ -42,7 +42,10 @@
       "Bash(python -m pytest tests/ -v --tb=short)",
       "Bash(python -c \"from vnpy.event import EventEngine; from vnpy.trader.engine import MainEngine; print\\('vnpy OK'\\)\")",
       "Bash(python -c \"from src.strategy import create_strategy; s=create_strategy\\('verify', {'symbol':'rb2510','warmup_bars':20,'hold_bars':10,'volume':1}\\); s.on_init\\(\\); print\\('init OK, bars:', s._bar_count\\)\")",
-      "Bash(gh pr create --title 'feat: 实盘自动交易CLI验证 — BarAggregator + VerifyStrategy' --body ' *)"
+      "Bash(gh pr create --title 'feat: 实盘自动交易CLI验证 — BarAggregator + VerifyStrategy' --body ' *)",
+      "Bash(npm list *)",
+      "Bash(npm install *)",
+      "Bash(claude mcp *)"
     ]
   }
 }
