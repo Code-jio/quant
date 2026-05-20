@@ -46,6 +46,8 @@ class TradingEngine:
         self.risk_manager = RiskManager()
         self.bar_aggregator: BarAggregator = None  # set in start()
         self._bar_interval: int = 1
+        self._emit_first_tick_bar = False
+        self._first_tick_bar_symbols: set[str] = set()
 
         self.last_reject_reason = ""
         self._error_count = 0
@@ -76,6 +78,8 @@ class TradingEngine:
             config = config or {}
             self.configure_risk(config)
             self._bar_interval = max(1, int(config.get("bar_interval_minutes", 1)))
+            self._emit_first_tick_bar = bool(config.get("emit_first_tick_bar", False))
+            self._first_tick_bar_symbols.clear()
             self.bar_aggregator = BarAggregator(
                 interval_minutes=self._bar_interval,
                 on_bar=self._on_bar_completed,
@@ -222,7 +226,9 @@ class TradingEngine:
         # Bar aggregation — only calls on_bar when a bar completes
         if self.bar_aggregator:
             try:
-                self.bar_aggregator.push(tick)
+                finished = self.bar_aggregator.push(tick)
+                if finished is None:
+                    self._maybe_emit_first_tick_bar(tick)
             except Exception as e:
                 logger.error(f"Bar 聚合失败: {e}")
 
@@ -290,6 +296,58 @@ class TradingEngine:
         if len(updated) > 1000:
             updated = updated.iloc[-1000:]
         self.strategy.data[symbol] = updated
+
+    def _maybe_emit_first_tick_bar(self, tick: MarketData):
+        """Let verification flows advance on the first valid tick instead of waiting for a full minute."""
+        if not self._emit_first_tick_bar or not self.strategy:
+            return
+        if float(getattr(tick, "last_price", 0.0) or 0.0) <= 0:
+            return
+
+        tick_key = self._normalize_symbol_key(tick.symbol)
+        if tick_key in self._first_tick_bar_symbols:
+            return
+
+        strategy_symbol = str(getattr(self.strategy, "symbol", "") or "")
+        if strategy_symbol and not self._symbols_match(tick.symbol, strategy_symbol):
+            return
+
+        snapshot = {}
+        snapshot_fn = getattr(self.strategy, "snapshot", None)
+        if callable(snapshot_fn):
+            try:
+                snapshot = snapshot_fn()
+            except Exception:
+                snapshot = {}
+        if int(snapshot.get("bar_count", 0) or 0) > 0:
+            self._first_tick_bar_symbols.add(tick_key)
+            return
+
+        bar = self._tick_to_bar(tick)
+        try:
+            self.strategy.current_date = bar["datetime"]
+            self._append_live_bar_via_bar(tick.symbol, bar)
+            self.strategy.on_bar(bar)
+            self._dispatch_strategy_signals()
+            self._first_tick_bar_symbols.add(tick_key)
+            logger.info("试运行首个 tick 已生成验证 Bar: %s %.2f", tick.symbol, tick.last_price)
+        except Exception as e:
+            logger.error(f"处理首个 tick 验证 Bar 失败: {e}")
+
+    @staticmethod
+    def _normalize_symbol_key(symbol: str) -> str:
+        raw = str(symbol or "").strip().lower()
+        if "." not in raw:
+            return raw
+        parts = [part for part in raw.split(".") if part]
+        for part in parts:
+            if any(ch.isdigit() for ch in part):
+                return part
+        return parts[0] if parts else raw
+
+    @classmethod
+    def _symbols_match(cls, left: str, right: str) -> bool:
+        return cls._normalize_symbol_key(left) == cls._normalize_symbol_key(right)
 
     def _dispatch_strategy_signals(self):
         """Send newly generated strategy signals to the broker gateway."""

@@ -25,12 +25,14 @@ class VerifyStrategy(StrategyBase):
         self._volume = int(self.params.get("volume", 1))
         self._multiplier = int(self.params.get("contract_multiplier", 10))
         self._order_type = self._parse_order_type(self.params.get("order_type", "limit"))
+        self.auto_arm = bool(self.params.get("auto_arm", False))
 
         self._bar_count = 0
         self._bars_since_entry = 0
         self._bought = False
         self._closed = False
         self._entry_price = 0.0
+        self._last_bar_time = ""
         self.trade_authorized = False
         self.ready_to_arm = False
         self.completed = False
@@ -84,6 +86,8 @@ class VerifyStrategy(StrategyBase):
             "close_order_sent": self._close_order_sent,
             "order_type": self._order_type.value,
             "last_reject_reason": self._last_reject_reason,
+            "auto_arm": self.auto_arm,
+            "last_bar_time": self._last_bar_time,
         }
 
     def on_start(self):
@@ -97,6 +101,8 @@ class VerifyStrategy(StrategyBase):
         symbol = bar.get("symbol", self.symbol)
         close = float(bar["close"])
         vol_so_far = int(bar.get("volume", 0))
+        bar_dt = bar.get("datetime", "")
+        self._last_bar_time = bar_dt.isoformat() if hasattr(bar_dt, "isoformat") else str(bar_dt or "")
 
         pos = self.get_position(symbol)
 
@@ -146,9 +152,14 @@ class VerifyStrategy(StrategyBase):
 
         if not self.trade_authorized:
             self.ready_to_arm = True
-            self.trial_state = "ready_to_arm"
-            logger.info("预热完成，等待前端授权验证交易")
-            return
+            if self.auto_arm:
+                self.trade_authorized = True
+                self.trial_state = "armed"
+                logger.info("预热完成，试运行自动授权验证交易")
+            else:
+                self.trial_state = "ready_to_arm"
+                logger.info("预热完成，等待前端授权验证交易")
+                return
 
         # Authorization is accepted out-of-band; the next valid bar sends one entry order.
         if not self._bought and not self._entry_order_sent:

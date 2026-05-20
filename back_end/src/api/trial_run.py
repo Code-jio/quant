@@ -6,6 +6,7 @@ import copy
 import json
 import os
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -29,6 +30,7 @@ class _TrialRunState:
         self.allowed_symbol = ""
         self.last_errors: List[str] = []
         self.authorized = False
+        self.prepared_at = 0.0
 
     def update(
         self,
@@ -37,6 +39,7 @@ class _TrialRunState:
         allowed_symbol: Optional[str] = None,
         errors: Optional[List[str]] = None,
         authorized: Optional[bool] = None,
+        mark_prepared: bool = False,
     ) -> None:
         with self._lock:
             if state is not None:
@@ -47,9 +50,16 @@ class _TrialRunState:
                 self.last_errors = list(errors)
             if authorized is not None:
                 self.authorized = authorized
+            if mark_prepared:
+                self.prepared_at = time.time()
 
     def reset(self) -> None:
-        self.update(state="idle", allowed_symbol="", errors=[], authorized=False)
+        with self._lock:
+            self.state = "idle"
+            self.allowed_symbol = ""
+            self.last_errors = []
+            self.authorized = False
+            self.prepared_at = 0.0
 
     def snapshot(self) -> Dict[str, Any]:
         with self._lock:
@@ -58,6 +68,7 @@ class _TrialRunState:
                 "allowed_symbol": self.allowed_symbol,
                 "errors": list(self.last_errors),
                 "authorized": self.authorized,
+                "prepared_at": self.prepared_at,
             }
 
 
@@ -126,6 +137,19 @@ def _float_value(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _bool_value(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return default
+
+
 def _validate_trial_config(config: Dict[str, Any]) -> tuple[str, List[str]]:
     errors: List[str] = []
     trial_run = config.get("trial_run") if isinstance(config.get("trial_run"), dict) else {}
@@ -191,6 +215,8 @@ def _safe_config_response(path: Path, config: Dict[str, Any], allowed_symbol: st
         or trading.get("environment")
         or "测试"
     )
+    auto_arm = _bool_value(trial_run.get("auto_arm"), True)
+    bar_timeout_seconds = max(1.0, _float_value(trial_run.get("bar_timeout_seconds"), 90.0))
     safe_strategy = _safe_subset(
         strategy,
         {"name", "symbol", "volume", "warmup_bars", "hold_bars", "contract_multiplier", "max_errors", "order_type"},
@@ -226,6 +252,8 @@ def _safe_config_response(path: Path, config: Dict[str, Any], allowed_symbol: st
         "enabled": trial_run.get("enabled") is True,
         "allowed_symbol": allowed_symbol,
         "manual_open_enabled": bool(trial_run.get("manual_open_enabled", False)),
+        "auto_arm": auto_arm,
+        "bar_timeout_seconds": bar_timeout_seconds,
     }
     safe_config = {
         "trial_run": safe_trial_run,
@@ -245,6 +273,8 @@ def _safe_config_response(path: Path, config: Dict[str, Any], allowed_symbol: st
         environment=environment,
         allowed_symbol=allowed_symbol,
         manual_open_enabled=bool(trial_run.get("manual_open_enabled", False)),
+        auto_arm=auto_arm,
+        bar_timeout_seconds=bar_timeout_seconds,
         trading=safe_trading,
         strategy=safe_strategy,
         risk=safe_risk,
@@ -274,7 +304,6 @@ def _status_response(trading_state: Any) -> TrialRunStatusResponse:
     engine = trading_state.primary_engine()
     strategy = getattr(entry, "strategy", None) if entry else None
     snapshot = _strategy_snapshot(strategy) if strategy else {}
-    authorized = bool(snapshot.get("authorized", state["authorized"]))
     running = bool(entry and getattr(entry, "status", "") == "running")
     connected = _gateway_connected(engine)
     gateway_status = "stopped"
@@ -287,17 +316,36 @@ def _status_response(trading_state: Any) -> TrialRunStatusResponse:
 
     config_valid = False
     config_errors: List[str] = []
+    config: Dict[str, Any] = {}
     try:
-        _, _, allowed_symbol, config_errors = _read_trial_config(allow_example=True)
+        _, config, allowed_symbol, config_errors = _read_trial_config(allow_example=True)
         config_valid = not config_errors
     except Exception as exc:
         allowed_symbol = state["allowed_symbol"]
         config_errors = [str(exc)]
+    trial_config = config.get("trial_run") if isinstance(config.get("trial_run"), dict) else {}
+    auto_arm = _bool_value(trial_config.get("auto_arm"), True)
+    bar_timeout_seconds = max(1.0, _float_value(trial_config.get("bar_timeout_seconds"), 90.0))
+    snapshot_state = str(snapshot.get("state") or "")
+    auto_authorized = auto_arm and entry is not None and snapshot_state not in {"error", "completed"}
+    authorized = bool(snapshot.get("authorized", state["authorized"]) or auto_authorized)
 
     response_state = str(snapshot.get("state") or state["state"] or ("connected" if connected else "disconnected"))
     if risk.get("emergency_stop"):
         response_state = "emergency_stopped"
     symbol = str(snapshot.get("symbol") or state["allowed_symbol"] or allowed_symbol or "")
+    bar_count = _int_value(snapshot.get("bar_count"))
+    no_bar_wait_seconds = 0.0
+    market_warning = ""
+    if entry is not None and not bool(snapshot.get("completed", False)) and bar_count <= 0:
+        prepared_at = _float_value(state.get("prepared_at"), 0.0)
+        if prepared_at > 0:
+            no_bar_wait_seconds = max(0.0, round(time.time() - prepared_at, 1))
+            if no_bar_wait_seconds >= bar_timeout_seconds:
+                market_warning = (
+                    f"已等待 {int(no_bar_wait_seconds)} 秒仍未形成首根 Bar。"
+                    f"请检查 {symbol or allowed_symbol} 合约是否可交易、是否处于交易时段、行情前置是否推送 tick。"
+                )
     position_volume = 0
     if strategy is not None and symbol:
         try:
@@ -320,12 +368,17 @@ def _status_response(trading_state: Any) -> TrialRunStatusResponse:
         ready_to_arm=bool(snapshot.get("ready_to_arm", False)),
         completed=bool(snapshot.get("completed", False)),
         running=running,
-        bar_count=_int_value(snapshot.get("bar_count")),
+        auto_arm=auto_arm,
+        bar_count=bar_count,
         warmup_bars=_int_value(snapshot.get("warmup_bars")),
         hold_bars=_int_value(snapshot.get("hold_bars")),
         bars_since_entry=_int_value(snapshot.get("bars_since_entry")),
+        bar_timeout_seconds=bar_timeout_seconds,
+        no_bar_wait_seconds=no_bar_wait_seconds,
+        market_warning=market_warning,
+        last_bar_time=str(snapshot.get("last_bar_time") or ""),
         position_volume=position_volume,
-        last_reject_reason=last_reject_reason,
+        last_reject_reason=str(snapshot.get("last_reject_reason") or last_reject_reason or ""),
         risk=risk,
         validation_errors=state["errors"] or config_errors,
         snapshot=snapshot,
@@ -452,18 +505,28 @@ def register_trial_run_routes(
         from ..strategy import create_strategy
 
         strategy_config = copy.deepcopy(config.get("strategy", {}))
+        trial_config = config.get("trial_run") if isinstance(config.get("trial_run"), dict) else {}
+        strategy_config["auto_arm"] = _bool_value(trial_config.get("auto_arm"), True)
         strategy = create_strategy("verify", strategy_config)
         engine.set_strategy(strategy)
         trading_config = copy.deepcopy(config.get("trading", {}))
         risk_config = copy.deepcopy(config.get("risk", {}))
         start_config = {**trading_config, "risk": risk_config}
+        if strategy_config["auto_arm"] and _int_value(strategy_config.get("warmup_bars"), 20) <= 1:
+            start_config["emit_first_tick_bar"] = True
         if not engine.start(start_config):
             trial_run_state.update(state="error", allowed_symbol=allowed_symbol, errors=["试运行策略启动失败"], authorized=False)
             raise HTTPException(status_code=500, detail="试运行策略启动失败")
 
         trading_state.register(TRIAL_STRATEGY_ID, strategy, engine, _without_secret_fields(config))
         subscribe_market_ticks(engine, [allowed_symbol])
-        trial_run_state.update(state="prepared", allowed_symbol=allowed_symbol, errors=[], authorized=False)
+        trial_run_state.update(
+            state="prepared",
+            allowed_symbol=allowed_symbol,
+            errors=[],
+            authorized=bool(strategy_config["auto_arm"]),
+            mark_prepared=True,
+        )
         record_audit(
             "trial_run",
             "prepare",

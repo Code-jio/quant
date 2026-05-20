@@ -173,6 +173,8 @@ class TrialRunConfigResponse(BaseModel):
     environment: str = "测试"
     allowed_symbol: str = ""
     manual_open_enabled: bool = False
+    auto_arm: bool = True
+    bar_timeout_seconds: float = 90.0
     trading: Dict[str, Any] = Field(default_factory=dict)
     strategy: Dict[str, Any] = Field(default_factory=dict)
     risk: Dict[str, Any] = Field(default_factory=dict)
@@ -196,10 +198,15 @@ class TrialRunStatusResponse(BaseModel):
     ready_to_arm: bool = False
     completed: bool = False
     running: bool = False
+    auto_arm: bool = True
     bar_count: int = 0
     warmup_bars: int = 0
     hold_bars: int = 0
     bars_since_entry: int = 0
+    bar_timeout_seconds: float = 90.0
+    no_bar_wait_seconds: float = 0.0
+    market_warning: str = ""
+    last_bar_time: str = ""
     position_volume: int = 0
     last_reject_reason: str = ""
     risk: Dict[str, Any] = Field(default_factory=dict)
