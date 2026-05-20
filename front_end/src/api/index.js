@@ -148,7 +148,7 @@ export const emergencyStop = (body = {}) =>
 export const resumeTrading = () =>
   request('/risk/resume', { method: 'POST' })
 
-export const fetchTradingReconcile = () => request('/trading/reconcile')
+export const fetchTradingReconcile = (options = {}) => request('/trading/reconcile', options)
 
 // ── 试运行操作台 ──────────────────────────────────────────────────────────
 export const fetchTrialRunConfig = () => request('/trial-run/config')

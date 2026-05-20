@@ -8,7 +8,7 @@
         </el-button>
         <div class="title-block">
           <h1>试运行操作台</h1>
-          <span>2 秒轮询 · 单合约验证 · 风控闭环</span>
+          <span>短预热 · 自动验证 · 单合约风控闭环</span>
         </div>
       </div>
       <div class="topbar-right">
@@ -106,10 +106,10 @@
                 连接
               </el-button>
               <el-button type="warning" plain :loading="actionLoading.prepare" :disabled="!canPrepare" @click="handlePrepare">
-                <el-icon><Operation /></el-icon>
-                准备策略
+                <el-icon><VideoPlay /></el-icon>
+                {{ prepareButtonLabel }}
               </el-button>
-              <el-button type="success" plain :loading="actionLoading.arm" :disabled="!canArm" @click="handleArm">
+              <el-button v-if="!autoArm" type="success" plain :loading="actionLoading.arm" :disabled="!canArm" @click="handleArm">
                 <el-icon><VideoPlay /></el-icon>
                 授权交易
               </el-button>
@@ -159,6 +159,7 @@
               :show-text="false"
               color="#58a6ff"
             />
+            <p v-if="marketWarning" class="market-warning">{{ marketWarning }}</p>
           </div>
         </div>
       </section>
@@ -188,8 +189,28 @@
           </div>
           <div class="monitor-grid">
             <div class="metric-cell">
+              <span>实时权益</span>
+              <strong class="mono">{{ formatMoney(accountEquity) }}</strong>
+            </div>
+            <div class="metric-cell">
+              <span>可用资金</span>
+              <strong class="mono">{{ formatMoney(accountAvailable) }}</strong>
+            </div>
+            <div class="metric-cell">
+              <span>保证金占用</span>
+              <strong class="mono">{{ formatMoney(accountMargin) }}</strong>
+            </div>
+            <div class="metric-cell">
+              <span>浮动盈亏</span>
+              <strong class="mono" :class="pnlClass(accountPnl)">{{ formatMoney(accountPnl) }}</strong>
+            </div>
+            <div class="metric-cell">
               <span>bar_count / warmup_bars</span>
               <strong class="mono">{{ barCount }} / {{ warmupBars }}</strong>
+            </div>
+            <div class="metric-cell">
+              <span>首根 Bar 等待</span>
+              <strong class="mono" :class="{ warn: Boolean(marketWarning) }">{{ noBarWaitText }}</strong>
             </div>
             <div class="metric-cell">
               <span>持仓数量</span>
@@ -321,6 +342,7 @@ import {
   fetchRiskStatus,
   fetchSystemLogs,
   fetchTrades,
+  fetchTradingReconcile,
   fetchTrialRunConfig,
   fetchTrialRunStatus,
   login,
@@ -341,6 +363,7 @@ const selectedFrontKey = ref('')
 const trialStatus = ref({})
 const authStatus = ref({})
 const riskStatus = ref({})
+const accountSnapshot = ref({})
 const orders = ref([])
 const trades = ref([])
 const positions = ref([])
@@ -440,9 +463,21 @@ const allowedSymbol = computed(() => (
 ))
 
 const statusSnapshot = computed(() => trialStatus.value.snapshot || {})
+const autoArm = computed(() => boolOf(
+  trialStatus.value.auto_arm
+  ?? config.value.auto_arm
+  ?? config.value.trial_run?.auto_arm,
+  true,
+))
 const barCount = computed(() => numberOf(trialStatus.value.bar_count ?? statusSnapshot.value.bar_count ?? trialStatus.value.bars, 0))
 const warmupBars = computed(() => Math.max(1, numberOf(trialStatus.value.warmup_bars ?? statusSnapshot.value.warmup_bars, 1)))
 const warmupPercent = computed(() => Math.min(100, Math.round((barCount.value / warmupBars.value) * 100)))
+const noBarWaitSeconds = computed(() => numberOf(trialStatus.value.no_bar_wait_seconds, 0))
+const noBarWaitText = computed(() => {
+  if (!prepared.value || barCount.value > 0) return '--'
+  return `${Math.round(noBarWaitSeconds.value)}s`
+})
+const marketWarning = computed(() => trialStatus.value.market_warning || '')
 const prepared = computed(() => Boolean(trialStatus.value.prepared || ['prepared', 'warming', 'warmup', 'ready_to_arm', 'armed', 'entry_pending', 'holding', 'closing', 'running', 'completed'].includes(statusCode.value)))
 const armed = computed(() => Boolean(trialStatus.value.authorized || trialStatus.value.armed || statusSnapshot.value.authorized || ['armed', 'entry_pending', 'holding', 'closing', 'running', 'completed'].includes(statusCode.value)))
 const closedLoop = computed(() => Boolean(trialStatus.value.completed || statusSnapshot.value.completed || trialStatus.value.closed_loop_completed || statusCode.value === 'completed'))
@@ -468,6 +503,7 @@ const canPrepare = computed(() => (
 ))
 const canArm = computed(() => (
   hasSession.value
+  && !autoArm.value
   && connected.value
   && prepared.value
   && !armed.value
@@ -480,12 +516,19 @@ const canEmergencyStop = computed(() => hasSession.value && connected.value && !
 const canResume = computed(() => hasSession.value && emergencyActive.value && !actionLoading.resume)
 const canCancelAll = computed(() => hasSession.value && connected.value && activeOrderCount.value > 0 && !actionLoading.cancelAll)
 const canQuickClose = computed(() => hasSession.value && connected.value && hasCloseablePosition.value && !actionLoading.close)
+const prepareButtonLabel = computed(() => autoArm.value ? '开始试运行' : '准备策略')
+const accountEquity = computed(() => numberOf(accountSnapshot.value.balance ?? accountSnapshot.value.equity, 0))
+const accountAvailable = computed(() => numberOf(accountSnapshot.value.available, 0))
+const accountMargin = computed(() => numberOf(accountSnapshot.value.margin, 0))
+const accountPnl = computed(() => numberOf(accountSnapshot.value.total_pnl ?? accountSnapshot.value.position_pnl, 0))
 
 const statusItems = computed(() => [
   { label: '账号', value: accountForm.username || authStatus.value.account_id || config.value.masked_account_id || '--' },
   { label: '环境', value: accountForm.environment || config.value.environment || '--' },
+  { label: '实时权益', value: formatMoney(accountEquity.value), className: 'mono' },
   { label: '唯一合约', value: allowedSymbol.value || '--', className: 'mono' },
   { label: '连接状态', value: connected.value ? '已连接' : '未连接', className: connected.value ? 'ok' : 'muted-strong' },
+  { label: '授权模式', value: autoArm.value ? '自动' : '手动' },
   { label: '试运行状态', value: trialStatusLabel.value, className: trialStatusType.value === 'danger' ? 'bad' : '' },
   { label: '急停状态', value: emergencyActive.value ? '急停中' : '正常', className: emergencyActive.value ? 'bad' : 'ok' },
 ])
@@ -507,9 +550,13 @@ const flowItems = computed(() => [
     state: warmupPercent.value >= 100 ? 'done' : prepared.value ? 'active' : 'idle',
   },
   {
-    label: '授权交易',
-    detail: armed.value ? '1 手验证开仓已授权' : '需二次确认',
-    state: armed.value ? 'done' : warmupPercent.value >= 100 ? 'active' : 'idle',
+    label: autoArm.value ? '自动验证' : '授权交易',
+    detail: autoArm.value
+      ? '首根有效 Bar 后自动发出 1 手验证开仓'
+      : armed.value ? '1 手验证开仓已授权' : '需二次确认',
+    state: autoArm.value
+      ? prepared.value ? 'done' : 'idle'
+      : armed.value ? 'done' : warmupPercent.value >= 100 ? 'active' : 'idle',
   },
   {
     label: '闭环完成',
@@ -545,8 +592,29 @@ function numberOf(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback
 }
 
+function boolOf(value, fallback = false) {
+  if (value === undefined || value === null || value === '') return fallback
+  if (typeof value === 'boolean') return value
+  const normalized = String(value).trim().toLowerCase()
+  if (['1', 'true', 'yes', 'on', 'enabled'].includes(normalized)) return true
+  if (['0', 'false', 'no', 'off', 'disabled'].includes(normalized)) return false
+  return fallback
+}
+
 function displayValue(value) {
   return value === undefined || value === null || value === '' ? '--' : String(value)
+}
+
+function formatMoney(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n === 0) return '--'
+  return `¥${n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+function pnlClass(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n === 0) return ''
+  return n > 0 ? 'ok' : 'bad'
 }
 
 function syncSelectedFront() {
@@ -609,9 +677,12 @@ function applyConfig(data = {}) {
   config.value = {
     ...data,
     raw_config: rawConfig,
+    trial_run: trialRun,
     trading,
     strategy,
     risk,
+    auto_arm: boolOf(data.auto_arm ?? trialRun.auto_arm, true),
+    bar_timeout_seconds: numberOf(data.bar_timeout_seconds ?? trialRun.bar_timeout_seconds, 90),
     allowed_symbol: data.allowed_symbol || trialRun.allowed_symbol || strategy.symbol || '',
     environment: data.environment || trialRun.vnpy_environment || trading.vnpy_environment || trading.environment || '测试',
   }
@@ -671,6 +742,7 @@ async function refreshAll(silent = true) {
     fetchTrades(noRedirect),
     fetchPositions(noRedirect),
     fetchSystemLogs({ limit: 200 }, noRedirect),
+    fetchTradingReconcile(noRedirect),
   ])
 
   if (results.some(result => result.status === 'rejected' && /未登录|401/.test(String(result.reason?.message || '')))) {
@@ -682,6 +754,9 @@ async function refreshAll(silent = true) {
   if (results[2].status === 'fulfilled') trades.value = normalizeList(results[2].value, ['trades'])
   if (results[3].status === 'fulfilled') positions.value = normalizeList(results[3].value, ['positions'])
   if (results[4].status === 'fulfilled') logs.value = normalizeList(results[4].value, ['logs'])
+  if (results[5].status === 'fulfilled') {
+    accountSnapshot.value = objectOrNull(results[5].value?.account) || {}
+  }
 
   refreshing.value = false
 }
@@ -748,12 +823,28 @@ async function handleLogin() {
       balance: res.balance,
     })
     authStatus.value = { ...authStatus.value, connected: true, account_id: res.account_id || accountForm.username }
+    accountSnapshot.value = { ...accountSnapshot.value, balance: res.balance }
     accountForm.password = ''
   }, '账户连接成功')
 }
 
 async function handlePrepare() {
-  await runAction('prepare', () => prepareTrialRun({ symbol: allowedSymbol.value }), '策略准备已发送')
+  if (autoArm.value && allowedSymbol.value) {
+    try {
+      await ElMessageBox.confirm(
+        `开始后将等待首根有效 Bar，并自动对 ${allowedSymbol.value} 发出 1 手验证开仓。确认继续？`,
+        '开始试运行确认',
+        { confirmButtonText: '开始试运行', cancelButtonText: '取消', type: 'warning' },
+      )
+    } catch {
+      return
+    }
+  }
+  await runAction(
+    'prepare',
+    () => prepareTrialRun({ symbol: allowedSymbol.value }),
+    autoArm.value ? '试运行已开始，等待首根有效 Bar' : '策略准备已发送',
+  )
 }
 
 async function handleArm() {
@@ -1108,6 +1199,13 @@ onUnmounted(stopPolling)
   border-top: 1px solid var(--q-border);
 }
 
+.market-warning {
+  margin: 10px 0 0;
+  color: var(--q-yellow);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
 .warmup-meta {
   justify-content: space-between;
   gap: 8px;
@@ -1122,7 +1220,7 @@ onUnmounted(stopPolling)
 }
 
 .monitor-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 .metric-cell {
