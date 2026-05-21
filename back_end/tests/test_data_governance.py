@@ -44,10 +44,8 @@ def test_detect_daily_bar_gap():
     assert report.sample_missing == ["2024-01-03T00:00:00"]
 
 
-def test_save_bars_records_metadata_and_quality():
-    artifact_dir = Path(".test-artifacts")
-    artifact_dir.mkdir(exist_ok=True)
-    db_path = artifact_dir / f"quotes-{uuid4().hex}.db"
+def test_save_bars_records_metadata_and_quality(tmp_path):
+    db_path = tmp_path / f"quotes-{uuid4().hex}.db"
     manager = DataManager(str(db_path), cache_ttl_seconds=30)
 
     try:
@@ -70,10 +68,8 @@ def test_save_bars_records_metadata_and_quality():
         db_path.unlink(missing_ok=True)
 
 
-def test_database_manager_upgrades_legacy_bars_table_with_ingested_at():
-    artifact_dir = Path(".test-artifacts")
-    artifact_dir.mkdir(exist_ok=True)
-    db_path = artifact_dir / f"legacy-quotes-{uuid4().hex}.db"
+def test_database_manager_upgrades_legacy_bars_table_with_ingested_at(tmp_path):
+    db_path = tmp_path / f"legacy-quotes-{uuid4().hex}.db"
 
     conn = sqlite3.connect(db_path)
     conn.execute(
@@ -125,10 +121,8 @@ def test_database_manager_upgrades_legacy_bars_table_with_ingested_at():
         db_path.unlink(missing_ok=True)
 
 
-def test_generate_sample_data_marks_synthetic_source(monkeypatch):
-    artifact_dir = Path(".test-artifacts")
-    artifact_dir.mkdir(exist_ok=True)
-    db_path = artifact_dir / f"synthetic-quotes-{uuid4().hex}.db"
+def test_generate_sample_data_marks_synthetic_source(monkeypatch, tmp_path):
+    db_path = tmp_path / f"synthetic-quotes-{uuid4().hex}.db"
     monkeypatch.delenv("QUANT_ENV", raising=False)
     monkeypatch.delenv("QUANT_ALLOW_SYNTHETIC_DATA", raising=False)
     manager = DataManager(str(db_path), cache_ttl_seconds=30)
@@ -144,10 +138,8 @@ def test_generate_sample_data_marks_synthetic_source(monkeypatch):
         db_path.unlink(missing_ok=True)
 
 
-def test_generate_sample_data_can_be_disabled_for_production(monkeypatch):
-    artifact_dir = Path(".test-artifacts")
-    artifact_dir.mkdir(exist_ok=True)
-    db_path = artifact_dir / f"no-synthetic-quotes-{uuid4().hex}.db"
+def test_generate_sample_data_can_be_disabled_for_production(monkeypatch, tmp_path):
+    db_path = tmp_path / f"no-synthetic-quotes-{uuid4().hex}.db"
     monkeypatch.setenv("QUANT_ALLOW_SYNTHETIC_DATA", "false")
     manager = DataManager(str(db_path), cache_ttl_seconds=30)
 
