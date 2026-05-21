@@ -18,7 +18,7 @@ test('public pages render without a hard crash', async ({ page }) => {
   await expect(page.locator('.trial-run-page')).toBeVisible()
   await expect(page.getByRole('heading', { name: '试运行操作台' })).toBeVisible()
   await expect(page.getByRole('button', { name: '准备策略' })).toBeDisabled()
-  await expect(page.getByRole('button', { name: '授权交易' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '开始验证交易' })).toBeDisabled()
   await expect(page.getByRole('button', { name: '一键撤单' })).toBeDisabled()
   await expect(page.getByRole('button', { name: '快捷平仓' })).toBeDisabled()
 })

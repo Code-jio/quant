@@ -109,9 +109,9 @@
                 <el-icon><Operation /></el-icon>
                 准备策略
               </el-button>
-              <el-button type="success" plain :loading="actionLoading.arm" :disabled="!canArm" @click="handleArm">
+              <el-button type="success" plain :loading="actionLoading.start" :disabled="!canStart" @click="handleStart">
                 <el-icon><VideoPlay /></el-icon>
-                授权交易
+                开始验证交易
               </el-button>
               <el-button type="danger" plain :loading="actionLoading.stop" :disabled="!canStop" @click="handleStop">
                 <el-icon><SwitchButton /></el-icon>
@@ -148,13 +148,13 @@
             </div>
           </div>
 
-          <div class="warmup-box">
-            <div class="warmup-meta">
-              <span>预热进度</span>
-              <strong class="mono">{{ barCount }} / {{ warmupBars }}</strong>
+          <div class="readiness-box">
+            <div class="readiness-meta">
+              <span>行情就绪</span>
+              <strong class="mono">{{ barCount }} / {{ readinessBars }}</strong>
             </div>
             <el-progress
-              :percentage="warmupPercent"
+              :percentage="readinessPercent"
               :stroke-width="8"
               :show-text="false"
               color="#58a6ff"
@@ -188,8 +188,8 @@
           </div>
           <div class="monitor-grid">
             <div class="metric-cell">
-              <span>bar_count / warmup_bars</span>
-              <strong class="mono">{{ barCount }} / {{ warmupBars }}</strong>
+              <span>行情 bar / 就绪阈值</span>
+              <strong class="mono">{{ barCount }} / {{ readinessBars }}</strong>
             </div>
             <div class="metric-cell">
               <span>持仓数量</span>
@@ -311,7 +311,6 @@ import {
   WarningFilled,
 } from '@element-plus/icons-vue'
 import {
-  armTrialRun,
   cancelAllOrders,
   closePosition,
   emergencyStop,
@@ -327,6 +326,7 @@ import {
   prepareTrialRun,
   resetTrialRun,
   resumeTrading,
+  startTrialRun,
   stopTrialRun,
 } from '@/api/index.js'
 
@@ -368,7 +368,7 @@ const rules = {
 const actionLoading = reactive({
   connect: false,
   prepare: false,
-  arm: false,
+  start: false,
   stop: false,
   reset: false,
   emergency: false,
@@ -383,10 +383,13 @@ const STATUS_LABELS = {
   disconnected: '未连接',
   idle: '待准备',
   prepared: '已准备',
-  warming: '预热中',
-  warmup: '预热中',
-  ready_to_arm: '待授权',
-  armed: '已授权',
+  waiting_market_data: '等行情',
+  warming: '等行情',
+  warmup: '等行情',
+  ready_to_start: '可开始',
+  ready_to_arm: '可开始',
+  started: '已开始',
+  armed: '已开始',
   entry_pending: '开仓待成',
   holding: '持仓中',
   closing: '平仓中',
@@ -441,17 +444,33 @@ const allowedSymbol = computed(() => (
 
 const statusSnapshot = computed(() => trialStatus.value.snapshot || {})
 const barCount = computed(() => numberOf(trialStatus.value.bar_count ?? statusSnapshot.value.bar_count ?? trialStatus.value.bars, 0))
-const warmupBars = computed(() => Math.max(1, numberOf(trialStatus.value.warmup_bars ?? statusSnapshot.value.warmup_bars, 1)))
-const warmupPercent = computed(() => Math.min(100, Math.round((barCount.value / warmupBars.value) * 100)))
-const prepared = computed(() => Boolean(trialStatus.value.prepared || ['prepared', 'warming', 'warmup', 'ready_to_arm', 'armed', 'entry_pending', 'holding', 'closing', 'running', 'completed'].includes(statusCode.value)))
-const armed = computed(() => Boolean(trialStatus.value.authorized || trialStatus.value.armed || statusSnapshot.value.authorized || ['armed', 'entry_pending', 'holding', 'closing', 'running', 'completed'].includes(statusCode.value)))
+const readinessBars = computed(() => Math.max(1, numberOf(
+  trialStatus.value.readiness_bars
+  ?? statusSnapshot.value.readiness_bars
+  ?? trialStatus.value.warmup_bars
+  ?? statusSnapshot.value.warmup_bars,
+  1,
+)))
+const marketReady = computed(() => Boolean(
+  trialStatus.value.market_ready
+  || statusSnapshot.value.market_ready
+  || trialStatus.value.ready_to_arm
+  || statusSnapshot.value.ready_to_arm
+  || ['ready_to_start', 'ready_to_arm', 'started', 'armed', 'entry_pending', 'holding', 'closing', 'running', 'completed'].includes(statusCode.value),
+))
+const readinessPercent = computed(() => {
+  if (marketReady.value) return 100
+  return Math.min(100, Math.round((barCount.value / readinessBars.value) * 100))
+})
+const prepared = computed(() => Boolean(trialStatus.value.prepared || ['prepared', 'waiting_market_data', 'warming', 'warmup', 'ready_to_start', 'ready_to_arm', 'started', 'armed', 'entry_pending', 'holding', 'closing', 'running', 'completed'].includes(statusCode.value)))
+const started = computed(() => Boolean(trialStatus.value.started || trialStatus.value.authorized || trialStatus.value.armed || statusSnapshot.value.started || statusSnapshot.value.authorized || ['started', 'armed', 'entry_pending', 'holding', 'closing', 'running', 'completed'].includes(statusCode.value)))
 const closedLoop = computed(() => Boolean(trialStatus.value.completed || statusSnapshot.value.completed || trialStatus.value.closed_loop_completed || statusCode.value === 'completed'))
 const statusCode = computed(() => String(trialStatus.value.status || trialStatus.value.state || 'idle').toLowerCase())
 const trialStatusLabel = computed(() => STATUS_LABELS[statusCode.value] || trialStatus.value.status || trialStatus.value.state || '待准备')
 const trialStatusType = computed(() => {
   if (['error', 'emergency_stopped'].includes(statusCode.value)) return 'danger'
-  if (['armed', 'entry_pending', 'holding', 'running', 'completed'].includes(statusCode.value)) return 'success'
-  if (['warming', 'warmup', 'prepared', 'ready_to_arm', 'closing'].includes(statusCode.value)) return 'warning'
+  if (['started', 'armed', 'entry_pending', 'holding', 'running', 'completed'].includes(statusCode.value)) return 'success'
+  if (['waiting_market_data', 'warming', 'warmup', 'prepared', 'ready_to_start', 'ready_to_arm', 'closing'].includes(statusCode.value)) return 'warning'
   return 'info'
 })
 
@@ -464,15 +483,15 @@ const canPrepare = computed(() => (
   hasSession.value
   && connected.value
   && !actionLoading.prepare
-  && !['armed', 'entry_pending', 'holding', 'closing'].includes(statusCode.value)
+  && !['started', 'armed', 'entry_pending', 'holding', 'closing'].includes(statusCode.value)
 ))
-const canArm = computed(() => (
+const canStart = computed(() => (
   hasSession.value
   && connected.value
   && prepared.value
-  && !armed.value
-  && Boolean(trialStatus.value.ready_to_arm || statusSnapshot.value.ready_to_arm || statusCode.value === 'ready_to_arm')
-  && !actionLoading.arm
+  && !started.value
+  && marketReady.value
+  && !actionLoading.start
 ))
 const canStop = computed(() => hasSession.value && prepared.value && !actionLoading.stop)
 const canReset = computed(() => hasSession.value && !actionLoading.reset)
@@ -502,19 +521,19 @@ const flowItems = computed(() => [
     state: prepared.value ? 'done' : connected.value ? 'active' : 'idle',
   },
   {
-    label: '预热进度',
-    detail: `${barCount.value}/${warmupBars.value} bars`,
-    state: warmupPercent.value >= 100 ? 'done' : prepared.value ? 'active' : 'idle',
+    label: '行情就绪',
+    detail: marketReady.value ? '已收到有效行情 bar' : '等待首根有效行情 bar',
+    state: marketReady.value ? 'done' : prepared.value ? 'active' : 'idle',
   },
   {
-    label: '授权交易',
-    detail: armed.value ? '1 手验证开仓已授权' : '需二次确认',
-    state: armed.value ? 'done' : warmupPercent.value >= 100 ? 'active' : 'idle',
+    label: '开始验证交易',
+    detail: started.value ? '验证开仓流程已启动' : '点击后等待下一根有效 bar 发单',
+    state: started.value ? 'done' : marketReady.value ? 'active' : 'idle',
   },
   {
     label: '闭环完成',
     detail: closedLoop.value ? '验证链路完成' : '等待成交与平仓回报',
-    state: closedLoop.value ? 'done' : armed.value ? 'active' : 'idle',
+    state: closedLoop.value ? 'done' : started.value ? 'active' : 'idle',
   },
 ])
 
@@ -756,23 +775,23 @@ async function handlePrepare() {
   await runAction('prepare', () => prepareTrialRun({ symbol: allowedSymbol.value }), '策略准备已发送')
 }
 
-async function handleArm() {
+async function handleStart() {
   if (!allowedSymbol.value) {
-    ElMessage.warning('缺少 config.allowed_symbol，无法授权验证开仓')
+    ElMessage.warning('缺少 config.allowed_symbol，无法开始验证开仓')
     return
   }
 
   try {
     await ElMessageBox.confirm(
-      `确认授权交易？系统将仅对 ${allowedSymbol.value} 发 1 手验证开仓。`,
-      '授权交易确认',
-      { confirmButtonText: '确认授权', cancelButtonText: '取消', type: 'warning' },
+      `确认开始验证交易？系统将仅对 ${allowedSymbol.value} 发 1 手验证开仓。`,
+      '开始验证交易确认',
+      { confirmButtonText: '开始验证', cancelButtonText: '取消', type: 'warning' },
     )
   } catch {
     return
   }
 
-  await runAction('arm', () => armTrialRun({ symbol: allowedSymbol.value, volume: 1 }), '授权交易已发送')
+  await runAction('start', () => startTrialRun({ symbol: allowedSymbol.value, volume: 1 }), '开始验证交易已发送')
 }
 
 async function handleStop() {
@@ -897,7 +916,7 @@ onUnmounted(stopPolling)
 .topbar-right,
 .action-row,
 .danger-row,
-.warmup-meta {
+.readiness-meta {
   display: flex;
   align-items: center;
 }
@@ -1039,7 +1058,7 @@ onUnmounted(stopPolling)
 }
 
 .account-form,
-.flow-panel .warmup-box,
+.flow-panel .readiness-box,
 .risk-grid,
 .monitor-grid,
 .danger-row {
@@ -1104,11 +1123,11 @@ onUnmounted(stopPolling)
 .flow-item.done .flow-mark { color: var(--q-green); }
 .flow-item.active .flow-mark { color: var(--q-blue); }
 
-.warmup-box {
+.readiness-box {
   border-top: 1px solid var(--q-border);
 }
 
-.warmup-meta {
+.readiness-meta {
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 8px;
