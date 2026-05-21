@@ -151,7 +151,7 @@
           <div class="readiness-box">
             <div class="readiness-meta">
               <span>行情就绪</span>
-              <strong class="mono">{{ barCount }} / {{ readinessBars }}</strong>
+              <strong class="mono">{{ tickCount }} / {{ readinessBars }}</strong>
             </div>
             <el-progress
               :percentage="readinessPercent"
@@ -188,8 +188,8 @@
           </div>
           <div class="monitor-grid">
             <div class="metric-cell">
-              <span>行情 bar / 就绪阈值</span>
-              <strong class="mono">{{ barCount }} / {{ readinessBars }}</strong>
+              <span>行情 tick / 就绪阈值</span>
+              <strong class="mono">{{ tickCount }} / {{ readinessBars }}</strong>
             </div>
             <div class="metric-cell">
               <span>持仓数量</span>
@@ -444,6 +444,7 @@ const allowedSymbol = computed(() => (
 
 const statusSnapshot = computed(() => trialStatus.value.snapshot || {})
 const barCount = computed(() => numberOf(trialStatus.value.bar_count ?? statusSnapshot.value.bar_count ?? trialStatus.value.bars, 0))
+const tickCount = computed(() => numberOf(trialStatus.value.tick_count ?? statusSnapshot.value.tick_count, barCount.value))
 const readinessBars = computed(() => Math.max(1, numberOf(
   trialStatus.value.readiness_bars
   ?? statusSnapshot.value.readiness_bars
@@ -460,7 +461,7 @@ const marketReady = computed(() => Boolean(
 ))
 const readinessPercent = computed(() => {
   if (marketReady.value) return 100
-  return Math.min(100, Math.round((barCount.value / readinessBars.value) * 100))
+  return Math.min(100, Math.round((tickCount.value / readinessBars.value) * 100))
 })
 const prepared = computed(() => Boolean(trialStatus.value.prepared || ['prepared', 'waiting_market_data', 'warming', 'warmup', 'ready_to_start', 'ready_to_arm', 'started', 'armed', 'entry_pending', 'holding', 'closing', 'running', 'completed'].includes(statusCode.value)))
 const started = computed(() => Boolean(trialStatus.value.started || trialStatus.value.authorized || trialStatus.value.armed || statusSnapshot.value.started || statusSnapshot.value.authorized || ['started', 'armed', 'entry_pending', 'holding', 'closing', 'running', 'completed'].includes(statusCode.value)))
@@ -509,6 +510,27 @@ const statusItems = computed(() => [
   { label: '急停状态', value: emergencyActive.value ? '急停中' : '正常', className: emergencyActive.value ? 'bad' : 'ok' },
 ])
 
+const lastMarketPrice = computed(() => numberOf(
+  trialStatus.value.last_market_price ?? statusSnapshot.value.last_market_price,
+  0,
+))
+const lastMarketTimestamp = computed(() => (
+  trialStatus.value.last_market_timestamp
+  || statusSnapshot.value.last_market_timestamp
+  || ''
+))
+const marketDataAgeSeconds = computed(() => numberOf(
+  trialStatus.value.market_data_age_seconds ?? statusSnapshot.value.market_data_age_seconds,
+  0,
+))
+const latestMarketDetail = computed(() => {
+  if (!lastMarketTimestamp.value && lastMarketPrice.value <= 0) return ''
+  const price = lastMarketPrice.value > 0 ? ` ${lastMarketPrice.value}` : ''
+  const time = lastMarketTimestamp.value ? ` ${String(lastMarketTimestamp.value).replace('T', ' ').slice(0, 19)}` : ''
+  const age = marketDataAgeSeconds.value > 0 ? ` ${Math.round(marketDataAgeSeconds.value)}秒前` : ''
+  return `${time}${price}${age}`.trim()
+})
+
 const flowItems = computed(() => [
   {
     label: '连接账户',
@@ -522,12 +544,16 @@ const flowItems = computed(() => [
   },
   {
     label: '行情就绪',
-    detail: marketReady.value ? '已收到有效行情 bar' : '等待首根有效行情 bar',
+    detail: marketReady.value
+      ? `已收到有效行情 tick${latestMarketDetail.value ? `：${latestMarketDetail.value}` : ''}`
+      : latestMarketDetail.value
+        ? `最近 tick：${latestMarketDetail.value}，等待新 tick`
+        : '等待首个有效行情 tick',
     state: marketReady.value ? 'done' : prepared.value ? 'active' : 'idle',
   },
   {
     label: '开始验证交易',
-    detail: started.value ? '验证开仓流程已启动' : '点击后等待下一根有效 bar 发单',
+    detail: started.value ? '验证开仓流程已启动' : '点击后等待下一笔有效 tick 发单',
     state: started.value ? 'done' : marketReady.value ? 'active' : 'idle',
   },
   {

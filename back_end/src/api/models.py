@@ -198,11 +198,15 @@ class TrialRunStatusResponse(BaseModel):
     ready_to_arm: bool = False
     completed: bool = False
     running: bool = False
+    tick_count: int = 0
     bar_count: int = 0
     warmup_bars: int = 0
     readiness_bars: int = 0
     hold_bars: int = 0
     bars_since_entry: int = 0
+    last_market_price: float = 0.0
+    last_market_timestamp: str = ""
+    market_data_age_seconds: float = 0.0
     position_volume: int = 0
     last_reject_reason: str = ""
     risk: Dict[str, Any] = Field(default_factory=dict)

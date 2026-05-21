@@ -153,3 +153,39 @@ def test_strategy_is_notified_when_auto_signal_is_rejected_by_risk():
 
     assert gateway.sent_signals == []
     assert strategy.reject_reason == "Market orders are disabled by risk config"
+
+
+def test_verify_strategy_uses_live_tick_for_readiness_and_entry_dispatch():
+    gateway = RecordingGateway()
+    engine = TradingEngine(gateway)
+
+    from src.strategy.strategies.verify import VerifyStrategy
+
+    strategy = VerifyStrategy("verify", {"symbol": "rb2505", "warmup_bars": 20, "readiness_bars": 1, "volume": 1})
+    engine.set_strategy(strategy)
+
+    assert engine.start({
+        "initial_capital": 100000.0,
+        "risk": {
+            "allowed_symbols": ["rb2505"],
+            "max_order_volume": 1,
+            "max_position_volume": 1,
+            "max_market_data_age_seconds": 30,
+            "allow_market_orders": False,
+        },
+    }) is True
+
+    start = datetime.now()
+    engine.on_tick(make_tick("rb2505", 3800.0, start))
+
+    assert strategy.snapshot()["state"] == "ready_to_start"
+    assert strategy.snapshot()["market_ready"] is True
+    assert strategy.snapshot()["bar_count"] == 0
+
+    assert strategy.start_verification() is True
+    engine.on_tick(make_tick("rb2505", 3810.0, start + timedelta(seconds=1)))
+
+    assert len(strategy.signals) == 1
+    assert len(gateway.sent_signals) == 1
+    assert gateway.sent_signals[0].symbol == "rb2505"
+    assert gateway.sent_signals[0].price == 3810.0

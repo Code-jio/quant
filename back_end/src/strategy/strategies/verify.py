@@ -28,10 +28,13 @@ class VerifyStrategy(StrategyBase):
         self._order_type = self._parse_order_type(self.params.get("order_type", "limit"))
 
         self._bar_count = 0
+        self._tick_count = 0
         self._bars_since_entry = 0
         self._bought = False
         self._closed = False
         self._entry_price = 0.0
+        self._last_market_price = 0.0
+        self._last_market_timestamp = None
         self.trade_authorized = False
         self.market_ready = False
         self.ready_to_arm = False
@@ -81,6 +84,7 @@ class VerifyStrategy(StrategyBase):
             "ready_to_arm": self.ready_to_arm,
             "completed": self.completed,
             "bar_count": self._bar_count,
+            "tick_count": self._tick_count,
             "warmup_bars": self.warmup_bars,
             "readiness_bars": self.readiness_bars,
             "hold_bars": self.hold_bars,
@@ -91,11 +95,63 @@ class VerifyStrategy(StrategyBase):
             "entry_order_sent": self._entry_order_sent,
             "close_order_sent": self._close_order_sent,
             "order_type": self._order_type.value,
+            "last_market_price": self._last_market_price,
+            "last_market_timestamp": (
+                self._last_market_timestamp.isoformat()
+                if hasattr(self._last_market_timestamp, "isoformat")
+                else str(self._last_market_timestamp or "")
+            ),
             "last_reject_reason": self._last_reject_reason,
         }
 
     def on_start(self):
-        logger.info("策略启动，等待行情就绪... (需 %d 根有效 bar)", self.readiness_bars)
+        logger.info("策略启动，等待有效行情 tick... (阈值 %d)", self.readiness_bars)
+
+    def on_tick(self, tick):
+        if self.completed or self.trial_state == "error":
+            return
+
+        symbol = getattr(tick, "symbol", self.symbol)
+        price = float(getattr(tick, "last_price", 0) or 0)
+        if str(symbol) != str(self.symbol):
+            return
+        if price <= 0:
+            self._last_reject_reason = "invalid_market_price"
+            self.trial_state = "waiting_market_data"
+            logger.warning("行情 tick 价格无效，继续等待: %s last=%.2f", symbol, price)
+            return
+
+        self._tick_count += 1
+        self._last_market_price = price
+        self._last_market_timestamp = getattr(tick, "timestamp", None)
+        self.current_date = self._last_market_timestamp
+
+        if not self.market_ready:
+            self.market_ready = True
+            self.ready_to_arm = True
+            self.trial_state = "ready_to_start"
+            logger.info("收到有效行情 tick，等待开始验证交易: %s last=%.2f", symbol, price)
+            return
+
+        if self._entry_order_sent and not self._bought:
+            self.trial_state = "entry_pending"
+            return
+        if self._bought or self._closed:
+            return
+        if not self.trade_authorized:
+            self.trial_state = "ready_to_start"
+            return
+
+        logger.info("验证交易已开始，按最新 tick 发送验证买单")
+        signal = self.buy(self.symbol, price, self._volume, order_type=self._order_type)
+        if signal:
+            self._entry_order_sent = True
+            self._entry_price = price
+            self._bars_since_entry = 0
+            self.trial_state = "entry_pending"
+            logger.info("信号发出: 开仓 %s %d手@%.0f", self.symbol, self._volume, price)
+        else:
+            logger.error("开仓信号生成失败")
 
     def on_bar(self, bar: pd.Series):
         if self.completed or self.trial_state == "error":
@@ -171,9 +227,9 @@ class VerifyStrategy(StrategyBase):
             self.trial_state = "ready_to_start"
             return
 
-        # Verification start is accepted out-of-band; the next valid bar sends one entry order.
+        # Verification start is accepted out-of-band; the next valid market update sends one entry order.
         if not self._bought and not self._entry_order_sent:
-            logger.info("验证交易已开始，发送验证买单")
+            logger.info("验证交易已开始，按完成 bar 发送验证买单")
             signal = self.buy(self.symbol, close, self._volume, order_type=self._order_type)
             if signal:
                 self._entry_order_sent = True

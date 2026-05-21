@@ -6,6 +6,7 @@ import copy
 import json
 import os
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -278,6 +279,30 @@ def _strategy_snapshot(strategy: Any) -> Dict[str, Any]:
     return {}
 
 
+def _timestamp_to_text(value: Any) -> str:
+    if not value:
+        return ""
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def _market_data_age_seconds(value: Any) -> float:
+    if not value:
+        return 0.0
+    try:
+        if isinstance(value, (int, float)):
+            return max(0.0, datetime.now().timestamp() - float(value))
+        if isinstance(value, str):
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if isinstance(value, datetime):
+            now = datetime.now(value.tzinfo) if value.tzinfo else datetime.now()
+            return max(0.0, (now - value).total_seconds())
+    except (TypeError, ValueError):
+        return 0.0
+    return 0.0
+
+
 def _status_response(trading_state: Any) -> TrialRunStatusResponse:
     state = trial_run_state.snapshot()
     entry = trading_state.get(TRIAL_STRATEGY_ID)
@@ -310,6 +335,26 @@ def _status_response(trading_state: Any) -> TrialRunStatusResponse:
     if risk.get("emergency_stop"):
         response_state = "emergency_stopped"
     symbol = str(snapshot.get("symbol") or state["allowed_symbol"] or allowed_symbol or "")
+    market_data: Dict[str, Any] = {}
+    if engine is not None and symbol:
+        market_data_for_symbol = getattr(engine, "_market_data_for_symbol", None)
+        if callable(market_data_for_symbol):
+            try:
+                value = market_data_for_symbol(symbol)
+                if isinstance(value, dict):
+                    market_data = value
+            except Exception:
+                market_data = {}
+    last_market_price = _float_value(
+        snapshot.get("last_market_price")
+        or market_data.get("last_price")
+        or market_data.get("last")
+    )
+    last_market_timestamp = (
+        snapshot.get("last_market_timestamp")
+        or market_data.get("timestamp")
+        or ""
+    )
     position_volume = 0
     if strategy is not None and symbol:
         try:
@@ -334,11 +379,15 @@ def _status_response(trading_state: Any) -> TrialRunStatusResponse:
         ready_to_arm=bool(snapshot.get("ready_to_arm", False)),
         completed=bool(snapshot.get("completed", False)),
         running=running,
+        tick_count=_int_value(snapshot.get("tick_count")),
         bar_count=_int_value(snapshot.get("bar_count")),
         warmup_bars=_int_value(snapshot.get("warmup_bars")),
         readiness_bars=_int_value(snapshot.get("readiness_bars")),
         hold_bars=_int_value(snapshot.get("hold_bars")),
         bars_since_entry=_int_value(snapshot.get("bars_since_entry")),
+        last_market_price=last_market_price,
+        last_market_timestamp=_timestamp_to_text(last_market_timestamp),
+        market_data_age_seconds=_market_data_age_seconds(last_market_timestamp),
         position_volume=position_volume,
         last_reject_reason=last_reject_reason,
         risk=risk,

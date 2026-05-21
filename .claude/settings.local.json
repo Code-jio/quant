@@ -45,7 +45,9 @@
       "Bash(gh pr create --title 'feat: 实盘自动交易CLI验证 — BarAggregator + VerifyStrategy' --body ' *)",
       "Bash(npm list *)",
       "Bash(npm install *)",
-      "Bash(claude mcp *)"
+      "Bash(claude mcp *)",
+      "Bash(cd /e/test/quant/front_end && ls package.json)",
+      "Read(//e/e/test/quant/front_end/**)"
     ]
   }
 }

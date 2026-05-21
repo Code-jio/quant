@@ -218,6 +218,13 @@ class TradingEngine:
             available = getattr(self.gateway.account, "available", 0.0)
             if available > 0:
                 self.strategy.current_capital = available
+            on_tick = getattr(self.strategy, "on_tick", None)
+            if callable(on_tick):
+                try:
+                    on_tick(tick)
+                    self._dispatch_strategy_signals()
+                except Exception as e:
+                    logger.error(f"处理 Tick 策略回调失败: {e}")
 
         # Bar aggregation — only calls on_bar when a bar completes
         if self.bar_aggregator:
