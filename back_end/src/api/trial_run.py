@@ -193,7 +193,17 @@ def _safe_config_response(path: Path, config: Dict[str, Any], allowed_symbol: st
     )
     safe_strategy = _safe_subset(
         strategy,
-        {"name", "symbol", "volume", "warmup_bars", "hold_bars", "contract_multiplier", "max_errors", "order_type"},
+        {
+            "name",
+            "symbol",
+            "volume",
+            "warmup_bars",
+            "readiness_bars",
+            "hold_bars",
+            "contract_multiplier",
+            "max_errors",
+            "order_type",
+        },
     )
     safe_risk = _safe_subset(
         risk,
@@ -275,6 +285,8 @@ def _status_response(trading_state: Any) -> TrialRunStatusResponse:
     strategy = getattr(entry, "strategy", None) if entry else None
     snapshot = _strategy_snapshot(strategy) if strategy else {}
     authorized = bool(snapshot.get("authorized", state["authorized"]))
+    started = bool(snapshot.get("started", authorized))
+    market_ready = bool(snapshot.get("market_ready", snapshot.get("ready_to_arm", False)))
     running = bool(entry and getattr(entry, "status", "") == "running")
     connected = _gateway_connected(engine)
     gateway_status = "stopped"
@@ -317,11 +329,14 @@ def _status_response(trading_state: Any) -> TrialRunStatusResponse:
         gateway_connected=connected,
         prepared=entry is not None,
         authorized=authorized,
+        started=started,
+        market_ready=market_ready,
         ready_to_arm=bool(snapshot.get("ready_to_arm", False)),
         completed=bool(snapshot.get("completed", False)),
         running=running,
         bar_count=_int_value(snapshot.get("bar_count")),
         warmup_bars=_int_value(snapshot.get("warmup_bars")),
+        readiness_bars=_int_value(snapshot.get("readiness_bars")),
         hold_bars=_int_value(snapshot.get("hold_bars")),
         bars_since_entry=_int_value(snapshot.get("bars_since_entry")),
         position_volume=position_volume,
@@ -474,31 +489,45 @@ def register_trial_run_routes(
         )
         return _action_response(trading_state, "prepare", "试运行策略已准备")
 
-    @app.post(
-        "/trial-run/arm",
-        response_model=TrialRunActionResponse,
-        summary="授权试运行交易",
-        tags=["试运行"],
-    )
-    def arm_trial_run(request: Request):
+    def _start_trial_run(request: Request, *, action: str) -> TrialRunActionResponse:
         entry = trading_state.get(TRIAL_STRATEGY_ID)
         if entry is None:
             raise HTTPException(status_code=409, detail="试运行策略尚未准备")
-        authorize = getattr(entry.strategy, "authorize_trading", None)
-        if not callable(authorize) or authorize() is not True:
+        start = getattr(entry.strategy, "start_verification", None)
+        if not callable(start):
+            start = getattr(entry.strategy, "authorize_trading", None)
+        if not callable(start) or start() is not True:
             trial_run_state.update(state="prepared", authorized=False)
             record_audit(
                 "trial_run",
-                "arm",
+                action,
                 "rejected",
                 request=request,
                 resource=TRIAL_STRATEGY_ID,
-                detail={"reason": "authorize_trading returned false"},
+                detail={"reason": "start_verification returned false"},
             )
-            raise HTTPException(status_code=409, detail="VerifyStrategy 未授权交易")
-        trial_run_state.update(state="armed", authorized=True, errors=[])
-        record_audit("trial_run", "arm", "success", request=request, resource=TRIAL_STRATEGY_ID)
-        return _action_response(trading_state, "arm", "试运行交易已授权")
+            raise HTTPException(status_code=409, detail="VerifyStrategy 尚未行情就绪，不能开始验证交易")
+        trial_run_state.update(state="started", authorized=True, errors=[])
+        record_audit("trial_run", action, "success", request=request, resource=TRIAL_STRATEGY_ID)
+        return _action_response(trading_state, action, "验证交易已开始")
+
+    @app.post(
+        "/trial-run/start",
+        response_model=TrialRunActionResponse,
+        summary="开始试运行验证交易",
+        tags=["试运行"],
+    )
+    def start_trial_run(request: Request):
+        return _start_trial_run(request, action="start")
+
+    @app.post(
+        "/trial-run/arm",
+        response_model=TrialRunActionResponse,
+        summary="兼容旧版授权试运行交易",
+        tags=["试运行"],
+    )
+    def arm_trial_run(request: Request):
+        return _start_trial_run(request, action="arm")
 
     @app.post(
         "/trial-run/stop",

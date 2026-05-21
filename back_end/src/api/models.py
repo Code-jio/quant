@@ -193,11 +193,14 @@ class TrialRunStatusResponse(BaseModel):
     gateway_connected: bool = False
     prepared: bool = False
     authorized: bool = False
+    started: bool = False
+    market_ready: bool = False
     ready_to_arm: bool = False
     completed: bool = False
     running: bool = False
     bar_count: int = 0
     warmup_bars: int = 0
+    readiness_bars: int = 0
     hold_bars: int = 0
     bars_since_entry: int = 0
     position_volume: int = 0

@@ -15,12 +15,13 @@ class VerifyStrategy(StrategyBase):
     """Minimal strategy to validate the full live trading chain.
 
     State machine:
-      Warmup -> Ready to arm -> Authorized -> Buy 1 lot -> Hold -> Sell -> Done
+      Wait market data -> Ready to start -> Started -> Buy 1 lot -> Hold -> Sell -> Done
     """
 
     def on_init(self):
         self.symbol = self.params.get("symbol", "rb2510")
-        self.warmup_bars = int(self.params.get("warmup_bars", 20))
+        self.warmup_bars = int(self.params.get("warmup_bars", 0))
+        self.readiness_bars = max(1, int(self.params.get("readiness_bars", self.params.get("market_ready_bars", 1))))
         self.hold_bars = int(self.params.get("hold_bars", 10))
         self._volume = int(self.params.get("volume", 1))
         self._multiplier = int(self.params.get("contract_multiplier", 10))
@@ -32,17 +33,18 @@ class VerifyStrategy(StrategyBase):
         self._closed = False
         self._entry_price = 0.0
         self.trade_authorized = False
+        self.market_ready = False
         self.ready_to_arm = False
         self.completed = False
-        self.trial_state = "warming"
+        self.trial_state = "waiting_market_data"
         self._entry_order_sent = False
         self._close_order_sent = False
         self._last_reject_reason = ""
 
         self._initialized = True
         logger.info(
-            "VerifyStrategy 初始化: symbol=%s warmup=%d hold=%d volume=%d order_type=%s",
-            self.symbol, self.warmup_bars, self.hold_bars, self._volume, self._order_type.value,
+            "VerifyStrategy 初始化: symbol=%s readiness=%d hold=%d volume=%d order_type=%s",
+            self.symbol, self.readiness_bars, self.hold_bars, self._volume, self._order_type.value,
         )
 
     def _parse_order_type(self, value) -> OrderType:
@@ -51,30 +53,36 @@ class VerifyStrategy(StrategyBase):
             return OrderType.MARKET
         return OrderType.LIMIT
 
-    def authorize_trading(self) -> bool:
-        if self.ready_to_arm and not self._entry_order_sent and not self._bought and not self.completed:
+    def start_verification(self) -> bool:
+        if self.market_ready and self.ready_to_arm and not self._entry_order_sent and not self._bought and not self.completed:
             self.trade_authorized = True
-            self.trial_state = "armed"
-            logger.info("验证交易已授权，等待下一根 Bar 开仓")
+            self.trial_state = "started"
+            logger.info("验证交易已开始，等待下一根有效 Bar 开仓")
             return True
-        logger.info("验证交易授权被拒: state=%s bought=%s completed=%s", self.trial_state, self._bought, self.completed)
+        logger.info("验证交易开始被拒: state=%s market_ready=%s bought=%s completed=%s", self.trial_state, self.market_ready, self._bought, self.completed)
         return False
+
+    def authorize_trading(self) -> bool:
+        return self.start_verification()
 
     def revoke_authorization(self):
         self.trade_authorized = False
         if self.ready_to_arm and not self._entry_order_sent and not self._bought and not self.completed:
-            self.trial_state = "ready_to_arm"
-            logger.info("验证交易授权已撤销，回到待授权状态")
+            self.trial_state = "ready_to_start"
+            logger.info("验证交易开始状态已撤销，回到待开始状态")
 
     def snapshot(self) -> dict:
         return {
             "state": self.trial_state,
             "symbol": self.symbol,
             "authorized": self.trade_authorized,
+            "started": self.trade_authorized,
+            "market_ready": self.market_ready,
             "ready_to_arm": self.ready_to_arm,
             "completed": self.completed,
             "bar_count": self._bar_count,
             "warmup_bars": self.warmup_bars,
+            "readiness_bars": self.readiness_bars,
             "hold_bars": self.hold_bars,
             "bars_since_entry": self._bars_since_entry,
             "bought": self._bought,
@@ -87,15 +95,25 @@ class VerifyStrategy(StrategyBase):
         }
 
     def on_start(self):
-        logger.info("策略启动，等待 Bar 预热... (需 %d 根 bar)", self.warmup_bars)
+        logger.info("策略启动，等待行情就绪... (需 %d 根有效 bar)", self.readiness_bars)
 
     def on_bar(self, bar: pd.Series):
         if self.completed or self.trial_state == "error":
             return
 
-        self._bar_count += 1
         symbol = bar.get("symbol", self.symbol)
+        if str(symbol) != str(self.symbol):
+            logger.info("忽略非试运行合约 Bar: %s", symbol)
+            return
+
         close = float(bar["close"])
+        if close <= 0:
+            self._last_reject_reason = "invalid_market_price"
+            self.trial_state = "waiting_market_data"
+            logger.warning("行情价格无效，继续等待: %s close=%.2f", symbol, close)
+            return
+
+        self._bar_count += 1
         vol_so_far = int(bar.get("volume", 0))
 
         pos = self.get_position(symbol)
@@ -133,26 +151,29 @@ class VerifyStrategy(StrategyBase):
         if self._closed or self.completed:
             return
 
-        # Warmup phase — just log progress
-        if self._bar_count < self.warmup_bars:
-            self.trial_state = "warming"
-            if self._bar_count % 5 == 0 or self._bar_count == 1:
+        if not self.market_ready:
+            if self._bar_count < self.readiness_bars:
+                self.trial_state = "waiting_market_data"
                 logger.info(
-                    "预热中... Bar#%d/%d | %s O=%.0f H=%.0f L=%.0f C=%.0f V=%d",
-                    self._bar_count, self.warmup_bars,
+                    "行情就绪检查中... Bar#%d/%d | %s O=%.0f H=%.0f L=%.0f C=%.0f V=%d",
+                    self._bar_count, self.readiness_bars,
                     symbol, bar["open"], bar["high"], bar["low"], close, vol_so_far,
                 )
-            return
+                return
+            self.market_ready = True
+            self.ready_to_arm = True
+            logger.info(
+                "行情已就绪，等待开始验证交易: Bar#%d/%d | %s close=%.0f volume=%d",
+                self._bar_count, self.readiness_bars, symbol, close, vol_so_far,
+            )
 
         if not self.trade_authorized:
-            self.ready_to_arm = True
-            self.trial_state = "ready_to_arm"
-            logger.info("预热完成，等待前端授权验证交易")
+            self.trial_state = "ready_to_start"
             return
 
-        # Authorization is accepted out-of-band; the next valid bar sends one entry order.
+        # Verification start is accepted out-of-band; the next valid bar sends one entry order.
         if not self._bought and not self._entry_order_sent:
-            logger.info("验证交易已授权，发送验证买单")
+            logger.info("验证交易已开始，发送验证买单")
             signal = self.buy(self.symbol, close, self._volume, order_type=self._order_type)
             if signal:
                 self._entry_order_sent = True

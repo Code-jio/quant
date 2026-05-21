@@ -12,8 +12,7 @@ from src.api.trial_run import trial_run_state
 from tests.helpers import RecordingGateway
 
 
-def _config_path(name):
-    root = Path(__file__).resolve().parents[1] / ".test-artifacts" / "trial-run-tests"
+def _config_path(root, name):
     root.mkdir(parents=True, exist_ok=True)
     return root / f"{name}-{uuid.uuid4().hex}.json"
 
@@ -21,7 +20,7 @@ def _config_path(name):
 def _trial_config(path, password="secret-password"):
     payload = {
         "trial_run": {"enabled": True, "allowed_symbol": "rb2510", "account_id": "trial-account"},
-        "strategy": {"name": "verify", "symbol": "rb2510", "volume": 1, "warmup_bars": 2, "hold_bars": 2, "order_type": "limit"},
+        "strategy": {"name": "verify", "symbol": "rb2510", "volume": 1, "warmup_bars": 20, "readiness_bars": 1, "hold_bars": 2, "order_type": "limit"},
         "trading": {
             "gateway": "vnpy",
             "username": "trial-account",
@@ -94,8 +93,8 @@ def teardown_function():
     trial_run_state.reset()
 
 
-def test_trial_run_config_is_public_and_prefills_non_password_connection_fields(monkeypatch):
-    config_path = _trial_config(_config_path("config"))
+def test_trial_run_config_is_public_and_prefills_non_password_connection_fields(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "config"))
     monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
     app = create_app()
 
@@ -118,8 +117,8 @@ def test_trial_run_config_is_public_and_prefills_non_password_connection_fields(
     assert "trial-account" not in response.text
 
 
-def test_trial_run_config_requires_strategy_symbol(monkeypatch):
-    config_path = _trial_config(_config_path("missing-symbol"))
+def test_trial_run_config_requires_strategy_symbol(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "missing-symbol"))
     payload = json.loads(config_path.read_text(encoding="utf-8"))
     payload["strategy"].pop("symbol")
     config_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -135,19 +134,19 @@ def test_trial_run_config_requires_strategy_symbol(monkeypatch):
     assert "strategy.symbol 不能为空" in body["validation_errors"]
 
 
-def test_trial_run_mutations_require_login(monkeypatch):
-    config_path = _trial_config(_config_path("auth-required"))
+def test_trial_run_mutations_require_login(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "auth-required"))
     monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
     app = create_app()
 
     with TestClient(app) as client:
-        for path in ["/trial-run/prepare", "/trial-run/arm", "/trial-run/stop", "/trial-run/reset"]:
+        for path in ["/trial-run/prepare", "/trial-run/start", "/trial-run/arm", "/trial-run/stop", "/trial-run/reset"]:
             response = client.post(path)
             assert response.status_code == 401
 
 
-def test_trial_run_prepare_and_arm(monkeypatch):
-    config_path = _trial_config(_config_path("prepare"))
+def test_trial_run_prepare_and_start(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "prepare"))
     monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
     gateway = install_gateway(monkeypatch)
     app = create_app()
@@ -162,24 +161,25 @@ def test_trial_run_prepare_and_arm(monkeypatch):
         prepared = client.post("/trial-run/prepare")
         assert prepared.status_code == 200
         assert prepared.json()["success"] is True
-        assert prepared.json()["status"]["state"] == "warming"
+        assert prepared.json()["status"]["state"] == "waiting_market_data"
         assert prepared.json()["status"]["strategy_id"] == "verify_trial"
         assert gateway.subscribed_symbols == [["rb2510"]]
 
         entry = trading_state.get("verify_trial")
         assert entry is not None
         entry.strategy.on_bar(_bar(3130))
-        entry.strategy.on_bar(_bar(3132))
 
-        armed = client.post("/trial-run/arm")
-        assert armed.status_code == 200
-        assert armed.json()["status"]["state"] == "armed"
+        started = client.post("/trial-run/start")
+        assert started.status_code == 200
+        assert started.json()["action"] == "start"
+        assert started.json()["status"]["state"] == "started"
+        assert started.json()["status"]["market_ready"] is True
 
 
-def test_trial_run_prepare_can_use_example_config_when_local_missing(monkeypatch):
-    config_path = _trial_config(_config_path("example-fallback"))
+def test_trial_run_prepare_can_use_example_config_when_local_missing(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "example-fallback"))
     monkeypatch.delenv("QUANT_TRIAL_CONFIG", raising=False)
-    monkeypatch.setattr(trial_run_module, "_LOCAL_CONFIG", _config_path("missing-local"))
+    monkeypatch.setattr(trial_run_module, "_LOCAL_CONFIG", _config_path(tmp_path, "missing-local"))
     monkeypatch.setattr(trial_run_module, "_EXAMPLE_CONFIG", config_path)
     gateway = install_gateway(monkeypatch)
     app = create_app()
@@ -194,8 +194,8 @@ def test_trial_run_prepare_can_use_example_config_when_local_missing(monkeypatch
     assert gateway.subscribed_symbols == [["rb2510"]]
 
 
-def test_trial_run_arm_returns_conflict_when_strategy_refuses(monkeypatch):
-    config_path = _trial_config(_config_path("conflict"))
+def test_trial_run_start_returns_conflict_until_market_ready(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "conflict"))
     monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
     install_gateway(monkeypatch)
     app = create_app()
@@ -204,6 +204,6 @@ def test_trial_run_arm_returns_conflict_when_strategy_refuses(monkeypatch):
         login(client)
         assert client.post("/trial-run/prepare").status_code == 200
 
-        response = client.post("/trial-run/arm")
+        response = client.post("/trial-run/start")
 
     assert response.status_code == 409

@@ -3,7 +3,8 @@
   "strategy": {
     "name": "verify",
     "symbol": "rb2510",
-    "warmup_bars": 20,
+    "warmup_bars": 0,
+    "readiness_bars": 1,
     "hold_bars": 10,
     "volume": 1,
     "contract_multiplier": 10
