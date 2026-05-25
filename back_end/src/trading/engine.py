@@ -48,6 +48,8 @@ class TradingEngine:
         self._bar_interval: int = 1
         self._emit_first_tick_bar = False
         self._first_tick_bar_symbols: set[str] = set()
+        self._first_tick_bar_emitted_symbols: set[str] = set()
+        self._first_tick_bar_skip_reason = ""
 
         self.last_reject_reason = ""
         self._error_count = 0
@@ -80,6 +82,8 @@ class TradingEngine:
             self._bar_interval = max(1, int(config.get("bar_interval_minutes", 1)))
             self._emit_first_tick_bar = bool(config.get("emit_first_tick_bar", False))
             self._first_tick_bar_symbols.clear()
+            self._first_tick_bar_emitted_symbols.clear()
+            self._first_tick_bar_skip_reason = ""
             self.bar_aggregator = BarAggregator(
                 interval_minutes=self._bar_interval,
                 on_bar=self._on_bar_completed,
@@ -309,6 +313,7 @@ class TradingEngine:
         if not self._emit_first_tick_bar or not self.strategy:
             return
         if float(getattr(tick, "last_price", 0.0) or 0.0) <= 0:
+            self._first_tick_bar_skip_reason = "invalid_tick_price"
             return
 
         tick_key = self._normalize_symbol_key(tick.symbol)
@@ -317,6 +322,7 @@ class TradingEngine:
 
         strategy_symbol = str(getattr(self.strategy, "symbol", "") or "")
         if strategy_symbol and not self._symbols_match(tick.symbol, strategy_symbol):
+            self._first_tick_bar_skip_reason = "symbol_mismatch"
             return
 
         snapshot = {}
@@ -328,6 +334,7 @@ class TradingEngine:
                 snapshot = {}
         if int(snapshot.get("bar_count", 0) or 0) > 0:
             self._first_tick_bar_symbols.add(tick_key)
+            self._first_tick_bar_skip_reason = ""
             return
 
         bar = self._tick_to_bar(tick)
@@ -337,8 +344,11 @@ class TradingEngine:
             self.strategy.on_bar(bar)
             self._dispatch_strategy_signals()
             self._first_tick_bar_symbols.add(tick_key)
+            self._first_tick_bar_emitted_symbols.add(tick_key)
+            self._first_tick_bar_skip_reason = ""
             logger.info("试运行首个 tick 已生成验证 Bar: %s %.2f", tick.symbol, tick.last_price)
         except Exception as e:
+            self._first_tick_bar_skip_reason = "first_tick_bar_not_emitted"
             logger.error(f"处理首个 tick 验证 Bar 失败: {e}")
 
     @staticmethod
@@ -376,12 +386,12 @@ class TradingEngine:
         self._processed_signal_count = len(signals)
 
     def _market_data_for_symbol(self, symbol: str) -> Dict[str, Any]:
-        data = self.order_manager.market_data.get(symbol)
+        data = self._lookup_symbol_mapping(self.order_manager.market_data, symbol)
         if data:
             return data
 
         latest_ticks = getattr(self.gateway, "latest_ticks", {})
-        tick = latest_ticks.get(symbol) if isinstance(latest_ticks, dict) else None
+        tick = self._lookup_symbol_mapping(latest_ticks, symbol) if isinstance(latest_ticks, dict) else None
         if tick:
             return {
                 "last_price": getattr(tick, "last_price", 0.0),
@@ -391,11 +401,22 @@ class TradingEngine:
             }
 
         snapshots = getattr(self.gateway, "latest_tick_snapshots", {})
-        snapshot = snapshots.get(symbol) if isinstance(snapshots, dict) else None
+        snapshot = self._lookup_symbol_mapping(snapshots, symbol) if isinstance(snapshots, dict) else None
         if snapshot:
             return snapshot
 
         return {}
+
+    @classmethod
+    def _lookup_symbol_mapping(cls, mapping: Dict[str, Any], symbol: str) -> Any:
+        if not isinstance(mapping, dict):
+            return None
+        if symbol in mapping:
+            return mapping[symbol]
+        for key, value in mapping.items():
+            if cls._symbols_match(str(key), symbol):
+                return value
+        return None
 
     def get_account(self) -> AccountInfo:
         """获取账户信息"""

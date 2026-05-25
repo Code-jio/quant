@@ -58,6 +58,21 @@ class VerifyStrategy(StrategyBase):
             return OrderType.MARKET
         return OrderType.LIMIT
 
+    @staticmethod
+    def _normalize_symbol_key(symbol: str) -> str:
+        raw = str(symbol or "").strip().lower()
+        if "." not in raw:
+            return raw
+        parts = [part for part in raw.split(".") if part]
+        for part in parts:
+            if any(ch.isdigit() for ch in part):
+                return part
+        return parts[0] if parts else raw
+
+    @classmethod
+    def _symbols_match(cls, left: str, right: str) -> bool:
+        return cls._normalize_symbol_key(left) == cls._normalize_symbol_key(right)
+
     def start_verification(self) -> bool:
         if self.market_ready and self.ready_to_arm and not self._entry_order_sent and not self._bought and not self.completed:
             self.trade_authorized = True
@@ -117,7 +132,7 @@ class VerifyStrategy(StrategyBase):
 
         symbol = getattr(tick, "symbol", self.symbol)
         price = float(getattr(tick, "last_price", 0) or 0)
-        if str(symbol) != str(self.symbol):
+        if not self._symbols_match(symbol, self.symbol):
             return
         if price <= 0:
             self._last_reject_reason = "invalid_market_price"
@@ -162,7 +177,7 @@ class VerifyStrategy(StrategyBase):
             return
 
         symbol = bar.get("symbol", self.symbol)
-        if str(symbol) != str(self.symbol):
+        if not self._symbols_match(symbol, self.symbol):
             logger.info("忽略非试运行合约 Bar: %s", symbol)
             return
 

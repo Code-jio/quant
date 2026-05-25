@@ -22,6 +22,7 @@ _BACKEND_ROOT = Path(__file__).resolve().parents[2]
 _CONFIG_DIR = _BACKEND_ROOT / "config"
 _LOCAL_CONFIG = _CONFIG_DIR / "config.local.json"
 _EXAMPLE_CONFIG = _CONFIG_DIR / "config.example.json"
+_NO_TICK_DIAGNOSTIC_SECONDS = 15.0
 
 
 class _TrialRunState:
@@ -124,6 +125,21 @@ def _clean_symbol(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _normalize_symbol_key(symbol: Any) -> str:
+    raw = str(symbol or "").strip().lower()
+    if "." not in raw:
+        return raw
+    parts = [part for part in raw.split(".") if part]
+    for part in parts:
+        if any(ch.isdigit() for ch in part):
+            return part
+    return parts[0] if parts else raw
+
+
+def _symbols_match(left: Any, right: Any) -> bool:
+    return _normalize_symbol_key(left) == _normalize_symbol_key(right)
+
+
 def _int_value(value: Any, default: int = 0) -> int:
     try:
         return int(value)
@@ -174,12 +190,17 @@ def _validate_trial_config(config: Dict[str, Any]) -> tuple[str, List[str]]:
         errors.append("risk.allowed_symbols 必须且只能包含一个合约")
     risk_symbol = clean_allowed_symbols[0] if len(clean_allowed_symbols) == 1 else ""
     if trial_symbol and strategy_symbol and risk_symbol:
-        if len({trial_symbol, strategy_symbol, risk_symbol}) != 1:
+        if len({_normalize_symbol_key(trial_symbol), _normalize_symbol_key(strategy_symbol), _normalize_symbol_key(risk_symbol)}) != 1:
             errors.append("trial_run.allowed_symbol、strategy.symbol、risk.allowed_symbols[0] 必须一致")
     if strategy.get("name") != "verify":
         errors.append("strategy.name 必须为 verify")
     if _int_value(strategy.get("volume")) != 1:
         errors.append("strategy.volume 必须为 1")
+    if _bool_value(trial_run.get("auto_arm"), True):
+        if _int_value(strategy.get("warmup_bars"), 1) != 1:
+            errors.append("strategy.warmup_bars must be 1 when trial_run.auto_arm is true")
+        if _int_value(strategy.get("readiness_bars"), 1) != 1:
+            errors.append("strategy.readiness_bars must be 1 when trial_run.auto_arm is true")
     if _int_value(risk.get("max_order_volume")) != 1:
         errors.append("risk.max_order_volume 必须为 1")
     if _int_value(risk.get("max_position_volume")) != 1:
@@ -333,6 +354,48 @@ def _market_data_age_seconds(value: Any) -> float:
     return 0.0
 
 
+def _flatten_symbol_values(value: Any) -> List[str]:
+    symbols: List[str] = []
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            symbols.extend(_flatten_symbol_values(item))
+    elif value:
+        symbols.append(str(value))
+    return symbols
+
+
+def _gateway_subscribed_symbols(engine: Any) -> List[str]:
+    if engine is None:
+        return []
+    gateway = getattr(engine, "gateway", None)
+    if gateway is None:
+        return []
+    symbols = []
+    symbols.extend(_flatten_symbol_values(getattr(gateway, "subscribed_symbols", [])))
+    symbols.extend(_flatten_symbol_values(getattr(gateway, "_subscribed_symbols", [])))
+    return list(dict.fromkeys(symbols))
+
+
+def _gateway_cached_tick_symbols(engine: Any) -> List[str]:
+    if engine is None:
+        return []
+    symbols: List[str] = []
+    order_manager = getattr(engine, "order_manager", None)
+    market_data = getattr(order_manager, "market_data", {}) if order_manager is not None else {}
+    if isinstance(market_data, dict):
+        symbols.extend(str(key) for key in market_data.keys())
+    gateway = getattr(engine, "gateway", None)
+    for attr in ("latest_ticks", "latest_tick_snapshots"):
+        values = getattr(gateway, attr, {}) if gateway is not None else {}
+        if isinstance(values, dict):
+            symbols.extend(str(key) for key in values.keys())
+    return list(dict.fromkeys(symbols))
+
+
+def _has_matching_symbol(symbols: List[str], symbol: str) -> bool:
+    return any(_symbols_match(item, symbol) for item in symbols)
+
+
 def _status_response(trading_state: Any) -> TrialRunStatusResponse:
     state = trial_run_state.snapshot()
     entry = trading_state.get(TRIAL_STRATEGY_ID)
@@ -373,17 +436,13 @@ def _status_response(trading_state: Any) -> TrialRunStatusResponse:
         response_state = "emergency_stopped"
     symbol = str(snapshot.get("symbol") or state["allowed_symbol"] or allowed_symbol or "")
     bar_count = _int_value(snapshot.get("bar_count"))
+    tick_count = _int_value(snapshot.get("tick_count"))
     no_bar_wait_seconds = 0.0
     market_warning = ""
     if entry is not None and not bool(snapshot.get("completed", False)) and bar_count <= 0:
         prepared_at = _float_value(state.get("prepared_at"), 0.0)
         if prepared_at > 0:
             no_bar_wait_seconds = max(0.0, round(time.time() - prepared_at, 1))
-            if no_bar_wait_seconds >= bar_timeout_seconds:
-                market_warning = (
-                    f"已等待 {int(no_bar_wait_seconds)} 秒仍未形成首根 Bar。"
-                    f"请检查 {symbol or allowed_symbol} 合约是否可交易、是否处于交易时段、行情前置是否推送 tick。"
-                )
     market_data: Dict[str, Any] = {}
     if engine is not None and symbol:
         market_data_for_symbol = getattr(engine, "_market_data_for_symbol", None)
@@ -404,6 +463,47 @@ def _status_response(trading_state: Any) -> TrialRunStatusResponse:
         or market_data.get("timestamp")
         or ""
     )
+    subscribed_symbols = _gateway_subscribed_symbols(engine)
+    cached_tick_symbols = _gateway_cached_tick_symbols(engine)
+    first_tick_bar_enabled = bool(getattr(engine, "_emit_first_tick_bar", False)) if engine is not None else False
+    emitted_symbols = getattr(engine, "_first_tick_bar_emitted_symbols", set()) if engine is not None else set()
+    first_tick_bar_emitted = bar_count > 0 or _normalize_symbol_key(symbol) in set(emitted_symbols or [])
+    first_tick_bar_skip_reason = str(getattr(engine, "_first_tick_bar_skip_reason", "") or "") if engine is not None else ""
+    last_reject_reason_value = str(snapshot.get("last_reject_reason") or last_reject_reason or "")
+    market_issue = ""
+    if last_reject_reason_value == "invalid_market_price":
+        market_issue = "invalid_tick_price"
+    elif entry is not None and not bool(snapshot.get("completed", False)) and bar_count <= 0:
+        has_market_price = last_market_price > 0
+        if tick_count <= 0 and cached_tick_symbols:
+            if symbol and _has_matching_symbol(cached_tick_symbols, symbol) and has_market_price:
+                market_issue = first_tick_bar_skip_reason or "first_tick_bar_not_emitted"
+            else:
+                market_issue = "symbol_mismatch"
+        elif tick_count <= 0 and not has_market_price and no_bar_wait_seconds >= _NO_TICK_DIAGNOSTIC_SECONDS:
+            market_issue = "no_tick_timeout"
+        elif first_tick_bar_enabled and tick_count > 0 and not first_tick_bar_emitted:
+            market_issue = first_tick_bar_skip_reason or "first_tick_bar_not_emitted"
+
+    if market_issue == "no_tick_timeout":
+        market_warning = (
+            f"订阅 {symbol or allowed_symbol} 后 {int(no_bar_wait_seconds)} 秒仍未收到有效 tick；"
+            "请确认合约处于交易时段、行情前置已登录且订阅成功。"
+        )
+    elif market_issue == "symbol_mismatch":
+        market_warning = (
+            f"已收到行情缓存 {', '.join(cached_tick_symbols) or '--'}，"
+            f"但未匹配目标合约 {symbol or allowed_symbol}。"
+        )
+    elif market_issue == "first_tick_bar_not_emitted":
+        market_warning = "已发现目标合约 tick，但首 tick 验证 Bar 未生成；请检查首 tick Bar 诊断字段。"
+    elif market_issue == "invalid_tick_price":
+        market_warning = "已收到目标合约 tick，但价格无效，不能生成验证 Bar。"
+    elif entry is not None and not bool(snapshot.get("completed", False)) and bar_count <= 0 and no_bar_wait_seconds >= bar_timeout_seconds:
+        market_warning = (
+            f"已等待 {int(no_bar_wait_seconds)} 秒仍未形成首根 Bar。"
+            f"请检查 {symbol or allowed_symbol} 合约是否可交易、是否处于交易时段、行情前置是否推送 tick。"
+        )
     position_volume = 0
     if strategy is not None and symbol:
         try:
@@ -429,7 +529,7 @@ def _status_response(trading_state: Any) -> TrialRunStatusResponse:
         completed=bool(snapshot.get("completed", False)),
         running=running,
         auto_arm=auto_arm,
-        tick_count=_int_value(snapshot.get("tick_count")),
+        tick_count=tick_count,
         bar_count=bar_count,
         warmup_bars=_int_value(snapshot.get("warmup_bars")),
         readiness_bars=_int_value(snapshot.get("readiness_bars")),
@@ -442,8 +542,13 @@ def _status_response(trading_state: Any) -> TrialRunStatusResponse:
         last_market_price=last_market_price,
         last_market_timestamp=_timestamp_to_text(last_market_timestamp),
         market_data_age_seconds=_market_data_age_seconds(last_market_timestamp),
+        market_issue=market_issue,
+        subscribed_symbols=subscribed_symbols,
+        first_tick_bar_enabled=first_tick_bar_enabled,
+        first_tick_bar_emitted=first_tick_bar_emitted,
+        first_tick_bar_skip_reason=first_tick_bar_skip_reason,
         position_volume=position_volume,
-        last_reject_reason=str(snapshot.get("last_reject_reason") or last_reject_reason or ""),
+        last_reject_reason=last_reject_reason_value,
         risk=risk,
         validation_errors=state["errors"] or config_errors,
         snapshot=snapshot,
@@ -572,12 +677,15 @@ def register_trial_run_routes(
         strategy_config = copy.deepcopy(config.get("strategy", {}))
         trial_config = config.get("trial_run") if isinstance(config.get("trial_run"), dict) else {}
         strategy_config["auto_arm"] = _bool_value(trial_config.get("auto_arm"), True)
+        if strategy_config["auto_arm"]:
+            strategy_config["warmup_bars"] = 1
+            strategy_config["readiness_bars"] = 1
         strategy = create_strategy("verify", strategy_config)
         engine.set_strategy(strategy)
         trading_config = copy.deepcopy(config.get("trading", {}))
         risk_config = copy.deepcopy(config.get("risk", {}))
         start_config = {**trading_config, "risk": risk_config}
-        if strategy_config["auto_arm"] and _int_value(strategy_config.get("warmup_bars"), 20) <= 1:
+        if strategy_config["auto_arm"]:
             start_config["emit_first_tick_bar"] = True
         if not engine.start(start_config):
             trial_run_state.update(state="error", allowed_symbol=allowed_symbol, errors=["试运行策略启动失败"], authorized=False)

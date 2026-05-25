@@ -214,6 +214,11 @@ class TrialRunStatusResponse(BaseModel):
     last_market_price: float = 0.0
     last_market_timestamp: str = ""
     market_data_age_seconds: float = 0.0
+    market_issue: str = ""
+    subscribed_symbols: List[str] = Field(default_factory=list)
+    first_tick_bar_enabled: bool = False
+    first_tick_bar_emitted: bool = False
+    first_tick_bar_skip_reason: str = ""
     position_volume: int = 0
     last_reject_reason: str = ""
     risk: Dict[str, Any] = Field(default_factory=dict)
