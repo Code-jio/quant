@@ -143,6 +143,33 @@ def test_verify_strategy_can_warm_up_from_first_tick():
     assert gateway.sent_signals[0].price == 3800.0
 
 
+def test_verify_strategy_first_tick_accepts_vt_symbol_variants():
+    gateway = RecordingGateway()
+    engine = TradingEngine(gateway)
+    strategy = VerifyStrategy("verify", {
+        "symbol": "au2606",
+        "warmup_bars": 1,
+        "readiness_bars": 1,
+        "hold_bars": 3,
+        "volume": 1,
+        "auto_arm": True,
+        "order_type": "limit",
+    })
+    engine.set_strategy(strategy)
+
+    assert engine.start({"initial_capital": 100000.0, "emit_first_tick_bar": True}) is True
+
+    engine.on_tick(make_tick("SHFE.au2606", 812.0, datetime.now()))
+
+    snapshot = strategy.snapshot()
+    assert snapshot["tick_count"] == 1
+    assert snapshot["bar_count"] == 1
+    assert snapshot["state"] == "entry_pending"
+    assert len(gateway.sent_signals) == 1
+    assert gateway.sent_signals[0].symbol == "au2606"
+    assert gateway.sent_signals[0].price == 812.0
+
+
 def test_broker_order_callback_updates_order_manager_books():
     gateway = RecordingGateway()
     engine = TradingEngine(gateway)

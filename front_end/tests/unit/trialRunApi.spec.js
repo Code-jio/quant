@@ -78,7 +78,7 @@ describe('trial-run api client', () => {
     )
   })
 
-  it('keeps redirectOn401 as a client-only polling option', async () => {
+  it('keeps polling options client-only', async () => {
     const fetchMock = vi.fn(async () => ({
       ok: false,
       status: 401,
@@ -91,6 +91,17 @@ describe('trial-run api client', () => {
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/risk/status',
       expect.not.objectContaining({ redirectOn401: false }),
+    )
+  })
+
+  it('keeps suppressErrorLog as a client-only polling option', async () => {
+    const fetchMock = mockFetch()
+
+    await fetchRiskStatus({ suppressErrorLog: true })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/risk/status',
+      expect.not.objectContaining({ suppressErrorLog: true }),
     )
   })
 })

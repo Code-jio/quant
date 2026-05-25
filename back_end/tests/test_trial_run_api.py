@@ -175,6 +175,20 @@ def test_trial_run_config_requires_strategy_symbol(monkeypatch, tmp_path):
     assert "strategy.symbol 不能为空" in body["validation_errors"]
 
 
+def test_trial_run_config_requires_short_auto_arm_warmup(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "invalid-auto-arm"), warmup_bars=2)
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    app = create_app()
+
+    with TestClient(app) as client:
+        response = client.get("/trial-run/config")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert "strategy.warmup_bars must be 1 when trial_run.auto_arm is true" in body["validation_errors"]
+
+
 def test_trial_run_mutations_require_login(monkeypatch, tmp_path):
     config_path = _trial_config(_config_path(tmp_path, "auth-required"))
     monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
@@ -205,17 +219,23 @@ def test_trial_run_prepare_auto_arms_and_sends_entry_after_first_bar(monkeypatch
         assert prepared.json()["status"]["state"] == "waiting_market_data"
         assert prepared.json()["status"]["strategy_id"] == "verify_trial"
         assert prepared.json()["status"]["auto_arm"] is True
+        assert prepared.json()["status"]["first_tick_bar_enabled"] is True
         assert gateway.subscribed_symbols == [["rb2510"]]
 
         entry = trading_state.get("verify_trial")
         assert entry is not None
-        entry.strategy.on_bar(_bar(3130))
+        entry.engine.on_tick(_tick(3130))
 
         status = client.get("/trial-run/status")
         assert status.status_code == 200
         assert status.json()["state"] == "entry_pending"
+        assert status.json()["tick_count"] == 1
         assert status.json()["bar_count"] == 1
+        assert status.json()["first_tick_bar_enabled"] is True
+        assert status.json()["first_tick_bar_emitted"] is True
+        assert status.json()["market_issue"] == ""
         assert len(entry.strategy.signals) == 1
+        assert len(gateway.sent_signals) == 1
 
 
 def test_trial_run_manual_arm_when_auto_arm_disabled(monkeypatch, tmp_path):
@@ -254,15 +274,17 @@ def test_trial_run_status_reports_tick_readiness_details(monkeypatch, tmp_path):
 
         entry = trading_state.get("verify_trial")
         assert entry is not None
-        entry.strategy.on_tick(_tick(3130))
+        entry.engine.on_tick(_tick(3130))
 
         response = client.get("/trial-run/status")
 
     assert response.status_code == 200
     body = response.json()
-    assert body["state"] == "ready_to_start"
+    assert body["state"] == "entry_pending"
     assert body["market_ready"] is True
     assert body["tick_count"] == 1
+    assert body["bar_count"] == 1
+    assert body["first_tick_bar_emitted"] is True
     assert body["last_market_price"] == 3130
     assert body["last_market_timestamp"]
 
@@ -286,6 +308,51 @@ def test_trial_run_status_reports_cached_gateway_tick_before_strategy_receives_i
     assert body["last_market_price"] == 3120
     assert body["last_market_timestamp"]
     assert body["market_data_age_seconds"] >= 0
+    assert body["market_issue"] == "first_tick_bar_not_emitted"
+    assert body["first_tick_bar_enabled"] is True
+    assert body["first_tick_bar_emitted"] is False
+
+
+def test_trial_run_status_reports_no_tick_timeout(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "no-tick-timeout"))
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    install_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client)
+        assert client.post("/trial-run/prepare").status_code == 200
+        prepared_at = trial_run_state.snapshot()["prepared_at"]
+        monkeypatch.setattr(trial_run_module.time, "time", lambda: prepared_at + 16)
+
+        response = client.get("/trial-run/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["market_issue"] == "no_tick_timeout"
+    assert body["no_bar_wait_seconds"] == 16
+    assert body["tick_count"] == 0
+    assert body["bar_count"] == 0
+    assert body["market_warning"]
+
+
+def test_trial_run_status_reports_cached_symbol_mismatch(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "symbol-mismatch"))
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    gateway = install_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client)
+        assert client.post("/trial-run/prepare").status_code == 200
+        gateway.latest_ticks = {"ag2510": _tick(7320, symbol="ag2510")}
+
+        response = client.get("/trial-run/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["market_issue"] == "symbol_mismatch"
+    assert body["last_market_price"] == 0
 
 
 def test_trial_run_prepare_can_use_example_config_when_local_missing(monkeypatch, tmp_path):
