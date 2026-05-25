@@ -160,6 +160,12 @@
               color="#58a6ff"
             />
             <p v-if="marketWarning" class="market-warning">{{ marketWarning }}</p>
+            <div class="diagnostic-grid">
+              <div v-for="item in marketDiagnostics" :key="item.label" class="diagnostic-cell">
+                <span>{{ item.label }}</span>
+                <strong :class="item.className">{{ item.value }}</strong>
+              </div>
+            </div>
           </div>
         </div>
       </section>
@@ -213,8 +219,8 @@
               <strong class="mono">{{ tickCount }} / {{ readinessBars }}</strong>
             </div>
             <div class="metric-cell">
-              <span>首根 Bar 等待</span>
-              <strong class="mono" :class="{ warn: Boolean(marketWarning) }">{{ noBarWaitText }}</strong>
+              <span>行情诊断</span>
+              <strong class="mono" :class="{ warn: Boolean(marketIssue) }">{{ marketDiagnosticLabel }}</strong>
             </div>
             <div class="metric-cell">
               <span>持仓数量</span>
@@ -427,6 +433,13 @@ const STATUS_LABELS = {
   error: '异常',
 }
 
+const MARKET_ISSUE_LABELS = {
+  no_tick_timeout: '未收到目标 tick',
+  symbol_mismatch: '合约不匹配',
+  first_tick_bar_not_emitted: '首 tick Bar 未生成',
+  invalid_tick_price: 'tick 价格无效',
+}
+
 let pollTimer = null
 
 const connected = computed(() => {
@@ -479,11 +492,15 @@ const autoArm = computed(() => boolOf(
 const barCount = computed(() => numberOf(trialStatus.value.bar_count ?? statusSnapshot.value.bar_count ?? trialStatus.value.bars, 0))
 const warmupBars = computed(() => Math.max(1, numberOf(trialStatus.value.warmup_bars ?? statusSnapshot.value.warmup_bars, 1)))
 const noBarWaitSeconds = computed(() => numberOf(trialStatus.value.no_bar_wait_seconds, 0))
-const noBarWaitText = computed(() => {
-  if (!prepared.value || barCount.value > 0) return '--'
-  return `${Math.round(noBarWaitSeconds.value)}s`
-})
 const marketWarning = computed(() => trialStatus.value.market_warning || '')
+const marketIssue = computed(() => String(trialStatus.value.market_issue || ''))
+const marketDiagnosticLabel = computed(() => {
+  if (marketIssue.value) return MARKET_ISSUE_LABELS[marketIssue.value] || marketIssue.value
+  if (barCount.value > 0) return '首根 Bar 已生成'
+  if (tickCount.value > 0) return '已收到 tick'
+  if (prepared.value) return `等待 tick ${Math.round(noBarWaitSeconds.value)}s`
+  return '--'
+})
 const tickCount = computed(() => numberOf(trialStatus.value.tick_count ?? statusSnapshot.value.tick_count, barCount.value))
 const readinessBars = computed(() => Math.max(1, numberOf(
   trialStatus.value.readiness_bars
@@ -509,6 +526,7 @@ const closedLoop = computed(() => Boolean(trialStatus.value.completed || statusS
 const statusCode = computed(() => String(trialStatus.value.status || trialStatus.value.state || 'idle').toLowerCase())
 const trialStatusLabel = computed(() => STATUS_LABELS[statusCode.value] || trialStatus.value.status || trialStatus.value.state || '待准备')
 const trialStatusType = computed(() => {
+  if (marketIssue.value) return 'danger'
   if (['error', 'emergency_stopped'].includes(statusCode.value)) return 'danger'
   if (['started', 'armed', 'entry_pending', 'holding', 'running', 'completed'].includes(statusCode.value)) return 'success'
   if (['waiting_market_data', 'warming', 'warmup', 'prepared', 'ready_to_start', 'ready_to_arm', 'closing'].includes(statusCode.value)) return 'warning'
@@ -578,6 +596,30 @@ const latestMarketDetail = computed(() => {
   const age = marketDataAgeSeconds.value > 0 ? ` ${Math.round(marketDataAgeSeconds.value)}秒前` : ''
   return `${time}${price}${age}`.trim()
 })
+
+const subscribedSymbolsText = computed(() => {
+  const value = trialStatus.value.subscribed_symbols
+  if (Array.isArray(value) && value.length) return value.join(', ')
+  return '--'
+})
+const firstTickBarEnabled = computed(() => Boolean(trialStatus.value.first_tick_bar_enabled))
+const firstTickBarEmitted = computed(() => Boolean(trialStatus.value.first_tick_bar_emitted))
+const firstTickBarSkipReason = computed(() => String(trialStatus.value.first_tick_bar_skip_reason || ''))
+const firstTickBarText = computed(() => {
+  if (!firstTickBarEnabled.value) return '未启用'
+  if (firstTickBarEmitted.value) return '已生成'
+  if (firstTickBarSkipReason.value) {
+    return MARKET_ISSUE_LABELS[firstTickBarSkipReason.value] || firstTickBarSkipReason.value
+  }
+  return '等待首个 tick'
+})
+const marketDiagnostics = computed(() => [
+  { label: '订阅合约', value: subscribedSymbolsText.value, className: 'mono wrap' },
+  { label: '最近 tick', value: latestMarketDetail.value || '--', className: 'mono wrap' },
+  { label: 'tick / bar', value: `${tickCount.value} / ${barCount.value}`, className: 'mono' },
+  { label: '首 tick Bar', value: firstTickBarText.value, className: firstTickBarEmitted.value ? 'ok' : marketIssue.value ? 'warn' : '' },
+  { label: '失败原因', value: marketDiagnosticLabel.value, className: marketIssue.value ? 'warn' : '' },
+])
 
 const flowItems = computed(() => [
   {
@@ -786,13 +828,14 @@ async function refreshAll(silent = true) {
   }
 
   const noRedirect = { redirectOn401: false }
+  const quietNoRedirect = { redirectOn401: false, suppressErrorLog: true }
   const results = await Promise.allSettled([
     fetchRiskStatus(noRedirect),
     fetchOrders(noRedirect),
     fetchTrades(noRedirect),
     fetchPositions(noRedirect),
     fetchSystemLogs({ limit: 200 }, noRedirect),
-    fetchTradingReconcile(noRedirect),
+    connected.value ? fetchTradingReconcile(quietNoRedirect) : Promise.resolve(null),
   ])
 
   if (results.some(result => result.status === 'rejected' && /未登录|401/.test(String(result.reason?.message || '')))) {
@@ -804,7 +847,7 @@ async function refreshAll(silent = true) {
   if (results[2].status === 'fulfilled') trades.value = normalizeList(results[2].value, ['trades'])
   if (results[3].status === 'fulfilled') positions.value = normalizeList(results[3].value, ['positions'])
   if (results[4].status === 'fulfilled') logs.value = normalizeList(results[4].value, ['logs'])
-  if (results[5].status === 'fulfilled') {
+  if (results[5].status === 'fulfilled' && results[5].value) {
     accountSnapshot.value = objectOrNull(results[5].value?.account) || {}
   }
 
@@ -1256,6 +1299,37 @@ onUnmounted(stopPolling)
   line-height: 1.55;
 }
 
+.diagnostic-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.diagnostic-cell {
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid rgba(48, 54, 61, .7);
+  border-radius: 7px;
+  background: rgba(13, 17, 23, .3);
+}
+
+.diagnostic-cell span,
+.diagnostic-cell strong {
+  display: block;
+}
+
+.diagnostic-cell span {
+  color: var(--q-muted);
+  font-size: 12px;
+}
+
+.diagnostic-cell strong {
+  margin-top: 4px;
+  color: var(--q-text);
+  font-size: 13px;
+}
+
 .readiness-meta {
   justify-content: space-between;
   gap: 8px;
@@ -1357,6 +1431,7 @@ onUnmounted(stopPolling)
 
   .status-strip,
   .form-grid,
+  .diagnostic-grid,
   .risk-grid,
   .monitor-grid {
     grid-template-columns: 1fr;

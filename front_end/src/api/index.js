@@ -22,6 +22,7 @@ function readableDetail(value, fallback) {
 async function request(path, options = {}) {
   const {
     redirectOn401 = true,
+    suppressErrorLog = false,
     headers: customHeaders = {},
     ...fetchOptions
   } = options
@@ -37,7 +38,9 @@ async function request(path, options = {}) {
     res = await fetch(url, { ...fetchOptions, headers, credentials: 'include' })
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
-    console.error('[Quant API Network Error]', { path, url, method, message, error: e })
+    if (!suppressErrorLog) {
+      console.error('[Quant API Network Error]', { path, url, method, message, error: e })
+    }
     const error = new Error(`网络请求失败: ${message}`, { cause: e })
     error.path = path
     error.url = url
@@ -50,7 +53,9 @@ async function request(path, options = {}) {
     let detailPayload = '未登录或登录失败'
     try { detailPayload = (await res.json()).detail ?? detailPayload } catch { /* ignore */ }
     const detail = readableDetail(detailPayload, '未登录或登录失败')
-    console.error('[Quant API Error]', { path, url, method, status: res.status, detail: detailPayload, message: detail })
+    if (!suppressErrorLog) {
+      console.error('[Quant API Error]', { path, url, method, status: res.status, detail: detailPayload, message: detail })
+    }
     sessionStorage.removeItem('quant_account_id')
     sessionStorage.removeItem('quant_session_active')
     localStorage.removeItem('quant_account_id')
@@ -68,7 +73,9 @@ async function request(path, options = {}) {
     let detailPayload = `HTTP ${res.status}`
     try { detailPayload = (await res.json()).detail ?? detailPayload } catch { /* ignore */ }
     const detail = readableDetail(detailPayload, `HTTP ${res.status}`)
-    console.error('[Quant API Error]', { path, url, method, status: res.status, detail: detailPayload, message: detail })
+    if (!suppressErrorLog) {
+      console.error('[Quant API Error]', { path, url, method, status: res.status, detail: detailPayload, message: detail })
+    }
     const error = new Error(detail)
     error.status = res.status
     error.path = path
