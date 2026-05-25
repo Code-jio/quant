@@ -11,8 +11,7 @@ from src.trading.types import TradingStatus
 from tests.helpers import RecordingGateway
 
 
-def _config_path(name):
-    root = Path(__file__).resolve().parents[1] / ".test-artifacts" / "trial-run-tests"
+def _config_path(root, name):
     root.mkdir(parents=True, exist_ok=True)
     return root / f"{name}-{uuid.uuid4().hex}.json"
 
@@ -136,8 +135,8 @@ def test_manual_market_order_forces_zero_price_and_strips_symbol(monkeypatch):
     assert signal.offset == OffsetFlag.OPEN
 
 
-def test_trial_run_blocks_manual_open_orders(monkeypatch):
-    config_path = _write_trial_config(_config_path("manual-block"), enabled=True)
+def test_trial_run_blocks_manual_open_orders(monkeypatch, tmp_path):
+    config_path = _write_trial_config(_config_path(tmp_path, "manual-block"), enabled=True)
     monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
     gateway = install_gateway(monkeypatch)
     app = create_app()

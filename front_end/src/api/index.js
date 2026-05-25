@@ -158,6 +158,9 @@ export const fetchTrialRunStatus = () => request('/trial-run/status')
 export const prepareTrialRun = (body = {}) =>
   request('/trial-run/prepare', { method: 'POST', body: JSON.stringify(body) })
 
+export const startTrialRun = (body = {}) =>
+  request('/trial-run/start', { method: 'POST', body: JSON.stringify(body) })
+
 export const armTrialRun = (body = {}) =>
   request('/trial-run/arm', { method: 'POST', body: JSON.stringify(body) })
 

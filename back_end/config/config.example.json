@@ -25,6 +25,7 @@
     "symbol": "au2606",
     "volume": 1,
     "warmup_bars": 1,
+    "readiness_bars": 1,
     "hold_bars": 3,
     "contract_multiplier": 1000,
     "order_type": "limit",

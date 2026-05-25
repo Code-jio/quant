@@ -7,6 +7,7 @@ import json
 import os
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -219,7 +220,17 @@ def _safe_config_response(path: Path, config: Dict[str, Any], allowed_symbol: st
     bar_timeout_seconds = max(1.0, _float_value(trial_run.get("bar_timeout_seconds"), 90.0))
     safe_strategy = _safe_subset(
         strategy,
-        {"name", "symbol", "volume", "warmup_bars", "hold_bars", "contract_multiplier", "max_errors", "order_type"},
+        {
+            "name",
+            "symbol",
+            "volume",
+            "warmup_bars",
+            "readiness_bars",
+            "hold_bars",
+            "contract_multiplier",
+            "max_errors",
+            "order_type",
+        },
     )
     safe_risk = _safe_subset(
         risk,
@@ -298,6 +309,30 @@ def _strategy_snapshot(strategy: Any) -> Dict[str, Any]:
     return {}
 
 
+def _timestamp_to_text(value: Any) -> str:
+    if not value:
+        return ""
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def _market_data_age_seconds(value: Any) -> float:
+    if not value:
+        return 0.0
+    try:
+        if isinstance(value, (int, float)):
+            return max(0.0, datetime.now().timestamp() - float(value))
+        if isinstance(value, str):
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if isinstance(value, datetime):
+            now = datetime.now(value.tzinfo) if value.tzinfo else datetime.now()
+            return max(0.0, (now - value).total_seconds())
+    except (TypeError, ValueError):
+        return 0.0
+    return 0.0
+
+
 def _status_response(trading_state: Any) -> TrialRunStatusResponse:
     state = trial_run_state.snapshot()
     entry = trading_state.get(TRIAL_STRATEGY_ID)
@@ -327,8 +362,11 @@ def _status_response(trading_state: Any) -> TrialRunStatusResponse:
     auto_arm = _bool_value(trial_config.get("auto_arm"), True)
     bar_timeout_seconds = max(1.0, _float_value(trial_config.get("bar_timeout_seconds"), 90.0))
     snapshot_state = str(snapshot.get("state") or "")
+    base_authorized = bool(snapshot.get("authorized", state["authorized"]))
     auto_authorized = auto_arm and entry is not None and snapshot_state not in {"error", "completed"}
-    authorized = bool(snapshot.get("authorized", state["authorized"]) or auto_authorized)
+    authorized = bool(base_authorized or auto_authorized)
+    started = bool(snapshot.get("started", base_authorized))
+    market_ready = bool(snapshot.get("market_ready", snapshot.get("ready_to_arm", False)))
 
     response_state = str(snapshot.get("state") or state["state"] or ("connected" if connected else "disconnected"))
     if risk.get("emergency_stop"):
@@ -346,6 +384,26 @@ def _status_response(trading_state: Any) -> TrialRunStatusResponse:
                     f"已等待 {int(no_bar_wait_seconds)} 秒仍未形成首根 Bar。"
                     f"请检查 {symbol or allowed_symbol} 合约是否可交易、是否处于交易时段、行情前置是否推送 tick。"
                 )
+    market_data: Dict[str, Any] = {}
+    if engine is not None and symbol:
+        market_data_for_symbol = getattr(engine, "_market_data_for_symbol", None)
+        if callable(market_data_for_symbol):
+            try:
+                value = market_data_for_symbol(symbol)
+                if isinstance(value, dict):
+                    market_data = value
+            except Exception:
+                market_data = {}
+    last_market_price = _float_value(
+        snapshot.get("last_market_price")
+        or market_data.get("last_price")
+        or market_data.get("last")
+    )
+    last_market_timestamp = (
+        snapshot.get("last_market_timestamp")
+        or market_data.get("timestamp")
+        or ""
+    )
     position_volume = 0
     if strategy is not None and symbol:
         try:
@@ -365,18 +423,25 @@ def _status_response(trading_state: Any) -> TrialRunStatusResponse:
         gateway_connected=connected,
         prepared=entry is not None,
         authorized=authorized,
+        started=started,
+        market_ready=market_ready,
         ready_to_arm=bool(snapshot.get("ready_to_arm", False)),
         completed=bool(snapshot.get("completed", False)),
         running=running,
         auto_arm=auto_arm,
+        tick_count=_int_value(snapshot.get("tick_count")),
         bar_count=bar_count,
         warmup_bars=_int_value(snapshot.get("warmup_bars")),
+        readiness_bars=_int_value(snapshot.get("readiness_bars")),
         hold_bars=_int_value(snapshot.get("hold_bars")),
         bars_since_entry=_int_value(snapshot.get("bars_since_entry")),
         bar_timeout_seconds=bar_timeout_seconds,
         no_bar_wait_seconds=no_bar_wait_seconds,
         market_warning=market_warning,
         last_bar_time=str(snapshot.get("last_bar_time") or ""),
+        last_market_price=last_market_price,
+        last_market_timestamp=_timestamp_to_text(last_market_timestamp),
+        market_data_age_seconds=_market_data_age_seconds(last_market_timestamp),
         position_volume=position_volume,
         last_reject_reason=str(snapshot.get("last_reject_reason") or last_reject_reason or ""),
         risk=risk,
@@ -537,31 +602,45 @@ def register_trial_run_routes(
         )
         return _action_response(trading_state, "prepare", "试运行策略已准备")
 
-    @app.post(
-        "/trial-run/arm",
-        response_model=TrialRunActionResponse,
-        summary="授权试运行交易",
-        tags=["试运行"],
-    )
-    def arm_trial_run(request: Request):
+    def _start_trial_run(request: Request, *, action: str) -> TrialRunActionResponse:
         entry = trading_state.get(TRIAL_STRATEGY_ID)
         if entry is None:
             raise HTTPException(status_code=409, detail="试运行策略尚未准备")
-        authorize = getattr(entry.strategy, "authorize_trading", None)
-        if not callable(authorize) or authorize() is not True:
+        start = getattr(entry.strategy, "start_verification", None)
+        if not callable(start):
+            start = getattr(entry.strategy, "authorize_trading", None)
+        if not callable(start) or start() is not True:
             trial_run_state.update(state="prepared", authorized=False)
             record_audit(
                 "trial_run",
-                "arm",
+                action,
                 "rejected",
                 request=request,
                 resource=TRIAL_STRATEGY_ID,
-                detail={"reason": "authorize_trading returned false"},
+                detail={"reason": "start_verification returned false"},
             )
-            raise HTTPException(status_code=409, detail="VerifyStrategy 未授权交易")
-        trial_run_state.update(state="armed", authorized=True, errors=[])
-        record_audit("trial_run", "arm", "success", request=request, resource=TRIAL_STRATEGY_ID)
-        return _action_response(trading_state, "arm", "试运行交易已授权")
+            raise HTTPException(status_code=409, detail="VerifyStrategy 尚未行情就绪，不能开始验证交易")
+        trial_run_state.update(state="started", authorized=True, errors=[])
+        record_audit("trial_run", action, "success", request=request, resource=TRIAL_STRATEGY_ID)
+        return _action_response(trading_state, action, "验证交易已开始")
+
+    @app.post(
+        "/trial-run/start",
+        response_model=TrialRunActionResponse,
+        summary="开始试运行验证交易",
+        tags=["试运行"],
+    )
+    def start_trial_run(request: Request):
+        return _start_trial_run(request, action="start")
+
+    @app.post(
+        "/trial-run/arm",
+        response_model=TrialRunActionResponse,
+        summary="兼容旧版授权试运行交易",
+        tags=["试运行"],
+    )
+    def arm_trial_run(request: Request):
+        return _start_trial_run(request, action="arm")
 
     @app.post(
         "/trial-run/stop",

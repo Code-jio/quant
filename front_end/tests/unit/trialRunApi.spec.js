@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  armTrialRun,
   fetchTrialRunConfig,
   fetchRiskStatus,
   fetchTrialRunStatus,
   prepareTrialRun,
   resetTrialRun,
+  startTrialRun,
   stopTrialRun,
 } from '@/api/index.js'
 
@@ -46,7 +46,7 @@ describe('trial-run api client', () => {
     const fetchMock = mockFetch()
 
     await prepareTrialRun({ symbol: 'IF9999' })
-    await armTrialRun({ symbol: 'IF9999', volume: 1 })
+    await startTrialRun({ symbol: 'IF9999', volume: 1 })
     await stopTrialRun()
     await resetTrialRun()
 
@@ -60,7 +60,7 @@ describe('trial-run api client', () => {
     )
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      '/api/trial-run/arm',
+      '/api/trial-run/start',
       expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({ symbol: 'IF9999', volume: 1 }),
