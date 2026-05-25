@@ -23,7 +23,12 @@
       "Bash(d:/quant/.venv/Scripts/python.exe -m pip index versions vnpy_ctp)",
       "Bash(curl -s \"https://pypi.org/pypi/vnpy-ctp/6.7.11.4/json\")",
       "Bash(d:/quant/.venv/Scripts/python.exe -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(u['filename']\\) for u in d['urls'] if 'cp31' in u['filename'] or 'cp3' in u['filename']]\")",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "Bash(netstat -ano)",
+      "Bash(awk '{print $5, $NF}')",
+      "Bash(taskkill //PID 21892 //F)",
+      "Bash(taskkill //PID 27780 //F)",
+      "Bash(git commit *)"
     ]
   }
 }
