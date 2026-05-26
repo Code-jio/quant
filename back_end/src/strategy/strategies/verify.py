@@ -91,6 +91,15 @@ class VerifyStrategy(StrategyBase):
             self.trial_state = "ready_to_start"
             logger.info("验证交易开始状态已撤销，回到待开始状态")
 
+    def mark_market_data_stale(self, symbol: str, reason: str = ""):
+        if not self._symbols_match(symbol, self.symbol):
+            return
+        if self.completed or self.trial_state == "error":
+            return
+        self._last_reject_reason = reason or f"Market data is stale for {symbol}"
+        self.trade_authorized = False
+        self.trial_state = "waiting_market_data"
+
     def snapshot(self) -> dict:
         return {
             "state": self.trial_state,

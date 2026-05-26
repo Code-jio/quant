@@ -215,6 +215,19 @@ class TradingEngine:
 
     def _on_tick(self, tick: MarketData):
         """行情推送内部处理，同时更新预埋单市场数据"""
+        stale_reason = self._stale_market_data_reason(tick)
+        if stale_reason:
+            self.last_reject_reason = stale_reason
+            self._first_tick_bar_skip_reason = "stale_market_data"
+            mark_stale = getattr(self.strategy, "mark_market_data_stale", None) if self.strategy else None
+            if callable(mark_stale):
+                try:
+                    mark_stale(tick.symbol, stale_reason)
+                except Exception as e:
+                    logger.error(f"标记过期行情失败: {e}")
+            logger.warning("忽略过期行情 tick: %s", stale_reason)
+            return
+
         self.order_manager.update_market_data(tick.symbol, {
             "last_price": tick.last_price,
             "bid_price_1": tick.bid_price_1,
@@ -242,6 +255,17 @@ class TradingEngine:
                     self._maybe_emit_first_tick_bar(tick)
             except Exception as e:
                 logger.error(f"Bar 聚合失败: {e}")
+
+    def _stale_market_data_reason(self, tick: MarketData) -> str:
+        max_age = getattr(self.risk_manager.config, "max_market_data_age_seconds", 0.0)
+        if max_age <= 0:
+            return ""
+        age = self.risk_manager._market_data_age(getattr(tick, "timestamp", None))
+        if age is None:
+            return f"Market data timestamp is unavailable for {tick.symbol}"
+        if age > max_age:
+            return f"Market data is stale for {tick.symbol}: {round(age, 2)}s"
+        return ""
 
     def _tick_to_bar(self, tick: MarketData):
         """Convert a live tick into the bar passed to strategy.on_bar."""

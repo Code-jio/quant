@@ -471,7 +471,11 @@ def _status_response(trading_state: Any) -> TrialRunStatusResponse:
     first_tick_bar_skip_reason = str(getattr(engine, "_first_tick_bar_skip_reason", "") or "") if engine is not None else ""
     last_reject_reason_value = str(snapshot.get("last_reject_reason") or last_reject_reason or "")
     market_issue = ""
-    if last_reject_reason_value == "invalid_market_price":
+    if "Market data is stale" in last_reject_reason_value:
+        market_issue = "stale_market_data"
+    elif "Market data timestamp is unavailable" in last_reject_reason_value:
+        market_issue = "market_data_timestamp_unavailable"
+    elif last_reject_reason_value == "invalid_market_price":
         market_issue = "invalid_tick_price"
     elif entry is not None and not bool(snapshot.get("completed", False)) and bar_count <= 0:
         has_market_price = last_market_price > 0
@@ -489,6 +493,16 @@ def _status_response(trading_state: Any) -> TrialRunStatusResponse:
         market_warning = (
             f"订阅 {symbol or allowed_symbol} 后 {int(no_bar_wait_seconds)} 秒仍未收到有效 tick；"
             "请确认合约处于交易时段、行情前置已登录且订阅成功。"
+        )
+    elif market_issue == "stale_market_data":
+        market_warning = (
+            f"收到 {symbol or allowed_symbol} 行情但时间戳已超过风控新鲜度限制；"
+            "系统已忽略该 tick，等待新的实时行情后再自动验证开仓。"
+        )
+    elif market_issue == "market_data_timestamp_unavailable":
+        market_warning = (
+            f"收到 {symbol or allowed_symbol} 行情但缺少有效时间戳；"
+            "系统已忽略该 tick，等待带时间戳的新行情。"
         )
     elif market_issue == "symbol_mismatch":
         market_warning = (

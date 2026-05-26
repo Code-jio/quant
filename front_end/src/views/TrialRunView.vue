@@ -435,6 +435,8 @@ const STATUS_LABELS = {
 
 const MARKET_ISSUE_LABELS = {
   no_tick_timeout: '未收到目标 tick',
+  stale_market_data: '行情已过期',
+  market_data_timestamp_unavailable: '行情无时间戳',
   symbol_mismatch: '合约不匹配',
   first_tick_bar_not_emitted: '首 tick Bar 未生成',
   invalid_tick_price: 'tick 价格无效',
