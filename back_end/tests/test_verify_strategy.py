@@ -78,8 +78,9 @@ def test_started_strategy_buys_on_next_valid_tick():
 
     assert len(s.signals) == 1
     assert s.signals[0].direction.value == "long"
-    assert s.signals[0].price == 3130
+    assert s.signals[0].price == 3132
     assert s.snapshot()["state"] == "entry_pending"
+    assert s.snapshot()["last_order_pricing_source"] == "ask_price_1+1ticks"
 
 
 def test_start_before_market_ready_is_rejected():
@@ -105,6 +106,7 @@ def test_buy_signal_on_next_bar_after_start():
     assert s.signals[0].direction.value == "long"
     assert s.signals[0].volume == 1
     assert s.signals[0].order_type.value == "limit"
+    assert s.signals[0].price == 3131
     assert s._entry_order_sent is True
     assert s._bought is False
     assert s.snapshot()["state"] == "entry_pending"
@@ -123,6 +125,7 @@ def test_auto_arm_sends_entry_on_warmup_bar():
 
     assert len(s.signals) == 1
     assert s.signals[0].direction.value == "long"
+    assert s.signals[0].price == 3131
     assert s.trade_authorized is True
     assert s.ready_to_arm is True
     assert s.snapshot()["state"] == "entry_pending"
@@ -147,6 +150,7 @@ def test_sell_signal_after_hold():
     assert len(s.signals) == 2
     assert s.signals[1].direction.value == "short"
     assert s.signals[1].offset.value == "close"
+    assert s.signals[1].price == 3134
     assert s._closed is False
     assert s.completed is False
     assert s.snapshot()["state"] == "closing"
@@ -155,6 +159,20 @@ def test_sell_signal_after_hold():
     assert s._closed is True
     assert s.completed is True
     assert s.snapshot()["state"] == "completed"
+
+
+def test_trade_callback_accepts_vt_symbol_variant():
+    """A fill with exchange-qualified symbol still advances the verification state."""
+    s = VerifyStrategy("verify", {"symbol": "au2606", "warmup_bars": 1, "hold_bars": 3, "volume": 1, "auto_arm": True})
+    s.on_init()
+
+    s.on_bar(_bar(812, symbol="SHFE.au2606"))
+    assert s.snapshot()["state"] == "entry_pending"
+
+    s.on_trade(_trade(Direction.LONG, 812, symbol="au2606.SHFE"))
+
+    assert s._bought is True
+    assert s.snapshot()["state"] == "holding"
 
 
 def test_revoke_start_returns_to_ready_state():

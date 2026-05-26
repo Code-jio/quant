@@ -263,13 +263,27 @@
               <el-table :data="orders" size="small" height="320" empty-text="暂无订单">
                 <el-table-column prop="order_id" label="委托号" min-width="120" show-overflow-tooltip />
                 <el-table-column prop="symbol" label="合约" min-width="100" show-overflow-tooltip />
-                <el-table-column prop="direction" label="方向" width="76" />
-                <el-table-column prop="offset" label="开平" width="76" />
+                <el-table-column label="方向" width="86">
+                  <template #default="{ row }">
+                    <el-tag :type="directionType(row.direction)" size="small" effect="plain">
+                      {{ directionLabel(row.direction) }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="开平" width="76">
+                  <template #default="{ row }">{{ offsetLabel(row.offset) }}</template>
+                </el-table-column>
                 <el-table-column prop="price" label="价格" width="92" />
                 <el-table-column prop="volume" label="数量" width="80" />
-                <el-table-column prop="status" label="状态" min-width="100" show-overflow-tooltip />
+                <el-table-column label="状态" min-width="110" show-overflow-tooltip>
+                  <template #default="{ row }">
+                    <el-tag :type="orderStatusType(row.status)" size="small" effect="plain">
+                      {{ orderStatusLabel(row.status) }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
                 <el-table-column label="时间" min-width="150" show-overflow-tooltip>
-                  <template #default="{ row }">{{ row.datetime || row.time || row.update_time || '--' }}</template>
+                  <template #default="{ row }">{{ formatRowTime(row) }}</template>
                 </el-table-column>
               </el-table>
             </div>
@@ -281,11 +295,17 @@
                 <el-table-column prop="trade_id" label="成交号" min-width="120" show-overflow-tooltip />
                 <el-table-column prop="order_id" label="委托号" min-width="120" show-overflow-tooltip />
                 <el-table-column prop="symbol" label="合约" min-width="100" show-overflow-tooltip />
-                <el-table-column prop="direction" label="方向" width="76" />
+                <el-table-column label="方向" width="86">
+                  <template #default="{ row }">
+                    <el-tag :type="directionType(row.direction)" size="small" effect="plain">
+                      {{ directionLabel(row.direction) }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
                 <el-table-column prop="price" label="价格" width="92" />
                 <el-table-column prop="volume" label="数量" width="80" />
                 <el-table-column label="时间" min-width="150" show-overflow-tooltip>
-                  <template #default="{ row }">{{ row.datetime || row.time || '--' }}</template>
+                  <template #default="{ row }">{{ formatRowTime(row) }}</template>
                 </el-table-column>
               </el-table>
             </div>
@@ -295,7 +315,13 @@
             <div class="table-scroll">
               <el-table :data="positions" size="small" height="320" empty-text="暂无持仓">
                 <el-table-column prop="symbol" label="合约" min-width="110" show-overflow-tooltip />
-                <el-table-column prop="direction" label="方向" width="76" />
+                <el-table-column label="方向" width="86">
+                  <template #default="{ row }">
+                    <el-tag :type="directionType(row.direction)" size="small" effect="plain">
+                      {{ positionDirectionLabel(row.direction) }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
                 <el-table-column prop="volume" label="持仓" width="88" />
                 <el-table-column prop="available" label="可用" width="88" />
                 <el-table-column prop="frozen" label="冻结" width="88" />
@@ -442,6 +468,32 @@ const MARKET_ISSUE_LABELS = {
   invalid_tick_price: 'tick 价格无效',
 }
 
+const ACTIVE_ORDER_STATUSES = new Set(['submitting', 'submitted', 'partfilled'])
+const ORDER_STATUS_LABELS = {
+  submitting: '提交中',
+  submitted: '已报未成',
+  partfilled: '部分成交',
+  filled: '全部成交',
+  cancelled: '已撤单',
+  rejected: '已拒单',
+}
+const OFFSET_LABELS = {
+  open: '开仓',
+  close: '平仓',
+  close_today: '平今',
+  close_yesterday: '平昨',
+}
+const DIRECTION_LABELS = {
+  long: '买入',
+  short: '卖出',
+  net: '净持仓',
+}
+const POSITION_DIRECTION_LABELS = {
+  long: '多',
+  short: '空',
+  net: '净',
+}
+
 let pollTimer = null
 
 const connected = computed(() => {
@@ -536,7 +588,7 @@ const trialStatusType = computed(() => {
 })
 
 const emergencyActive = computed(() => Boolean(riskConfig.value.emergency_stop || riskStatus.value.emergency_stop))
-const activeOrderCount = computed(() => orders.value.filter(order => ['submitting', 'submitted', 'partfilled'].includes(String(order.status || '').toLowerCase())).length)
+const activeOrderCount = computed(() => orders.value.filter(order => ACTIVE_ORDER_STATUSES.has(normalizeCode(order.status))).length)
 const hasCloseablePosition = computed(() => positions.value.some(position => (
   matchesAllowedSymbol(position) && Math.abs(numberOf(position.volume, 0)) > 0
 )))
@@ -615,10 +667,38 @@ const firstTickBarText = computed(() => {
   }
   return '等待首个 tick'
 })
+const lastOrderPrice = computed(() => numberOf(
+  trialStatus.value.last_order_price ?? statusSnapshot.value.last_order_price,
+  0,
+))
+const lastOrderPricingSource = computed(() => String(
+  trialStatus.value.last_order_pricing_source || statusSnapshot.value.last_order_pricing_source || '',
+))
+const orderPricingText = computed(() => {
+  if (lastOrderPrice.value <= 0) return '--'
+  const source = lastOrderPricingSource.value ? ` (${lastOrderPricingSource.value})` : ''
+  return `${lastOrderPrice.value}${source}`
+})
+const chaseText = computed(() => {
+  const enabled = Boolean(trialStatus.value.chase_enabled ?? statusSnapshot.value.chase_enabled)
+  if (!enabled) return '未启用'
+  const attempts = numberOf(trialStatus.value.chase_attempts ?? statusSnapshot.value.chase_attempts, 0)
+  const maxAttempts = numberOf(trialStatus.value.chase_max_attempts ?? statusSnapshot.value.chase_max_attempts, 0)
+  const pendingCancel = trialStatus.value.chase_pending_cancel_order_id || statusSnapshot.value.chase_pending_cancel_order_id || ''
+  const resubmitReady = Boolean(trialStatus.value.chase_resubmit_ready ?? statusSnapshot.value.chase_resubmit_ready)
+  const lastPrice = numberOf(trialStatus.value.last_chase_price ?? statusSnapshot.value.last_chase_price, 0)
+  const reason = trialStatus.value.last_chase_reason || statusSnapshot.value.last_chase_reason || ''
+  if (pendingCancel) return `撤单中 ${attempts}/${maxAttempts} ${pendingCancel}`
+  if (resubmitReady) return `待重报 ${attempts}/${maxAttempts}`
+  if (attempts > 0) return `已追价 ${attempts}/${maxAttempts}${lastPrice > 0 ? ` @${lastPrice}` : ''}${reason ? ` ${reason}` : ''}`
+  return `待触发 0/${maxAttempts}`
+})
 const marketDiagnostics = computed(() => [
   { label: '订阅合约', value: subscribedSymbolsText.value, className: 'mono wrap' },
   { label: '最近 tick', value: latestMarketDetail.value || '--', className: 'mono wrap' },
   { label: 'tick / bar', value: `${tickCount.value} / ${barCount.value}`, className: 'mono' },
+  { label: '委托价格', value: orderPricingText.value, className: 'mono wrap' },
+  { label: '追价状态', value: chaseText.value, className: 'mono wrap' },
   { label: '首 tick Bar', value: firstTickBarText.value, className: firstTickBarEmitted.value ? 'ok' : marketIssue.value ? 'warn' : '' },
   { label: '失败原因', value: marketDiagnosticLabel.value, className: marketIssue.value ? 'warn' : '' },
 ])
@@ -697,6 +777,74 @@ function boolOf(value, fallback = false) {
 
 function displayValue(value) {
   return value === undefined || value === null || value === '' ? '--' : String(value)
+}
+
+function normalizeCode(value) {
+  return String(value || '').trim().toLowerCase()
+}
+
+function directionLabel(value) {
+  const code = normalizeCode(value)
+  return DIRECTION_LABELS[code] || displayValue(value)
+}
+
+function positionDirectionLabel(value) {
+  const code = normalizeCode(value)
+  return POSITION_DIRECTION_LABELS[code] || directionLabel(value)
+}
+
+function directionType(value) {
+  const code = normalizeCode(value)
+  if (code === 'long') return 'success'
+  if (code === 'short') return 'danger'
+  return 'info'
+}
+
+function offsetLabel(value) {
+  const code = normalizeCode(value)
+  return OFFSET_LABELS[code] || displayValue(value)
+}
+
+function orderStatusLabel(value) {
+  const code = normalizeCode(value)
+  return ORDER_STATUS_LABELS[code] || displayValue(value)
+}
+
+function orderStatusType(value) {
+  const code = normalizeCode(value)
+  if (code === 'filled') return 'success'
+  if (code === 'rejected' || code === 'cancelled') return 'danger'
+  if (code === 'partfilled') return 'warning'
+  if (ACTIVE_ORDER_STATUSES.has(code)) return 'primary'
+  return 'info'
+}
+
+function formatDateTime(date) {
+  const pad = value => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
+function formatTimeValue(value) {
+  if (value === undefined || value === null || value === '') return '--'
+  const text = String(value).trim()
+  if (!text || text === '--') return '--'
+  if (/^\d{2}:\d{2}(:\d{2})?$/.test(text)) return text
+  const parsed = new Date(text)
+  if (!Number.isNaN(parsed.getTime())) return formatDateTime(parsed)
+  return text
+}
+
+function formatRowTime(row) {
+  return formatTimeValue(pick(row, [
+    'create_ts',
+    'create_time',
+    'update_ts',
+    'update_time',
+    'timestamp',
+    'datetime',
+    'time',
+    'trade_time',
+  ]))
 }
 
 function formatMoney(value) {

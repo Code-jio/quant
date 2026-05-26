@@ -219,6 +219,20 @@ class TrialRunStatusResponse(BaseModel):
     first_tick_bar_enabled: bool = False
     first_tick_bar_emitted: bool = False
     first_tick_bar_skip_reason: str = ""
+    price_tick: float = 0.0
+    aggressive_ticks: int = 0
+    last_order_price: float = 0.0
+    last_order_pricing_source: str = ""
+    chase_enabled: bool = False
+    chase_interval_seconds: float = 0.0
+    chase_attempts: int = 0
+    chase_max_attempts: int = 0
+    chase_step_ticks: int = 0
+    chase_pending_cancel_order_id: str = ""
+    chase_resubmit_ready: bool = False
+    last_chase_reason: str = ""
+    last_chase_order_id: str = ""
+    last_chase_price: float = 0.0
     position_volume: int = 0
     last_reject_reason: str = ""
     risk: Dict[str, Any] = Field(default_factory=dict)

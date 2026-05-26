@@ -244,6 +244,7 @@ class TradingEngine:
                 try:
                     on_tick(tick)
                     self._dispatch_strategy_signals()
+                    self._maybe_chase_strategy_order(tick)
                 except Exception as e:
                     logger.error(f"处理 Tick 策略回调失败: {e}")
 
@@ -407,7 +408,52 @@ class TradingEngine:
                     "Strategy signal rejected: %s %s %s",
                     signal.symbol, signal.direction, signal.volume,
                 )
+            else:
+                self._notify_strategy_signal_submitted(signal, order_id)
         self._processed_signal_count = len(signals)
+
+    def _notify_strategy_signal_submitted(self, signal: 'Signal', order_id: str):
+        notify = getattr(self.strategy, "on_signal_submitted", None) if self.strategy else None
+        if callable(notify):
+            try:
+                notify(signal, order_id)
+            except Exception as e:
+                logger.error("Strategy order-submit notification failed: %s", e)
+
+    def _maybe_chase_strategy_order(self, tick: MarketData):
+        action_fn = getattr(self.strategy, "next_chase_action", None) if self.strategy else None
+        if not callable(action_fn):
+            return
+        try:
+            action = action_fn(tick) or {}
+        except Exception as e:
+            logger.error("Strategy chase decision failed: %s", e)
+            return
+
+        action_type = action.get("action")
+        if action_type == "cancel":
+            order_id = str(action.get("order_id") or "")
+            if not order_id:
+                return
+            if not self.cancel_order(order_id):
+                failed = getattr(self.strategy, "on_chase_cancel_failed", None)
+                if callable(failed):
+                    failed(order_id)
+                logger.warning("Strategy chase cancel failed: %s", order_id)
+            return
+
+        if action_type == "submit":
+            signal = action.get("signal")
+            if not signal:
+                return
+            order_id = self.send_signal(signal)
+            if order_id:
+                self._notify_strategy_signal_submitted(signal, order_id)
+                self._processed_signal_count = max(self._processed_signal_count, len(getattr(self.strategy, "signals", [])))
+            else:
+                reject_callback = getattr(self.strategy, "mark_signal_rejected", None)
+                if callable(reject_callback):
+                    reject_callback(getattr(self, "last_reject_reason", ""))
 
     def _market_data_for_symbol(self, symbol: str) -> Dict[str, Any]:
         data = self._lookup_symbol_mapping(self.order_manager.market_data, symbol)

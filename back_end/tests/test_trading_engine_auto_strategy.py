@@ -140,7 +140,7 @@ def test_verify_strategy_can_warm_up_from_first_tick():
     assert len(strategy.signals) == 1
     assert len(gateway.sent_signals) == 1
     assert gateway.sent_signals[0].symbol == "rb2505"
-    assert gateway.sent_signals[0].price == 3800.0
+    assert gateway.sent_signals[0].price == 3802.0
 
 
 def test_verify_strategy_first_tick_accepts_vt_symbol_variants():
@@ -167,7 +167,7 @@ def test_verify_strategy_first_tick_accepts_vt_symbol_variants():
     assert snapshot["state"] == "entry_pending"
     assert len(gateway.sent_signals) == 1
     assert gateway.sent_signals[0].symbol == "au2606"
-    assert gateway.sent_signals[0].price == 812.0
+    assert gateway.sent_signals[0].price == 814.0
 
 
 def test_broker_order_callback_updates_order_manager_books():
@@ -241,4 +241,57 @@ def test_verify_strategy_uses_live_tick_for_readiness_and_entry_dispatch():
     assert len(strategy.signals) == 1
     assert len(gateway.sent_signals) == 1
     assert gateway.sent_signals[0].symbol == "rb2505"
-    assert gateway.sent_signals[0].price == 3810.0
+    assert gateway.sent_signals[0].price == 3812.0
+
+
+def test_verify_strategy_chases_unfilled_entry_after_cancel_ack():
+    gateway = RecordingGateway()
+    engine = TradingEngine(gateway)
+    strategy = VerifyStrategy("verify", {
+        "symbol": "rb2505",
+        "warmup_bars": 20,
+        "readiness_bars": 1,
+        "volume": 1,
+        "aggressive_ticks": 1,
+        "chase_enabled": True,
+        "chase_interval_seconds": 1,
+        "chase_max_attempts": 3,
+        "chase_step_ticks": 1,
+    })
+    engine.set_strategy(strategy)
+
+    assert engine.start({
+        "initial_capital": 100000.0,
+        "risk": {
+            "allowed_symbols": ["rb2505"],
+            "max_order_volume": 1,
+            "max_position_volume": 1,
+            "max_active_orders": 2,
+            "max_market_data_age_seconds": 30,
+            "allow_market_orders": False,
+        },
+    }) is True
+
+    start = datetime.now()
+    engine.on_tick(make_tick("rb2505", 3800.0, start))
+    assert strategy.start_verification() is True
+    engine.on_tick(make_tick("rb2505", 3810.0, start + timedelta(seconds=1)))
+
+    assert gateway.sent_signals[0].price == 3812.0
+    assert gateway.cancelled_order_ids == []
+
+    engine.on_tick(make_tick("rb2505", 3820.0, start + timedelta(seconds=3)))
+
+    assert gateway.cancelled_order_ids == ["ORDER_1"]
+    assert len(gateway.sent_signals) == 1
+    assert strategy.snapshot()["chase_resubmit_ready"] is True
+
+    engine.on_tick(make_tick("rb2505", 3830.0, start + timedelta(seconds=4)))
+
+    snapshot = strategy.snapshot()
+    assert len(gateway.sent_signals) == 2
+    assert gateway.sent_signals[1].price == 3833.0
+    assert snapshot["chase_attempts"] == 1
+    assert snapshot["last_chase_order_id"] == "ORDER_2"
+    assert snapshot["last_chase_price"] == 3833.0
+    assert snapshot["state"] == "entry_pending"

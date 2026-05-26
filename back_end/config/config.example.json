@@ -29,6 +29,12 @@
     "hold_bars": 3,
     "contract_multiplier": 1000,
     "order_type": "limit",
+    "price_tick": 1,
+    "aggressive_ticks": 3,
+    "chase_enabled": true,
+    "chase_interval_seconds": 2,
+    "chase_max_attempts": 3,
+    "chase_step_ticks": 1,
     "max_errors": 10
   },
   "trading": {

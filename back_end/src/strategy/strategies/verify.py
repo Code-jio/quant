@@ -3,6 +3,7 @@ VerifyStrategy — minimal verification strategy for live trading chain.
 """
 
 import logging
+from datetime import datetime
 
 import pandas as pd
 from ..base import StrategyBase
@@ -26,6 +27,15 @@ class VerifyStrategy(StrategyBase):
         self._volume = int(self.params.get("volume", 1))
         self._multiplier = int(self.params.get("contract_multiplier", 10))
         self._order_type = self._parse_order_type(self.params.get("order_type", "limit"))
+        self._price_tick = self._parse_positive_float(
+            self.params.get("price_tick", self.params.get("min_tick", 1.0)),
+            default=1.0,
+        )
+        self._aggressive_ticks = self._parse_non_negative_int(self.params.get("aggressive_ticks", 1), default=1)
+        self._chase_enabled = bool(self.params.get("chase_enabled", True))
+        self._chase_interval_seconds = self._parse_positive_float(self.params.get("chase_interval_seconds", 2.0), default=2.0)
+        self._chase_max_attempts = self._parse_non_negative_int(self.params.get("chase_max_attempts", 3), default=3)
+        self._chase_step_ticks = self._parse_non_negative_int(self.params.get("chase_step_ticks", 1), default=1)
         self.auto_arm = bool(self.params.get("auto_arm", False))
 
         self._bar_count = 0
@@ -45,6 +55,17 @@ class VerifyStrategy(StrategyBase):
         self._entry_order_sent = False
         self._close_order_sent = False
         self._last_reject_reason = ""
+        self._last_order_price = 0.0
+        self._last_order_pricing_source = ""
+        self._entry_order_id = ""
+        self._close_order_id = ""
+        self._last_order_submitted_at = None
+        self._chase_attempts = 0
+        self._chase_pending_cancel_order_id = ""
+        self._chase_resubmit_ready = False
+        self._last_chase_reason = ""
+        self._last_chase_order_id = ""
+        self._last_chase_price = 0.0
 
         self._initialized = True
         logger.info(
@@ -57,6 +78,22 @@ class VerifyStrategy(StrategyBase):
         if normalized == OrderType.MARKET.value:
             return OrderType.MARKET
         return OrderType.LIMIT
+
+    @staticmethod
+    def _parse_positive_float(value, default: float) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return default
+        return parsed if parsed > 0 else default
+
+    @staticmethod
+    def _parse_non_negative_int(value, default: int) -> int:
+        try:
+            parsed = int(float(value))
+        except (TypeError, ValueError):
+            return default
+        return max(0, parsed)
 
     @staticmethod
     def _normalize_symbol_key(symbol: str) -> str:
@@ -72,6 +109,167 @@ class VerifyStrategy(StrategyBase):
     @classmethod
     def _symbols_match(cls, left: str, right: str) -> bool:
         return cls._normalize_symbol_key(left) == cls._normalize_symbol_key(right)
+
+    @staticmethod
+    def _market_price(market, keys: tuple[str, ...]) -> tuple[float, str]:
+        for key in keys:
+            value = None
+            if hasattr(market, "get"):
+                try:
+                    value = market.get(key, None)
+                except Exception:
+                    value = None
+            if value is None and hasattr(market, key):
+                value = getattr(market, key)
+            try:
+                price = float(value or 0)
+            except (TypeError, ValueError):
+                price = 0.0
+            if price > 0:
+                return price, key
+        return 0.0, ""
+
+    @staticmethod
+    def _market_timestamp(market):
+        for key in ("timestamp", "datetime", "time"):
+            value = None
+            if hasattr(market, "get"):
+                try:
+                    value = market.get(key, None)
+                except Exception:
+                    value = None
+            if value is None and hasattr(market, key):
+                value = getattr(market, key)
+            if value:
+                return value
+        return datetime.now()
+
+    @staticmethod
+    def _elapsed_seconds(later, earlier) -> float:
+        if not earlier:
+            return 0.0
+        try:
+            return max(0.0, (later - earlier).total_seconds())
+        except Exception:
+            return 0.0
+
+    def _marketable_order_price(self, direction: Direction, fallback_price: float, market, extra_ticks: int = 0) -> float:
+        fallback = float(fallback_price or 0)
+        if self._order_type != OrderType.LIMIT:
+            self._last_order_price = fallback
+            self._last_order_pricing_source = "market_order_reference"
+            return fallback
+
+        total_ticks = self._aggressive_ticks + max(0, int(extra_ticks or 0))
+        adjustment = total_ticks * self._price_tick
+        if direction == Direction.LONG:
+            quote, source = self._market_price(market, ("ask_price_1", "ask", "ask1", "ask_price"))
+            base = quote if quote > 0 else fallback
+            price = base + adjustment
+            source = source or "last_price"
+            source = f"{source}+{total_ticks}ticks"
+        else:
+            quote, source = self._market_price(market, ("bid_price_1", "bid", "bid1", "bid_price"))
+            base = quote if quote > 0 else fallback
+            price = base - adjustment
+            source = source or "last_price"
+            source = f"{source}-{total_ticks}ticks"
+            if price <= 0:
+                price = fallback
+                source = "last_price"
+
+        rounded = round(float(price), 6)
+        self._last_order_price = rounded
+        self._last_order_pricing_source = source
+        return rounded
+
+    def _pending_order_id(self) -> str:
+        if self._entry_order_sent and not self._bought:
+            return self._entry_order_id
+        if self._close_order_sent and not self.completed:
+            return self._close_order_id
+        return ""
+
+    def on_signal_submitted(self, signal, order_id: str):
+        comment = str(getattr(signal, "comment", "") or "")
+        if comment == "buy_open":
+            self._entry_order_id = order_id
+            self._entry_order_sent = True
+            self.trial_state = "entry_pending"
+        elif comment == "sell_close":
+            self._close_order_id = order_id
+            self._close_order_sent = True
+            self.trial_state = "closing"
+        self._last_order_submitted_at = getattr(signal, "datetime", None) or self.current_date or datetime.now()
+        self._last_chase_order_id = order_id if self._chase_attempts else self._last_chase_order_id
+        self._chase_pending_cancel_order_id = ""
+        self._chase_resubmit_ready = False
+
+    def next_chase_action(self, market) -> dict:
+        if not self._chase_enabled or self.completed or self.trial_state == "error":
+            return {}
+        if self._bought and not self._close_order_sent:
+            return {}
+
+        symbol = getattr(market, "symbol", self.symbol)
+        if not self._symbols_match(symbol, self.symbol):
+            return {}
+        fallback = float(getattr(market, "last_price", 0) or 0)
+        if fallback <= 0 and hasattr(market, "get"):
+            fallback = float(market.get("close", 0) or 0)
+        if fallback <= 0:
+            return {}
+
+        if self._chase_resubmit_ready:
+            signal = self._create_chase_signal(market, fallback)
+            if signal:
+                self._chase_resubmit_ready = False
+                return {"action": "submit", "signal": signal}
+            return {}
+
+        order_id = self._pending_order_id()
+        if not order_id or self._chase_pending_cancel_order_id:
+            return {}
+        if self._chase_attempts >= self._chase_max_attempts:
+            self._last_chase_reason = "max_attempts_reached"
+            return {}
+
+        age = self._elapsed_seconds(self._market_timestamp(market), self._last_order_submitted_at)
+        if age < self._chase_interval_seconds:
+            return {}
+
+        self._chase_attempts += 1
+        self._chase_pending_cancel_order_id = order_id
+        self._last_chase_reason = f"unfilled_for_{round(age, 2)}s"
+        return {"action": "cancel", "order_id": order_id}
+
+    def _create_chase_signal(self, market, fallback: float):
+        extra_ticks = self._chase_attempts * self._chase_step_ticks
+        if self._entry_order_id and not self._bought and not self._entry_order_sent:
+            order_price = self._marketable_order_price(Direction.LONG, fallback, market, extra_ticks=extra_ticks)
+            signal = self.buy(self.symbol, order_price, self._volume, order_type=self._order_type)
+            if signal:
+                self._entry_order_sent = True
+                self._entry_price = order_price
+                self._last_chase_price = order_price
+                self.trial_state = "entry_pending"
+                logger.info("验证开仓追价重报: %s %d手@%.2f", self.symbol, self._volume, order_price)
+            return signal
+        if self._close_order_id and not self.completed and not self._close_order_sent:
+            order_price = self._marketable_order_price(Direction.SHORT, fallback, market, extra_ticks=extra_ticks)
+            signal = self.sell(self.symbol, order_price, self._volume, order_type=self._order_type)
+            if signal:
+                self._close_order_sent = True
+                self._last_chase_price = order_price
+                self.trial_state = "closing"
+                logger.info("验证平仓追价重报: %s %d手@%.2f", self.symbol, self._volume, order_price)
+            return signal
+        return None
+
+    def on_chase_cancel_failed(self, order_id: str):
+        if self._chase_pending_cancel_order_id == order_id:
+            self._chase_pending_cancel_order_id = ""
+            self._last_chase_reason = "cancel_failed"
 
     def start_verification(self) -> bool:
         if self.market_ready and self.ready_to_arm and not self._entry_order_sent and not self._bought and not self.completed:
@@ -121,6 +319,20 @@ class VerifyStrategy(StrategyBase):
             "entry_order_sent": self._entry_order_sent,
             "close_order_sent": self._close_order_sent,
             "order_type": self._order_type.value,
+            "price_tick": self._price_tick,
+            "aggressive_ticks": self._aggressive_ticks,
+            "last_order_price": self._last_order_price,
+            "last_order_pricing_source": self._last_order_pricing_source,
+            "chase_enabled": self._chase_enabled,
+            "chase_interval_seconds": self._chase_interval_seconds,
+            "chase_attempts": self._chase_attempts,
+            "chase_max_attempts": self._chase_max_attempts,
+            "chase_step_ticks": self._chase_step_ticks,
+            "chase_pending_cancel_order_id": self._chase_pending_cancel_order_id,
+            "chase_resubmit_ready": self._chase_resubmit_ready,
+            "last_chase_reason": self._last_chase_reason,
+            "last_chase_order_id": self._last_chase_order_id,
+            "last_chase_price": self._last_chase_price,
             "last_market_price": self._last_market_price,
             "last_market_timestamp": (
                 self._last_market_timestamp.isoformat()
@@ -161,6 +373,9 @@ class VerifyStrategy(StrategyBase):
             logger.info("收到有效行情 tick，等待开始验证交易: %s last=%.2f", symbol, price)
             return
 
+        if self._chase_pending_cancel_order_id or self._chase_resubmit_ready:
+            self.trial_state = "closing" if self._close_order_id and not self.completed else "entry_pending"
+            return
         if self._entry_order_sent and not self._bought:
             self.trial_state = "entry_pending"
             return
@@ -171,13 +386,14 @@ class VerifyStrategy(StrategyBase):
             return
 
         logger.info("验证交易已开始，按最新 tick 发送验证买单")
-        signal = self.buy(self.symbol, price, self._volume, order_type=self._order_type)
+        order_price = self._marketable_order_price(Direction.LONG, price, tick)
+        signal = self.buy(self.symbol, order_price, self._volume, order_type=self._order_type)
         if signal:
             self._entry_order_sent = True
-            self._entry_price = price
+            self._entry_price = order_price
             self._bars_since_entry = 0
             self.trial_state = "entry_pending"
-            logger.info("信号发出: 开仓 %s %d手@%.0f", self.symbol, self._volume, price)
+            logger.info("信号发出: 开仓 %s %d手@%.0f", self.symbol, self._volume, order_price)
         else:
             logger.error("开仓信号生成失败")
 
@@ -204,6 +420,9 @@ class VerifyStrategy(StrategyBase):
 
         pos = self.get_position(symbol)
 
+        if self._chase_pending_cancel_order_id or self._chase_resubmit_ready:
+            self.trial_state = "closing" if self._close_order_id and not self.completed else "entry_pending"
+            return
         if self._entry_order_sent and not self._bought:
             self.trial_state = "entry_pending"
             logger.info("开仓委托已发送，等待成交回报")
@@ -221,11 +440,12 @@ class VerifyStrategy(StrategyBase):
             if self._bars_since_entry >= self.hold_bars:
                 if self._close_order_sent:
                     return
-                signal = self.sell(self.symbol, close, self._volume, order_type=self._order_type)
+                order_price = self._marketable_order_price(Direction.SHORT, close, bar)
+                signal = self.sell(self.symbol, order_price, self._volume, order_type=self._order_type)
                 if signal:
                     self._close_order_sent = True
                     self.trial_state = "closing"
-                    logger.info("信号发出: 平仓 %s %d手@%.0f", self.symbol, self._volume, close)
+                    logger.info("信号发出: 平仓 %s %d手@%.0f", self.symbol, self._volume, order_price)
                 else:
                     logger.error("平仓信号生成失败")
             return
@@ -267,13 +487,14 @@ class VerifyStrategy(StrategyBase):
         # Verification start is accepted out-of-band; the next valid market update sends one entry order.
         if not self._bought and not self._entry_order_sent:
             logger.info("验证交易已开始，按完成 bar 发送验证买单")
-            signal = self.buy(self.symbol, close, self._volume, order_type=self._order_type)
+            order_price = self._marketable_order_price(Direction.LONG, close, bar)
+            signal = self.buy(self.symbol, order_price, self._volume, order_type=self._order_type)
             if signal:
                 self._entry_order_sent = True
-                self._entry_price = close
+                self._entry_price = order_price
                 self._bars_since_entry = 0
                 self.trial_state = "entry_pending"
-                logger.info("信号发出: 开仓 %s %d手@%.0f", self.symbol, self._volume, close)
+                logger.info("信号发出: 开仓 %s %d手@%.0f", self.symbol, self._volume, order_price)
             else:
                 logger.error("开仓信号生成失败")
 
@@ -292,6 +513,19 @@ class VerifyStrategy(StrategyBase):
             status_value = status.value
         else:
             status_value = str(status or "")
+        order_id = str(getattr(order, "order_id", "") or "")
+        if status_value == OrderStatus.CANCELLED.value and order_id == self._chase_pending_cancel_order_id:
+            self._chase_pending_cancel_order_id = ""
+            self._chase_resubmit_ready = True
+            self._last_chase_reason = "cancelled_waiting_requote"
+            if order_id == self._entry_order_id and not self._bought:
+                self._entry_order_sent = False
+                self.trial_state = "entry_pending"
+            elif order_id == self._close_order_id and not self.completed:
+                self._close_order_sent = False
+                self.trial_state = "closing"
+            logger.info("验证委托已撤，等待下一笔有效 tick 追价重报: %s", order_id)
+            return
         if status_value in {OrderStatus.REJECTED.value, OrderStatus.CANCELLED.value}:
             self._last_reject_reason = getattr(order, "error_msg", "") or status_value
             self.trade_authorized = False
@@ -313,13 +547,15 @@ class VerifyStrategy(StrategyBase):
         if not self.trades or getattr(self.trades[-1], "trade_id", "") != getattr(trade, "trade_id", ""):
             self.update_position(trade.symbol, trade)
 
-        if getattr(trade, "symbol", "") != self.symbol:
+        if not self._symbols_match(getattr(trade, "symbol", ""), self.symbol):
             return
 
         direction = getattr(trade, "direction", None)
         direction_value = direction.value if hasattr(direction, "value") else str(direction or "")
         if direction_value == Direction.LONG.value and self._entry_order_sent and not self._bought:
             self._bought = True
+            self._chase_pending_cancel_order_id = ""
+            self._chase_resubmit_ready = False
             self.trial_state = "holding"
             self._bars_since_entry = 0
             self._entry_price = float(getattr(trade, "price", self._entry_price) or self._entry_price)
@@ -327,6 +563,8 @@ class VerifyStrategy(StrategyBase):
         elif direction_value == Direction.SHORT.value and self._close_order_sent and not self.completed:
             self._closed = True
             self.completed = True
+            self._chase_pending_cancel_order_id = ""
+            self._chase_resubmit_ready = False
             self.trade_authorized = False
             self.trial_state = "completed"
             logger.info("验证平仓已成交，试运行闭环完成")
@@ -334,5 +572,7 @@ class VerifyStrategy(StrategyBase):
     def mark_signal_rejected(self, reason: str = ""):
         self._last_reject_reason = reason or "signal_rejected"
         self.trade_authorized = False
+        self._chase_pending_cancel_order_id = ""
+        self._chase_resubmit_ready = False
         self.trial_state = "error"
         logger.error("验证策略信号被拒绝: %s", self._last_reject_reason)

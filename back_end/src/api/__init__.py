@@ -531,19 +531,50 @@ def _record_audit(
 # 订单广播钩子
 # ---------------------------------------------------------------------------
 
+def _time_text(value) -> str:
+    if hasattr(value, "strftime"):
+        return value.strftime("%H:%M:%S")
+    return str(value)[-8:] if value else ""
+
+
+def _iso_text(value) -> str:
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value or "")
+
+
 def _order_to_dict(order) -> dict:
+    create_time = getattr(order, "create_time", None)
+    update_time = getattr(order, "update_time", None)
+    direction = order.direction.value if hasattr(order.direction, "value") else str(order.direction)
+    offset = order.offset.value if hasattr(order, "offset") and hasattr(order.offset, "value") else "open"
+    status = order.status.value if hasattr(order.status, "value") else str(order.status)
     return {
         "type":          "order_update",
         "timestamp":     datetime.now().isoformat(),
         "order_id":      order.order_id,
         "symbol":        order.symbol,
-        "direction":     order.direction.value if hasattr(order.direction, "value") else str(order.direction),
+        "direction":     direction,
+        "direction_label": {"long": "买入", "short": "卖出", "net": "净"}.get(direction, direction),
         "order_type":    order.order_type.value if hasattr(order.order_type, "value") else str(order.order_type),
-        "offset":        order.offset.value if hasattr(order, "offset") and hasattr(order.offset, "value") else "open",
+        "offset":        offset,
+        "offset_label":  {"open": "开仓", "close": "平仓", "close_today": "平今", "close_yesterday": "平昨"}.get(offset, offset),
         "price":         order.price,
         "volume":        order.volume,
         "traded_volume": order.traded_volume,
-        "status":        order.status.value if hasattr(order.status, "value") else str(order.status),
+        "status":        status,
+        "status_label":  {
+            "submitting": "提交中",
+            "submitted": "已报未成",
+            "partfilled": "部分成交",
+            "filled": "全部成交",
+            "cancelled": "已撤单",
+            "rejected": "已拒单",
+        }.get(status, status),
+        "create_time":   _time_text(create_time),
+        "create_ts":     _iso_text(create_time),
+        "update_time":   _time_text(update_time),
+        "update_ts":     _iso_text(update_time),
         "error_msg":     getattr(order, "error_msg", ""),
     }
 
@@ -561,13 +592,15 @@ def _trade_to_dict(trade) -> dict:
     else:
         time_str  = str(ts)[-8:] if ts else "--"
         ts_iso    = datetime.now().isoformat()
+    direction = trade.direction.value if hasattr(trade.direction, "value") else str(trade.direction)
     return {
         "type":       "trade_event",
         "timestamp":  ts_iso,
         "trade_id":   getattr(trade, "trade_id",   ""),
         "order_id":   getattr(trade, "order_id",   ""),
         "symbol":     getattr(trade, "symbol",     ""),
-        "direction":  trade.direction.value if hasattr(trade.direction, "value") else str(trade.direction),
+        "direction":  direction,
+        "direction_label": {"long": "买入", "short": "卖出", "net": "净"}.get(direction, direction),
         "price":      getattr(trade, "price",      0.0),
         "volume":     getattr(trade, "volume",     0),
         "commission": round(getattr(trade, "commission", 0.0), 4),
