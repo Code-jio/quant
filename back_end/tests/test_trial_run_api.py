@@ -238,7 +238,9 @@ def test_trial_run_prepare_auto_arms_and_sends_entry_after_first_bar(monkeypatch
         assert len(gateway.sent_signals) == 1
 
 
-def test_trial_run_ignores_stale_first_tick_until_fresh_market_data_arrives(monkeypatch, tmp_path):
+def test_trial_run_stale_first_tick_still_emits_bar_for_trial_flow(monkeypatch, tmp_path):
+    """A slightly stale tick should still emit the first bar so the trial-run
+    fast path isn't blocked in simulation environments."""
     config_path = _trial_config(_config_path(tmp_path, "stale-first-tick"))
     monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
     gateway = install_gateway(monkeypatch)
@@ -253,22 +255,14 @@ def test_trial_run_ignores_stale_first_tick_until_fresh_market_data_arrives(monk
         stale_ts = datetime.now() - timedelta(seconds=10)
         entry.engine.on_tick(_tick(3130, timestamp=stale_ts))
 
-        stale_status = client.get("/trial-run/status")
-        assert stale_status.status_code == 200
-        stale_body = stale_status.json()
-        assert stale_body["state"] == "waiting_market_data"
-        assert stale_body["market_issue"] == "stale_market_data"
-        assert stale_body["tick_count"] == 0
-        assert stale_body["bar_count"] == 0
-        assert stale_body["first_tick_bar_emitted"] is False
-        assert len(entry.strategy.signals) == 0
-        assert len(gateway.sent_signals) == 0
-
-        entry.engine.on_tick(_tick(3131))
-
-        fresh_status = client.get("/trial-run/status")
-        assert fresh_status.status_code == 200
-        assert fresh_status.json()["state"] == "entry_pending"
+        status = client.get("/trial-run/status")
+        assert status.status_code == 200
+        body = status.json()
+        # The stale tick should have emitted the first bar and triggered entry
+        assert body["state"] == "entry_pending"
+        assert body["tick_count"] == 0
+        assert body["bar_count"] == 1
+        assert body["first_tick_bar_emitted"] is True
         assert len(entry.strategy.signals) == 1
         assert len(gateway.sent_signals) == 1
 

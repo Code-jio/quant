@@ -6,14 +6,14 @@ from src.strategy.strategies.verify import VerifyStrategy
 from src.trading.types import MarketData
 
 
-def _bar(close, symbol="rb2510"):
+def _bar(close, symbol="rb2610"):
     return pd.Series({
         "symbol": symbol, "datetime": pd.Timestamp.now(),
         "open": close - 2, "high": close + 2, "low": close - 3, "close": close, "volume": 100,
     })
 
 
-def _trade(direction, price=3130, symbol="rb2510"):
+def _trade(direction, price=3130, symbol="rb2610"):
     suffix = direction.value if hasattr(direction, "value") else str(direction)
     return Trade(
         trade_id=f"TRADE_{suffix}",
@@ -25,7 +25,7 @@ def _trade(direction, price=3130, symbol="rb2510"):
     )
 
 
-def _tick(price=3130, symbol="rb2510", ts=None):
+def _tick(price=3130, symbol="rb2610", ts=None):
     return MarketData(
         symbol=symbol,
         last_price=price,
@@ -163,13 +163,13 @@ def test_sell_signal_after_hold():
 
 def test_trade_callback_accepts_vt_symbol_variant():
     """A fill with exchange-qualified symbol still advances the verification state."""
-    s = VerifyStrategy("verify", {"symbol": "au2606", "warmup_bars": 1, "hold_bars": 3, "volume": 1, "auto_arm": True})
+    s = VerifyStrategy("verify", {"symbol": "rb2610", "warmup_bars": 1, "hold_bars": 3, "volume": 1, "auto_arm": True})
     s.on_init()
 
-    s.on_bar(_bar(812, symbol="SHFE.au2606"))
+    s.on_bar(_bar(812, symbol="SHFE.rb2610"))
     assert s.snapshot()["state"] == "entry_pending"
 
-    s.on_trade(_trade(Direction.LONG, 812, symbol="au2606.SHFE"))
+    s.on_trade(_trade(Direction.LONG, 812, symbol="rb2610.SHFE"))
 
     assert s._bought is True
     assert s.snapshot()["state"] == "holding"
@@ -234,3 +234,81 @@ def test_rejected_signal_enters_error_and_does_not_retry():
     assert s.snapshot()["last_reject_reason"] == "risk denied"
     s.on_bar(_bar(3132))
     assert len(s.signals) == 1
+
+
+def test_chase_fallback_to_market_after_max_attempts():
+    """After max chase attempts, fallback sends a market order instead of giving up."""
+    s = VerifyStrategy("verify", {
+        "warmup_bars": 1, "hold_bars": 3, "volume": 1, "auto_arm": True,
+        "order_type": "limit", "chase_enabled": True,
+        "chase_max_attempts": 2, "chase_interval_seconds": 2,
+        "chase_fallback_to_market": True,
+    })
+    s.on_init()
+    # Auto-arm fires entry
+    s.on_bar(_bar(3130))
+    assert len(s.signals) == 1
+    assert s.signals[0].order_type.value == "limit"
+    assert s._chase_attempts == 0
+    # Simulate engine notifying the strategy that the order was submitted
+    s.on_signal_submitted(s.signals[0], "ORDER_1")
+
+    # ── Attempt 1: unfilled for >2s → cancel ──
+    a1 = s.next_chase_action(_tick(3132, ts=datetime.now() + timedelta(seconds=3)))
+    assert a1.get("action") == "cancel", f"Expected cancel, got {a1}"
+    s._chase_pending_cancel_order_id = ""
+    s._chase_resubmit_ready = True
+    s._entry_order_sent = False
+    assert s._chase_attempts == 1
+
+    # ── Attempt 2: resubmit with extra tick ──
+    a2 = s.next_chase_action(_tick(3132, ts=datetime.now() + timedelta(seconds=4)))
+    assert a2.get("action") == "submit", f"Expected submit, got {a2}"
+    assert a2["signal"].order_type.value == "limit"
+    # _entry_order_sent is True again after _create_chase_signal
+
+    # ── Attempt 2 unfilled → cancel (now attempts == max == 2) ──
+    a3 = s.next_chase_action(_tick(3132, ts=datetime.now() + timedelta(seconds=7)))
+    assert a3.get("action") == "cancel", f"Expected cancel, got {a3}"
+    s._chase_pending_cancel_order_id = ""
+    s._chase_resubmit_ready = True
+    s._entry_order_sent = False
+    assert s._chase_attempts == 2
+
+    # ── Max attempts reached → fallback to market ──
+    a4 = s.next_chase_action(_tick(3135, ts=datetime.now() + timedelta(seconds=8)))
+    assert a4.get("action") == "submit", f"Expected market submit, got {a4}"
+    signal = a4["signal"]
+    assert signal.order_type.value == "market"
+
+
+def test_chase_no_fallback_when_disabled():
+    """When fallback is disabled, max attempts just stops chasing."""
+    s = VerifyStrategy("verify", {
+        "warmup_bars": 1, "hold_bars": 3, "volume": 1, "auto_arm": True,
+        "order_type": "limit", "chase_enabled": True,
+        "chase_max_attempts": 1, "chase_interval_seconds": 2,
+        "chase_fallback_to_market": False,
+    })
+    s.on_init()
+    s.on_bar(_bar(3130))
+    assert s._chase_attempts == 0
+    s.on_signal_submitted(s.signals[0], "ORDER_1")
+
+    # One chase
+    action = s.next_chase_action(_tick(3135, ts=datetime.now() + timedelta(seconds=3)))
+    assert action["action"] == "cancel"
+    s._chase_pending_cancel_order_id = ""
+    s._chase_resubmit_ready = True
+    s._entry_order_sent = False
+
+    # After cancel, resubmit should send a limit order (not market)
+    action = s.next_chase_action(_tick(3135, ts=datetime.now() + timedelta(seconds=4)))
+    assert action["action"] == "submit"
+    assert action["signal"].order_type.value == "limit"
+    s._chase_resubmit_ready = False
+
+    # Now max reached, next tick should give up (no fallback)
+    action = s.next_chase_action(_tick(3135, ts=datetime.now() + timedelta(seconds=7)))
+    assert action == {}
+    assert s._last_chase_reason == "max_attempts_reached"
