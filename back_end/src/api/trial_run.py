@@ -257,6 +257,7 @@ def _safe_config_response(path: Path, config: Dict[str, Any], allowed_symbol: st
             "chase_interval_seconds",
             "chase_max_attempts",
             "chase_step_ticks",
+            "chase_fallback_to_market",
         },
     )
     safe_risk = _safe_subset(

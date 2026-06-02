@@ -20,7 +20,7 @@ class VerifyStrategy(StrategyBase):
     """
 
     def on_init(self):
-        self.symbol = self.params.get("symbol", "rb2510")
+        self.symbol = self.params.get("symbol", "rb2610")
         self.warmup_bars = int(self.params.get("warmup_bars", 0))
         self.readiness_bars = max(1, int(self.params.get("readiness_bars", self.params.get("market_ready_bars", 1))))
         self.hold_bars = int(self.params.get("hold_bars", 10))
@@ -36,6 +36,7 @@ class VerifyStrategy(StrategyBase):
         self._chase_interval_seconds = self._parse_positive_float(self.params.get("chase_interval_seconds", 2.0), default=2.0)
         self._chase_max_attempts = self._parse_non_negative_int(self.params.get("chase_max_attempts", 3), default=3)
         self._chase_step_ticks = self._parse_non_negative_int(self.params.get("chase_step_ticks", 1), default=1)
+        self._chase_fallback_to_market = bool(self.params.get("chase_fallback_to_market", True))
         self.auto_arm = bool(self.params.get("auto_arm", False))
 
         self._bar_count = 0
@@ -221,6 +222,13 @@ class VerifyStrategy(StrategyBase):
             return {}
 
         if self._chase_resubmit_ready:
+            # After cancel returns, check if we should market-fallback
+            if self._chase_fallback_to_market and self._chase_attempts >= self._chase_max_attempts:
+                signal = self._create_fallback_market_signal(market, fallback)
+                if signal:
+                    self._chase_resubmit_ready = False
+                    return {"action": "submit", "signal": signal}
+                return {}
             signal = self._create_chase_signal(market, fallback)
             if signal:
                 self._chase_resubmit_ready = False
@@ -231,6 +239,11 @@ class VerifyStrategy(StrategyBase):
         if not order_id or self._chase_pending_cancel_order_id:
             return {}
         if self._chase_attempts >= self._chase_max_attempts:
+            if self._chase_fallback_to_market and not self._chase_pending_cancel_order_id:
+                # Cancel the last limit order; resubmit will use market fallback
+                self._chase_pending_cancel_order_id = order_id
+                self._last_chase_reason = "fallback_cancelling"
+                return {"action": "cancel", "order_id": order_id}
             self._last_chase_reason = "max_attempts_reached"
             return {}
 
@@ -263,6 +276,38 @@ class VerifyStrategy(StrategyBase):
                 self._last_chase_price = order_price
                 self.trial_state = "closing"
                 logger.info("验证平仓追价重报: %s %d手@%.2f", self.symbol, self._volume, order_price)
+            return signal
+        return None
+
+    def _create_fallback_market_signal(self, market, fallback: float):
+        """Last-resort market order after chase limit orders all failed."""
+        reference = float(self._market_price(market, ("last_price", "close", "last"))[0] or fallback or 0)
+        if reference <= 0:
+            reference = fallback
+        if reference <= 0:
+            return None
+        if self._entry_order_id and not self._bought and not self._entry_order_sent:
+            signal = self.buy(self.symbol, reference, self._volume, order_type=OrderType.MARKET)
+            self._last_order_price = reference
+            self._last_order_pricing_source = "market_fallback"
+            self._last_chase_price = reference
+            self._chase_pending_cancel_order_id = ""
+            if signal:
+                self._entry_order_sent = True
+                self._entry_price = reference
+                self.trial_state = "entry_pending"
+                logger.info("追价耗尽，兜底市价买入: %s %d手 参考价%.2f", self.symbol, self._volume, reference)
+            return signal
+        if self._close_order_id and not self.completed and not self._close_order_sent:
+            signal = self.sell(self.symbol, reference, self._volume, order_type=OrderType.MARKET)
+            self._last_order_price = reference
+            self._last_order_pricing_source = "market_fallback"
+            self._last_chase_price = reference
+            self._chase_pending_cancel_order_id = ""
+            if signal:
+                self._close_order_sent = True
+                self.trial_state = "closing"
+                logger.info("追价耗尽，兜底市价卖出: %s %d手 参考价%.2f", self.symbol, self._volume, reference)
             return signal
         return None
 

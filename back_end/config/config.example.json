@@ -5,7 +5,7 @@
     "account_id": "",
     "gateway": "vnpy",
     "vnpy_environment": "实盘",
-    "allowed_symbol": "au2606",
+    "allowed_symbol": "rb2610",
     "manual_open_enabled": false,
     "auto_arm": true,
     "bar_timeout_seconds": 90
@@ -22,12 +22,12 @@
   },
   "strategy": {
     "name": "verify",
-    "symbol": "au2606",
+    "symbol": "rb2610",
     "volume": 1,
     "warmup_bars": 1,
     "readiness_bars": 1,
     "hold_bars": 3,
-    "contract_multiplier": 1000,
+    "contract_multiplier": 10,
     "order_type": "limit",
     "price_tick": 1,
     "aggressive_ticks": 3,
@@ -35,6 +35,7 @@
     "chase_interval_seconds": 2,
     "chase_max_attempts": 3,
     "chase_step_ticks": 1,
+    "chase_fallback_to_market": true,
     "max_errors": 10
   },
   "trading": {
@@ -99,13 +100,13 @@
     "max_price_deviation": 0.01,
     "max_market_data_age_seconds": 5,
     "duplicate_signal_window_seconds": 5,
-    "default_contract_multiplier": 1000,
+    "default_contract_multiplier": 10,
     "contract_multipliers": {
-      "AU": 1000,
-      "au2606": 1000
+      "RB": 10,
+      "rb2610": 10
     },
-    "allow_market_orders": false,
-    "allowed_symbols": ["au2606"],
+    "allow_market_orders": true,
+    "allowed_symbols": ["rb2610"],
     "blocked_symbols": []
   }
 }
