@@ -8,6 +8,8 @@
     "allowed_symbol": "rb2610",
     "manual_open_enabled": false,
     "auto_arm": true,
+    "no_fill_timeout_seconds": 10,
+    "simulate_fill_enabled": true,
     "bar_timeout_seconds": 90
   },
   "backtest": {
@@ -33,7 +35,7 @@
     "aggressive_ticks": 3,
     "chase_enabled": true,
     "chase_interval_seconds": 2,
-    "chase_max_attempts": 3,
+    "chase_max_attempts": 5,
     "chase_step_ticks": 1,
     "chase_fallback_to_market": true,
     "max_errors": 10
