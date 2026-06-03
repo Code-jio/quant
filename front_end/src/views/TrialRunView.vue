@@ -484,8 +484,8 @@ const OFFSET_LABELS = {
   close_yesterday: '平昨',
 }
 const DIRECTION_LABELS = {
-  long: '买入',
-  short: '卖出',
+  long: '多',
+  short: '空',
   net: '净持仓',
 }
 const POSITION_DIRECTION_LABELS = {

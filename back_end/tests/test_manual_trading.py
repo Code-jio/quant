@@ -137,7 +137,7 @@ def test_manual_market_order_forces_zero_price_and_strips_symbol(monkeypatch):
     assert signal.offset == OffsetFlag.OPEN
 
     orders = orders_response.json()
-    assert orders[0]["direction_label"] == "买入"
+    assert orders[0]["direction_label"] == "多"
     assert orders[0]["offset_label"] == "开仓"
     assert orders[0]["status_label"] == "提交中"
     assert orders[0]["create_time"]
