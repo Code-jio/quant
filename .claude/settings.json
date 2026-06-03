@@ -30,7 +30,8 @@
       "Bash(taskkill //PID 27780 //F)",
       "Bash(git commit *)",
       "Bash(curl -s -o /dev/null -w \"frontend: %{http_code}\" http://localhost:5173)",
-      "Bash(curl -s -o /dev/null -w \"frontend: %{http_code}\\\\n\" http://localhost:5173)"
+      "Bash(curl -s -o /dev/null -w \"frontend: %{http_code}\\\\n\" http://localhost:5173)",
+      "Bash(git push *)"
     ]
   }
 }
