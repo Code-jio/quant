@@ -239,6 +239,8 @@ def _safe_config_response(path: Path, config: Dict[str, Any], allowed_symbol: st
     )
     auto_arm = _bool_value(trial_run.get("auto_arm"), True)
     bar_timeout_seconds = max(1.0, _float_value(trial_run.get("bar_timeout_seconds"), 90.0))
+    no_fill_timeout_seconds = max(1.0, _float_value(trial_run.get("no_fill_timeout_seconds"), 10.0))
+    simulate_fill_enabled = _bool_value(trial_run.get("simulate_fill_enabled"), False)
     safe_strategy = _safe_subset(
         strategy,
         {
@@ -292,6 +294,8 @@ def _safe_config_response(path: Path, config: Dict[str, Any], allowed_symbol: st
         "allowed_symbol": allowed_symbol,
         "manual_open_enabled": bool(trial_run.get("manual_open_enabled", False)),
         "auto_arm": auto_arm,
+        "no_fill_timeout_seconds": no_fill_timeout_seconds,
+        "simulate_fill_enabled": simulate_fill_enabled,
         "bar_timeout_seconds": bar_timeout_seconds,
     }
     safe_config = {
@@ -314,6 +318,8 @@ def _safe_config_response(path: Path, config: Dict[str, Any], allowed_symbol: st
         manual_open_enabled=bool(trial_run.get("manual_open_enabled", False)),
         auto_arm=auto_arm,
         bar_timeout_seconds=bar_timeout_seconds,
+        no_fill_timeout_seconds=no_fill_timeout_seconds,
+        simulate_fill_enabled=simulate_fill_enabled,
         trading=safe_trading,
         strategy=safe_strategy,
         risk=safe_risk,
@@ -431,6 +437,8 @@ def _status_response(trading_state: Any) -> TrialRunStatusResponse:
     trial_config = config.get("trial_run") if isinstance(config.get("trial_run"), dict) else {}
     auto_arm = _bool_value(trial_config.get("auto_arm"), True)
     bar_timeout_seconds = max(1.0, _float_value(trial_config.get("bar_timeout_seconds"), 90.0))
+    no_fill_timeout_seconds = max(1.0, _float_value(trial_config.get("no_fill_timeout_seconds"), 10.0))
+    simulate_fill_enabled = _bool_value(trial_config.get("simulate_fill_enabled"), False)
     snapshot_state = str(snapshot.get("state") or "")
     base_authorized = bool(snapshot.get("authorized", state["authorized"]))
     auto_authorized = auto_arm and entry is not None and snapshot_state not in {"error", "completed"}
@@ -557,8 +565,15 @@ def _status_response(trading_state: Any) -> TrialRunStatusResponse:
         hold_bars=_int_value(snapshot.get("hold_bars")),
         bars_since_entry=_int_value(snapshot.get("bars_since_entry")),
         bar_timeout_seconds=bar_timeout_seconds,
+        no_fill_timeout_seconds=no_fill_timeout_seconds,
         no_bar_wait_seconds=no_bar_wait_seconds,
+        unfilled_wait_seconds=float(snapshot.get("unfilled_wait_seconds") or 0.0),
         market_warning=market_warning,
+        execution_issue=str(snapshot.get("execution_issue") or ""),
+        execution_warning=str(snapshot.get("execution_warning") or ""),
+        simulate_fill_enabled=simulate_fill_enabled,
+        simulate_fill_allowed=bool(simulate_fill_enabled and config_valid),
+        last_fill_source=str(snapshot.get("last_fill_source") or ""),
         last_bar_time=str(snapshot.get("last_bar_time") or ""),
         last_market_price=last_market_price,
         last_market_timestamp=_timestamp_to_text(last_market_timestamp),

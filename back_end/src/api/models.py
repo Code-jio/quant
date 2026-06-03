@@ -175,12 +175,20 @@ class TrialRunConfigResponse(BaseModel):
     manual_open_enabled: bool = False
     auto_arm: bool = True
     bar_timeout_seconds: float = 90.0
+    no_fill_timeout_seconds: float = 10.0
+    simulate_fill_enabled: bool = False
     trading: Dict[str, Any] = Field(default_factory=dict)
     strategy: Dict[str, Any] = Field(default_factory=dict)
     risk: Dict[str, Any] = Field(default_factory=dict)
     validation_errors: List[str] = Field(default_factory=list)
     config: Dict[str, Any] = Field(default_factory=dict)
     errors: List[str] = Field(default_factory=list)
+
+
+class TrialRunSimulateFillRequest(BaseModel):
+    order_id: str = ""
+    price: Optional[float] = None
+    volume: Optional[int] = None
 
 
 class TrialRunStatusResponse(BaseModel):
@@ -208,8 +216,15 @@ class TrialRunStatusResponse(BaseModel):
     hold_bars: int = 0
     bars_since_entry: int = 0
     bar_timeout_seconds: float = 90.0
+    no_fill_timeout_seconds: float = 10.0
     no_bar_wait_seconds: float = 0.0
+    unfilled_wait_seconds: float = 0.0
     market_warning: str = ""
+    execution_issue: str = ""
+    execution_warning: str = ""
+    simulate_fill_enabled: bool = False
+    simulate_fill_allowed: bool = False
+    last_fill_source: str = ""
     last_bar_time: str = ""
     last_market_price: float = 0.0
     last_market_timestamp: str = ""
@@ -239,6 +254,14 @@ class TrialRunStatusResponse(BaseModel):
     validation_errors: List[str] = Field(default_factory=list)
     snapshot: Dict[str, Any] = Field(default_factory=dict)
     errors: List[str] = Field(default_factory=list)
+
+
+class TrialRunSimulateFillResponse(BaseModel):
+    success: bool
+    message: str
+    order: Dict[str, Any] = Field(default_factory=dict)
+    trade: Dict[str, Any] = Field(default_factory=dict)
+    status: TrialRunStatusResponse
 
 
 class TrialRunActionResponse(BaseModel):
