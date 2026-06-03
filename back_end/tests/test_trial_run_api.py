@@ -158,6 +158,28 @@ def test_trial_run_config_is_public_and_prefills_non_password_connection_fields(
     assert "trial-account" not in response.text
 
 
+def test_trial_run_config_exposes_fill_verification_boundaries(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "fill-boundaries"))
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["trial_run"]["no_fill_timeout_seconds"] = 10
+    payload["trial_run"]["simulate_fill_enabled"] = True
+    payload["strategy"]["chase_max_attempts"] = 5
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    app = create_app()
+
+    with TestClient(app) as client:
+        response = client.get("/trial-run/config")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["no_fill_timeout_seconds"] == 10
+    assert body["simulate_fill_enabled"] is True
+    assert body["config"]["trial_run"]["no_fill_timeout_seconds"] == 10
+    assert body["config"]["trial_run"]["simulate_fill_enabled"] is True
+    assert body["strategy"]["chase_max_attempts"] == 5
+
+
 def test_trial_run_config_requires_strategy_symbol(monkeypatch, tmp_path):
     config_path = _trial_config(_config_path(tmp_path, "missing-symbol"))
     payload = json.loads(config_path.read_text(encoding="utf-8"))
