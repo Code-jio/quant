@@ -260,6 +260,36 @@ def test_trial_run_prepare_auto_arms_and_sends_entry_after_first_bar(monkeypatch
         assert len(gateway.sent_signals) == 1
 
 
+def test_apply_simulated_fill_fills_trial_order_and_updates_strategy(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "simulated-fill"))
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    gateway = install_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client)
+        assert client.post("/trial-run/prepare").status_code == 200
+
+        entry = trading_state.get("verify_trial")
+        assert entry is not None
+        entry.engine.on_tick(_tick(3130))
+
+        assert len(gateway.sent_signals) == 1
+        order_id = "ORDER_1"
+
+        from src.trading.simulated_fill import apply_simulated_fill
+
+        result = apply_simulated_fill(entry.engine, order_id)
+
+    assert result.order.status.value == "filled"
+    assert result.order.traded_volume == result.order.volume
+    assert result.trade.order_id == order_id
+    assert result.trade.symbol == "rb2510"
+    assert any(position.volume == 1 for position in gateway.positions.values())
+    assert any(trade.order_id == order_id for trade in entry.strategy.trades)
+    assert entry.strategy.get_position("rb2510").volume == 1
+
+
 def test_trial_run_stale_first_tick_still_emits_bar_for_trial_flow(monkeypatch, tmp_path):
     """A slightly stale tick should still emit the first bar so the trial-run
     fast path isn't blocked in simulation environments."""
