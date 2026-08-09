@@ -9,12 +9,23 @@ the same guardrail.
 from __future__ import annotations
 
 import time
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import wraps
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from ..strategy import OffsetFlag, OrderType, Signal
 from .types import AccountInfo
+
+
+def _risk_locked(method):
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
 
 
 @dataclass
@@ -23,7 +34,7 @@ class RiskConfig:
     max_order_volume: int = 1000
     max_position_volume: int = 10000
     max_active_orders: int = 200
-    max_orders_per_minute: int = 120
+    max_orders_per_minute: int = 5
     max_daily_loss_ratio: float = 0.10
     max_order_value: float = 0.0
     max_position_value: float = 0.0
@@ -47,7 +58,7 @@ class RiskConfig:
             max_order_volume=max(1, int(raw.get("max_order_volume", 1000))),
             max_position_volume=max(1, int(raw.get("max_position_volume", 10000))),
             max_active_orders=max(1, int(raw.get("max_active_orders", 200))),
-            max_orders_per_minute=max(1, int(raw.get("max_orders_per_minute", 120))),
+            max_orders_per_minute=max(1, int(raw.get("max_orders_per_minute", 5))),
             max_daily_loss_ratio=max(0.0, float(raw.get("max_daily_loss_ratio", 0.10))),
             max_order_value=max(0.0, float(raw.get("max_order_value", 0.0))),
             max_position_value=max(0.0, float(raw.get("max_position_value", 0.0))),
@@ -70,32 +81,41 @@ class RiskConfig:
 class RiskCheckResult:
     allowed: bool
     reason: str = ""
+    remaining: int = 0
+    retry_after_seconds: float = 0.0
 
 
 class RiskManager:
     """Validates signals before they are submitted to a gateway."""
 
-    def __init__(self, config: Optional[Mapping[str, Any]] = None) -> None:
+    def __init__(self, config: Optional[Mapping[str, Any]] = None, monotonic_clock=None, clock=None) -> None:
         self.config = RiskConfig.from_mapping(config)
+        self._lock = threading.RLock()
+        self._monotonic = monotonic_clock or clock or time.monotonic
         self.day_open_balance = 0.0
         self._order_timestamps: List[float] = []
         self._recent_signal_timestamps: Dict[str, float] = {}
         self.emergency_stop = False
         self.emergency_reason = ""
 
+    @_risk_locked
     def configure(self, config: Optional[Mapping[str, Any]]) -> None:
         raw = (config or {}).get("risk", config or {})
         self.config = RiskConfig.from_mapping(raw)
 
+    @_risk_locked
     def set_day_open_balance(self, balance: float) -> None:
         self.day_open_balance = max(0.0, float(balance or 0.0))
 
+    @_risk_locked
     def set_emergency_stop(self, enabled: bool, reason: str = "") -> None:
         self.emergency_stop = bool(enabled)
         self.emergency_reason = str(reason or "").strip()
 
+    @_risk_locked
     def status(self) -> Dict[str, Any]:
         cfg = self.config
+        rate = self.order_rate_snapshot()
         return {
             "enabled": cfg.enabled,
             "emergency_stop": self.emergency_stop,
@@ -114,8 +134,40 @@ class RiskManager:
             "allow_market_orders": cfg.allow_market_orders,
             "allowed_symbols": sorted(cfg.allowed_symbols),
             "blocked_symbols": sorted(cfg.blocked_symbols),
+            "rate_limit_remaining": rate["remaining"],
+            "rate_limit_retry_after_seconds": rate["retry_after_seconds"],
+            "rate_capacity_remaining": rate["remaining"],
+            "rate_capacity_retry_after_seconds": rate["retry_after_seconds"],
         }
 
+    @_risk_locked
+    def order_rate_snapshot(
+        self,
+        now_monotonic: Optional[float] = None,
+        required_capacity: int = 1,
+    ) -> Dict[str, Any]:
+        now = float(self._monotonic() if now_monotonic is None else now_monotonic)
+        self._prune_order_timestamps(now)
+        used = len(self._order_timestamps)
+        remaining = max(0, self.config.max_orders_per_minute - used)
+        retry_after = 0.0
+        required = max(1, int(required_capacity or 1))
+        if remaining < required and self._order_timestamps:
+            expire_count = required - remaining
+            index = min(len(self._order_timestamps) - 1, expire_count - 1)
+            retry_after = max(0.0, self._order_timestamps[index] + 60.0 - now)
+        return {
+            "remaining": remaining,
+            "retry_after_seconds": round(retry_after, 3),
+            "used": used,
+            "limit": self.config.max_orders_per_minute,
+        }
+
+    @staticmethod
+    def required_rate_capacity(signal: Signal) -> int:
+        return 2 if signal.offset == OffsetFlag.OPEN else 1
+
+    @_risk_locked
     def check_signal(
         self,
         signal: Signal,
@@ -158,7 +210,7 @@ class RiskManager:
         if active_count >= cfg.max_active_orders:
             return RiskCheckResult(False, f"Active order count {active_count} exceeds limit {cfg.max_active_orders}")
 
-        rate_result = self._check_order_rate()
+        rate_result = self._check_order_rate(signal)
         if not rate_result.allowed:
             return rate_result
 
@@ -201,23 +253,29 @@ class RiskManager:
 
         return RiskCheckResult(True)
 
+    @_risk_locked
     def record_order(self, signal: Optional[Signal] = None) -> None:
-        now = time.monotonic()
+        now = float(self._monotonic())
         self._order_timestamps.append(now)
         self._prune_order_timestamps(now)
         if signal is not None:
             self._recent_signal_timestamps[self._signal_key(signal)] = now
 
-    def _check_order_rate(self) -> RiskCheckResult:
-        now = time.monotonic()
-        self._prune_order_timestamps(now)
-        if len(self._order_timestamps) >= self.config.max_orders_per_minute:
-            return RiskCheckResult(False, f"Order rate exceeds {self.config.max_orders_per_minute}/minute")
+    def _check_order_rate(self, signal: Optional[Signal] = None) -> RiskCheckResult:
+        required = self.required_rate_capacity(signal) if signal is not None else 1
+        snapshot = self.order_rate_snapshot(required_capacity=required)
+        if snapshot["remaining"] < required:
+            return RiskCheckResult(
+                False,
+                f"Order rate capacity is insufficient: need {required}, remaining {snapshot['remaining']}",
+                remaining=snapshot["remaining"],
+                retry_after_seconds=snapshot["retry_after_seconds"],
+            )
         return RiskCheckResult(True)
 
     def _prune_order_timestamps(self, now: float) -> None:
         cutoff = now - 60.0
-        self._order_timestamps = [ts for ts in self._order_timestamps if ts >= cutoff]
+        self._order_timestamps = [ts for ts in self._order_timestamps if ts > cutoff]
 
     def _check_daily_loss(self, account: Optional[AccountInfo]) -> RiskCheckResult:
         if self.config.max_daily_loss_ratio <= 0 or self.day_open_balance <= 0 or account is None:

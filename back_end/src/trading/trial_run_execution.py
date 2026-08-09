@@ -8,13 +8,24 @@ evidence is allowed to prove.
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
+from functools import wraps
 from typing import Any, Iterable, Mapping, Optional, Union
 from uuid import uuid4
 
 from .symbols import symbols_match
+
+
+def _synchronized(method):
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
 
 
 class TrialRunOutcome(str, Enum):
@@ -77,6 +88,70 @@ _BROKER_ACCEPTED_STATUSES = {
     "partial_filled",
     "filled",
 }
+_ORDER_UPDATE_STATUSES = {
+    "submitting",
+    "submitted",
+    "accepted",
+    "broker_accepted",
+    "broker-accepted",
+    "broker accepted",
+    "partfilled",
+    "partialfilled",
+    "partial_filled",
+    "filled",
+    "cancelled",
+    "canceled",
+    "rejected",
+}
+_TERMINAL_ORDER_STATUSES = {"filled", "cancelled", "canceled", "rejected"}
+_ORDER_STATUS_PHASES = {
+    "submitting": 0,
+    "submitted": 1,
+    "accepted": 1,
+    "broker_accepted": 1,
+    "broker-accepted": 1,
+    "broker accepted": 1,
+    "partfilled": 2,
+    "partialfilled": 2,
+    "partial_filled": 2,
+}
+
+
+def _normalized_role(role: Any) -> str:
+    return str(_enum_value(role) or "").strip().lower()
+
+
+def _is_entry_role(role: Any) -> bool:
+    return _normalized_role(role) == "entry"
+
+
+def _is_exit_role(role: Any) -> bool:
+    return _normalized_role(role) in {"exit", "close"}
+
+
+def _roles_match(left: Any, right: Any) -> bool:
+    return (
+        (_is_entry_role(left) and _is_entry_role(right))
+        or (_is_exit_role(left) and _is_exit_role(right))
+    )
+
+
+def _normalized_enum_value(value: Any) -> str:
+    return str(_enum_value(value) or "").strip().lower()
+
+
+def _canonical_order_status(status: Any) -> str:
+    normalized = _normalized_role(status)
+    return {
+        "canceled": "cancelled",
+        "partialfilled": "partfilled",
+        "partial_filled": "partfilled",
+        "broker_accepted": "accepted",
+        "broker-accepted": "accepted",
+        "broker accepted": "accepted",
+    }.get(normalized, normalized)
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -123,6 +198,7 @@ class TrialRunExecutionState:
     final_outcome: TrialRunOutcome = TrialRunOutcome.RUNNING
 
     def __post_init__(self) -> None:
+        self._lock = threading.RLock()
         if self.volume != 1:
             raise TrialRunExecutionError("invalid_trial_volume")
         if not self.symbol or not _clean_symbol(self.symbol):
@@ -194,7 +270,7 @@ class TrialRunExecutionState:
         now = _now()
         order = TrialOrderAttempt(
             order_id=order_id,
-            role=str(role),
+            role=_normalized_role(role),
             track=track,
             attempt=int(attempt),
             parent_order_id=str(parent_order_id),
@@ -210,6 +286,7 @@ class TrialRunExecutionState:
         self.order_chain.append(order)
         return order
 
+    @_synchronized
     def record_real_submission(
         self,
         order_id: str,
@@ -225,9 +302,39 @@ class TrialRunExecutionState:
         volume: int = 1,
     ) -> TrialOrderAttempt:
         self._prepare_mutation(symbol, volume)
+        normalized_role = _normalized_role(role)
+        if not (_is_entry_role(normalized_role) or _is_exit_role(normalized_role)):
+            raise TrialRunExecutionError("invalid_trial_transition")
+        if attempt < 0 or attempt > 5:
+            raise TrialRunExecutionError("invalid_trial_transition")
+        status_value = _normalized_role(status)
+        if status_value not in _ORDER_UPDATE_STATUSES:
+            raise TrialRunExecutionError("invalid_trial_transition")
+        parent = None
+        latest_role_order_id = (
+            self.entry_order_id if _is_entry_role(normalized_role) else self.close_order_id
+        )
+        if attempt == 0:
+            if parent_order_id or latest_role_order_id:
+                raise TrialRunExecutionError("invalid_trial_transition")
+        else:
+            parent = self._find_order(parent_order_id)
+            if parent is None:
+                raise TrialRunExecutionError("order_not_owned_by_trial_run")
+            if (
+                parent.track is not TrialRunTrack.REAL
+                or not _roles_match(parent.role, normalized_role)
+                or parent.status not in {"cancelled", "canceled"}
+                or attempt != parent.attempt + 1
+                or parent.order_id != latest_role_order_id
+                or _normalized_enum_value(direction)
+                != _normalized_enum_value(parent.direction)
+                or _normalized_enum_value(offset) != _normalized_enum_value(parent.offset)
+            ):
+                raise TrialRunExecutionError("invalid_trial_transition")
         order = self._append_order(
             order_id=order_id,
-            role=role,
+            role=normalized_role,
             track=TrialRunTrack.REAL,
             attempt=attempt,
             parent_order_id=parent_order_id,
@@ -235,22 +342,80 @@ class TrialRunExecutionState:
             direction=direction,
             offset=offset,
             price=price,
-            status=status,
+            status=status_value,
         )
         self.real_submission_proof = self.real_submission_proof or (
             order.status in _BROKER_ACCEPTED_STATUSES
         )
-        if order.role == "entry" and not self.real_entry_order_id:
-            self.real_entry_order_id = order.order_id
+        if _is_entry_role(order.role):
+            if not self.real_entry_order_id:
+                self.real_entry_order_id = order.order_id
             self.entry_order_id = order.order_id
-        if order.role == "close" and not self.real_close_order_id:
-            self.real_close_order_id = order.order_id
+        if _is_exit_role(order.role):
+            if not self.real_close_order_id:
+                self.real_close_order_id = order.order_id
             self.close_order_id = order.order_id
         self.current_order_id = order.order_id
         self.current_track = TrialRunTrack.REAL
         self.simulation_state = "real_track"
+        if order.status in _TERMINAL_ORDER_STATUSES:
+            self.current_order_id = ""
         return order
 
+    @_synchronized
+    def owns_order(self, order_id: str) -> bool:
+        """Return whether an order ID belongs to this run's order chain."""
+        return self._find_order(str(order_id)) is not None
+
+    @_synchronized
+    def record_real_order_update(
+        self,
+        order_id: str,
+        status: str,
+        *,
+        symbol: Optional[str] = None,
+        volume: int = 1,
+        direction: Optional[str] = None,
+        traded_volume: Optional[int] = None,
+    ) -> TrialOrderAttempt:
+        self._prepare_mutation(symbol, volume)
+        order = self._owned_order(order_id)
+        if order.track is not TrialRunTrack.REAL:
+            raise TrialRunExecutionError("invalid_trial_transition")
+        status_value = _normalized_role(status)
+        if status_value not in _ORDER_UPDATE_STATUSES:
+            raise TrialRunExecutionError("invalid_trial_transition")
+        if (
+            direction is not None
+            and _normalized_enum_value(direction) != _normalized_enum_value(order.direction)
+        ):
+            raise TrialRunExecutionError("invalid_trial_transition")
+        if traded_volume is not None and not 0 <= int(traded_volume) <= order.volume:
+            raise TrialRunExecutionError("invalid_trial_volume")
+
+        old_status = _canonical_order_status(order.status)
+        new_status = _canonical_order_status(status_value)
+        if old_status in {"filled", "rejected"} and new_status != old_status:
+            raise TrialRunExecutionError("invalid_trial_transition")
+        if old_status == "cancelled" and new_status not in {"cancelled", "filled"}:
+            raise TrialRunExecutionError("invalid_trial_transition")
+        if (
+            old_status not in _TERMINAL_ORDER_STATUSES
+            and new_status not in _TERMINAL_ORDER_STATUSES
+            and _ORDER_STATUS_PHASES.get(new_status, -1)
+            < _ORDER_STATUS_PHASES.get(old_status, -1)
+        ):
+            raise TrialRunExecutionError("invalid_trial_transition")
+
+        updated = replace(order, status=status_value, updated_at=_now())
+        self.order_chain[self.order_chain.index(order)] = updated
+        if status_value in _BROKER_ACCEPTED_STATUSES:
+            self.real_submission_proof = True
+        if status_value in _TERMINAL_ORDER_STATUSES and self.current_order_id == order_id:
+            self.current_order_id = ""
+        return updated
+
+    @_synchronized
     def record_real_cancel(
         self,
         order_id: str,
@@ -264,13 +429,16 @@ class TrialRunExecutionState:
             raise TrialRunExecutionError("invalid_trial_transition")
         if order.status in {"filled", "rejected", "failed"}:
             raise TrialRunExecutionError("invalid_trial_transition")
-        updated = replace(order, status="cancelled", updated_at=_now())
-        self.order_chain[self.order_chain.index(order)] = updated
-        if self.current_order_id == order_id:
-            self.current_order_id = ""
+        updated = self.record_real_order_update(
+            order_id,
+            status="cancelled",
+            symbol=symbol,
+            volume=volume,
+        )
         self.simulation_state = "real_cancelled"
         return updated
 
+    @_synchronized
     def record_real_trade(
         self,
         order_id: str,
@@ -280,29 +448,48 @@ class TrialRunExecutionState:
         price: Optional[float] = None,
         symbol: Optional[str] = None,
         volume: int = 1,
+        direction: Optional[str] = None,
     ) -> TrialOrderAttempt:
         self._prepare_mutation(symbol, volume)
         order = self._owned_order(order_id)
         trade_key = str(trade_id)
         if order.track is not TrialRunTrack.REAL or not trade_key:
             raise TrialRunExecutionError("invalid_trial_transition")
-        if trade_key in self.real_trade_ids:
+        if direction is not None and _enum_value(direction) != order.direction:
             raise TrialRunExecutionError("invalid_trial_transition")
-        resolved_role = str(role or order.role).strip().lower()
-        owned_role = str(order.role).strip().lower()
-        if resolved_role not in {"entry", "close"} or resolved_role != owned_role:
+        resolved_role = _normalized_role(role or order.role)
+        if not (
+            (_is_entry_role(resolved_role) and _is_entry_role(order.role))
+            or (_is_exit_role(resolved_role) and _is_exit_role(order.role))
+        ):
+            raise TrialRunExecutionError("invalid_trial_transition")
+        if order.status == "rejected":
+            raise TrialRunExecutionError("invalid_trial_transition")
+        existing_role_trade_id = (
+            self.real_entry_trade_id
+            if _is_entry_role(resolved_role)
+            else self.real_close_trade_id
+        )
+        if trade_key in self.real_trade_ids:
+            if self.real_trade_order_ids.get(trade_key) == order.order_id:
+                return order
+            raise TrialRunExecutionError("invalid_trial_transition")
+        if existing_role_trade_id:
             raise TrialRunExecutionError("invalid_trial_transition")
         updated = replace(order, status="filled", updated_at=_now())
         self.order_chain[self.order_chain.index(order)] = updated
         self.real_submission_proof = True
         self.real_trade_ids.append(trade_key)
         self.real_trade_order_ids[trade_key] = order.order_id
-        if resolved_role == "entry":
+        if _is_entry_role(resolved_role):
             self.real_entry_trade_id = trade_key
-        elif resolved_role == "close":
+        elif _is_exit_role(resolved_role):
             self.real_close_trade_id = trade_key
+        if self.current_order_id == order_id:
+            self.current_order_id = ""
         return updated
 
+    @_synchronized
     def record_simulated_entry(
         self,
         order_id: str,
@@ -338,6 +525,7 @@ class TrialRunExecutionState:
         self.simulation_state = "holding"
         return order
 
+    @_synchronized
     def record_simulated_close(
         self,
         order_id: str,
@@ -375,6 +563,7 @@ class TrialRunExecutionState:
         self.simulation_state = "flat"
         return order
 
+    @_synchronized
     def require_current_order(
         self,
         order_id: str,
@@ -391,6 +580,7 @@ class TrialRunExecutionState:
             raise TrialRunExecutionError("invalid_trial_transition")
         return order
 
+    @_synchronized
     def evaluate(
         self,
         broker_position_volume: int,
@@ -440,7 +630,10 @@ class TrialRunExecutionState:
         return bool(
             order
             and order.track is TrialRunTrack.REAL
-            and str(order.role).strip().lower() == role
+            and (
+                (_is_entry_role(order.role) and role == "entry")
+                or (_is_exit_role(order.role) and role in {"close", "exit"})
+            )
             and order.status == "filled"
         )
 
@@ -452,6 +645,7 @@ class TrialRunExecutionState:
             order.status in {"cancelled", "canceled"} for order in real_orders
         )
 
+    @_synchronized
     def mark_failed(self, code: str, basis: str = "") -> "TrialRunExecutionState":
         self._ensure_mutable()
         if not code:
@@ -461,6 +655,7 @@ class TrialRunExecutionState:
         self.final_outcome = TrialRunOutcome.FAILED
         return self
 
+    @_synchronized
     def mark_aborted(self, code: str) -> "TrialRunExecutionState":
         self._ensure_mutable()
         if not code:
@@ -469,6 +664,7 @@ class TrialRunExecutionState:
         self.final_outcome = TrialRunOutcome.ABORTED
         return self
 
+    @_synchronized
     def serialize(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["final_outcome"] = self.final_outcome.value

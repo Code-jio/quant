@@ -54,6 +54,11 @@ class GatewayBase(ABC):
     def cancel_order(self, order_id: str) -> bool:
         """Cancel an order."""
 
+    def supports_market_order(self, symbol: str = "") -> bool:
+        """Return whether this gateway can prove market-order support."""
+        del symbol
+        return False
+
     @abstractmethod
     def query_account(self) -> AccountInfo:
         """Query account state."""

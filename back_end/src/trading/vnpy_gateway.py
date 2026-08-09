@@ -339,6 +339,11 @@ class VnpyGateway(GatewayBase):
         self._main_engine.cancel_order(req, self._gateway_name)
         return True
 
+    def supports_market_order(self, symbol: str = "") -> bool:
+        """Fail closed until an exchange/contract capability source proves support."""
+        del symbol
+        return False
+
     def query_account(self) -> AccountInfo:
         return self.account
 

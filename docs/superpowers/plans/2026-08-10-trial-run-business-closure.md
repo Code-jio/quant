@@ -320,7 +320,7 @@ git commit -m "feat(trial-run): define business acceptance contract"
 - Test: `back_end/tests/test_trial_run_execution.py`
 - Test: `back_end/tests/test_trial_run_api.py`
 
-- [ ] **Step 1: Write coordinator ownership rejection tests**
+- [x] **Step 1: Write coordinator ownership rejection tests**
 
 Because Task 1 deliberately keeps the legacy simulation endpoint fail closed, put these checks on `TrialRunExecutionState.require_current_order()` first. Prove it rejects:
 
@@ -331,7 +331,7 @@ Because Task 1 deliberately keeps the legacy simulation endpoint fail closed, pu
 
 The domain error must carry `failure_code="order_not_owned_by_trial_run"` or `failure_code="order_not_current"`. Task 4 maps those errors to API `409` responses after the isolated endpoint is enabled.
 
-- [ ] **Step 2: Record order role and parent relationship**
+- [x] **Step 2: Record order role and parent relationship**
 
 Extend `VerifyStrategy.on_signal_submitted()` so the engine can register:
 
@@ -343,11 +343,11 @@ Extend `VerifyStrategy.on_signal_submitted()` so the engine can register:
 
 Expose `current_order_id`, `entry_order_id`, `close_order_id`, and the active role in `snapshot()`.
 
-- [ ] **Step 3: Make the coordinator authoritative**
+- [x] **Step 3: Make the coordinator authoritative**
 
 The trial-run API must obtain the current order exclusively from `TrialRunExecutionState`. Remove frontend/backend behavior that scans all gateway orders and chooses the first matching symbol.
 
-- [ ] **Step 4: Test callback ordering**
+- [x] **Step 4: Test callback ordering**
 
 Cover these sequences:
 
@@ -360,13 +360,13 @@ cancel requested -> late filled
 
 Callbacks for unrelated order IDs must not alter the trial-run state.
 
-- [ ] **Step 5: Run Task 2 gate**
+- [x] **Step 5: Run Task 2 gate**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest back_end\tests\test_trial_run_execution.py back_end\tests\test_verify_strategy.py back_end\tests\test_trial_run_api.py back_end\tests\test_trading_engine_auto_strategy.py -q
 ```
 
-- [ ] **Step 6: Commit Task 2**
+- [x] **Step 6: Commit Task 2**
 
 ```powershell
 git add back_end/src/trading/trial_run_execution.py back_end/src/strategy/strategies/verify.py back_end/src/trading/engine.py back_end/src/api/trial_run.py back_end/tests/test_trial_run_execution.py back_end/tests/test_verify_strategy.py back_end/tests/test_trial_run_api.py back_end/tests/test_trading_engine_auto_strategy.py
@@ -390,7 +390,7 @@ git commit -m "feat(trial-run): bind orders to verification chain"
 - Test: `back_end/tests/test_verify_strategy.py`
 - Test: `back_end/tests/test_security_and_risk.py`
 
-- [ ] **Step 1: Write a no-new-tick chase test**
+- [x] **Step 1: Write a no-new-tick chase test**
 
 Use an injected monotonic clock. Submit the initial order, advance the clock beyond 2 seconds without delivering another tick, run one heartbeat, and assert exactly one cancel request was sent.
 
@@ -401,15 +401,15 @@ assert gateway.cancelled_order_ids == [initial_order_id]
 assert strategy.snapshot()["chase_state"] == "cancel_pending"
 ```
 
-- [ ] **Step 2: Add an OrderManager heartbeat**
+- [x] **Step 2: Add an OrderManager heartbeat**
 
 Add `on_timer_callback: Optional[Callable[[float], None]]`. The existing `_monitor_pre_orders` loop calls it once per loop with `time.monotonic()`, outside the order-manager lock. Exceptions are logged and do not stop the monitor thread.
 
-- [ ] **Step 3: Use monotonic order age**
+- [x] **Step 3: Use monotonic order age**
 
 Change `VerifyStrategy` to record `submitted_monotonic` separately from display timestamps. `next_chase_action()` accepts `now_monotonic` and must not calculate timeout from the exchange tick timestamp.
 
-- [ ] **Step 4: Expose and reserve rolling rate capacity**
+- [x] **Step 4: Expose and reserve rolling rate capacity**
 
 Inject the monotonic clock into `RiskManager` and add `order_rate_snapshot(now_monotonic=None)` returning `remaining` and `retry_after_seconds`. Keep the configured cap at 5 per rolling minute.
 
@@ -423,7 +423,7 @@ When capacity is insufficient, leave the current broker order active, set `chase
 
 At this task, extend `/trial-run/prepare` to use the same snapshot: when fewer than 2 submissions remain, return `409 failure_code="rate_capacity_not_ready"` with `retry_after_seconds` and do not send the initial order.
 
-- [ ] **Step 5: Enforce cancel-before-replace**
+- [x] **Step 5: Enforce cancel-before-replace**
 
 The state sequence must be:
 
@@ -433,11 +433,11 @@ waiting_timeout -> waiting_rate_capacity -> cancel_pending -> cancelled -> waiti
 
 No replacement signal may be generated until the canceled order callback is received. If cancellation fails, set `chase_state="cancel_failed"` and stop automatic re-submission.
 
-- [ ] **Step 6: Handle stale and missing quotes explicitly**
+- [x] **Step 6: Handle stale and missing quotes explicitly**
 
 For normal chasing, require a fresh valid quote and sufficient rate capacity before requesting cancellation. Re-check both after the cancellation callback because they may change while the broker responds. If the quote becomes stale after cancellation, remain flat with `chase_state="waiting_fresh_quote"` and show a warning; do not price from a stale tick. A simulation-preparation request may still cancel an entry order with stale market data because it will reconcile to a flat real account and will not re-submit to CTP.
 
-- [ ] **Step 7: Implement attempt 5 fallback policy**
+- [x] **Step 7: Implement attempt 5 fallback policy**
 
 Add `GatewayBase.supports_market_order(symbol) -> bool`, defaulting to `False`. `VnpyGateway` returns `True` only when the concrete contract/exchange capability is known. On attempt 5:
 
@@ -446,17 +446,17 @@ Add `GatewayBase.supports_market_order(symbol) -> bool`, defaulting to `False`. 
 
 Apply the same maximum of five replacements independently to the real entry chain and real close chain. Never send an unsupported market order merely because the configuration asks for one.
 
-- [ ] **Step 8: Add the complete 5-attempt and close-reserve tests**
+- [x] **Step 8: Add the complete 5-attempt and close-reserve tests**
 
 Advance the injected clock across rolling-window boundaries and assert initial order plus five replacements, unique IDs, strict parent chain, no sixth replacement, and `chase_state="exhausted"` after the final order is canceled or rejected. In every rolling minute, assert at most four entry submissions and at least one remaining rate slot. Add a second case where the fourth entry submission fills and the real close is accepted immediately in the reserved fifth slot.
 
-- [ ] **Step 9: Run Task 3 gate**
+- [x] **Step 9: Run Task 3 gate**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest back_end\tests\test_security_and_risk.py back_end\tests\test_trading_engine_auto_strategy.py back_end\tests\test_verify_strategy.py back_end\tests\test_trial_run_api.py -q
 ```
 
-- [ ] **Step 10: Commit Task 3**
+- [x] **Step 10: Commit Task 3**
 
 ```powershell
 git add back_end/src/trading/order_manager.py back_end/src/trading/engine.py back_end/src/trading/risk.py back_end/src/trading/gateway.py back_end/src/trading/vnpy_gateway.py back_end/src/strategy/strategies/verify.py back_end/src/api/models.py back_end/src/api/trial_run.py back_end/tests/test_security_and_risk.py back_end/tests/test_trading_engine_auto_strategy.py back_end/tests/test_verify_strategy.py back_end/tests/test_trial_run_api.py

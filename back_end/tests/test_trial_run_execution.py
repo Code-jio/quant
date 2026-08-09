@@ -39,6 +39,207 @@ def test_enums_and_real_order_attempt_are_typed():
     assert state.current_order_id == "R1"
 
 
+def test_real_order_chain_tracks_submission_cancel_and_replacement():
+    state = _state()
+    first = state.record_real_submission("R1", "entry", 3120, status="submitting")
+
+    assert state.owns_order("R1") is True
+    state.record_real_order_update("R1", status="submitted")
+    state.record_real_order_update("R1", status="cancelled")
+
+    replacement = state.record_real_submission(
+        "R2",
+        "entry",
+        3121,
+        attempt=first.attempt + 1,
+        parent_order_id="R1",
+        status="submitting",
+    )
+
+    assert replacement.parent_order_id == "R1"
+    assert replacement.attempt == 1
+    assert state.current_order_id == "R2"
+    assert state.entry_order_id == "R2"
+    assert state.real_entry_order_id == "R1"
+
+
+@pytest.mark.parametrize("status", ["partfilled", "filled", "rejected"])
+def test_real_order_update_supports_partfill_fill_and_reject(status):
+    state = _state()
+    state.record_real_submission("R1", "entry", 3120, status="submitting")
+
+    state.record_real_order_update("R1", status=status)
+
+    assert state.order_chain[0].status == status
+    if status == "partfilled":
+        assert state.current_order_id == "R1"
+    else:
+        assert state.current_order_id == ""
+
+
+def test_terminal_submission_has_no_current_order():
+    state = _state()
+
+    state.record_real_submission("R1", "entry", 3120, status="rejected")
+
+    assert state.current_order_id == ""
+
+
+def test_late_owned_cancelled_entry_trade_is_recorded_and_owned_only():
+    state = _state()
+    state.record_real_submission("R1", "entry", 3120, status="submitted")
+    state.record_real_order_update("R1", status="cancelled")
+
+    state.record_real_trade("R1", "T1", role="entry", price=3120)
+
+    assert state.order_chain[0].status == "filled"
+    assert state.real_trade_ids == ["T1"]
+    assert state.owns_order("EXTERNAL") is False
+
+
+def test_rejected_order_cannot_later_supply_trade_evidence():
+    state = _state()
+    state.record_real_submission("R1", "entry", 3120, status="rejected")
+
+    with pytest.raises(TrialRunExecutionError) as exc_info:
+        state.record_real_trade("R1", "T1", role="entry", price=3120)
+
+    assert exc_info.value.failure_code == "invalid_trial_transition"
+    assert state.real_trade_ids == []
+    assert state.order_chain[0].status == "rejected"
+
+
+def test_one_lot_role_rejects_a_second_distinct_trade_but_replay_is_idempotent():
+    state = _state()
+    state.record_real_submission("R1", "entry", 3120)
+    state.record_real_trade("R1", "T1", role="entry", price=3120)
+
+    replay = state.record_real_trade("R1", "T1", role="entry", price=3120)
+    assert replay.status == "filled"
+
+    with pytest.raises(TrialRunExecutionError) as exc_info:
+        state.record_real_trade("R1", "T2", role="entry", price=3120)
+
+    assert exc_info.value.failure_code == "invalid_trial_transition"
+    assert state.real_trade_ids == ["T1"]
+
+
+def test_replacement_requires_owned_cancelled_parent_same_role_and_next_attempt():
+    state = _state()
+    state.record_real_submission("R1", "entry", 3120, status="submitted")
+
+    with pytest.raises(TrialRunExecutionError) as exc_info:
+        state.record_real_submission(
+            "R2", "entry", 3121, attempt=1, parent_order_id="UNKNOWN"
+        )
+    assert exc_info.value.failure_code == "order_not_owned_by_trial_run"
+
+    with pytest.raises(TrialRunExecutionError) as exc_info:
+        state.record_real_submission(
+            "R3", "entry", 3121, attempt=1, parent_order_id="R1"
+        )
+    assert exc_info.value.failure_code == "invalid_trial_transition"
+
+
+def test_duplicate_initial_order_and_branching_replacement_are_rejected():
+    state = _state()
+    state.record_real_submission("R1", "entry", 3120, status="submitted")
+
+    with pytest.raises(TrialRunExecutionError) as exc_info:
+        state.record_real_submission("R-DUP", "entry", 3121, status="submitting")
+    assert exc_info.value.failure_code == "invalid_trial_transition"
+
+    state.record_real_order_update("R1", status="cancelled")
+    state.record_real_submission(
+        "R2",
+        "entry",
+        3121,
+        attempt=1,
+        parent_order_id="R1",
+        status="submitting",
+    )
+    with pytest.raises(TrialRunExecutionError) as exc_info:
+        state.record_real_submission(
+            "R-BRANCH",
+            "entry",
+            3122,
+            attempt=1,
+            parent_order_id="R1",
+            status="submitting",
+        )
+    assert exc_info.value.failure_code == "invalid_trial_transition"
+
+
+def test_replacement_must_preserve_parent_direction_and_offset():
+    state = _state()
+    state.record_real_submission(
+        "R1",
+        "entry",
+        3120,
+        direction="long",
+        offset="open",
+        status="submitted",
+    )
+    state.record_real_order_update("R1", status="cancelled")
+
+    with pytest.raises(TrialRunExecutionError) as exc_info:
+        state.record_real_submission(
+            "R2",
+            "entry",
+            3121,
+            direction="short",
+            offset="open",
+            attempt=1,
+            parent_order_id="R1",
+        )
+    assert exc_info.value.failure_code == "invalid_trial_transition"
+
+
+def test_replacement_chain_is_bounded_to_five_attempts():
+    state = _state()
+    current_order_id = "R0"
+    state.record_real_submission(current_order_id, "entry", 3120)
+
+    for attempt in range(1, 6):
+        state.record_real_order_update(current_order_id, status="cancelled")
+        replacement_order_id = f"R{attempt}"
+        state.record_real_submission(
+            replacement_order_id,
+            "entry",
+            3120 + attempt,
+            attempt=attempt,
+            parent_order_id=current_order_id,
+        )
+        current_order_id = replacement_order_id
+
+    state.record_real_order_update(current_order_id, status="cancelled")
+    with pytest.raises(TrialRunExecutionError) as exc_info:
+        state.record_real_submission(
+            "R6",
+            "entry",
+            3126,
+            attempt=6,
+            parent_order_id=current_order_id,
+        )
+
+    assert exc_info.value.failure_code == "invalid_trial_transition"
+
+
+@pytest.mark.parametrize(
+    ("terminal", "stale_update"),
+    [("filled", "submitted"), ("cancelled", "submitted"), ("rejected", "partfilled")],
+)
+def test_terminal_order_status_never_regresses(terminal, stale_update):
+    state = _state()
+    state.record_real_submission("R1", "entry", 3120, status="submitted")
+    state.record_real_order_update("R1", status=terminal)
+
+    with pytest.raises(TrialRunExecutionError) as exc_info:
+        state.record_real_order_update("R1", status=stale_update)
+
+    assert exc_info.value.failure_code == "invalid_trial_transition"
+    assert state.order_chain[0].status == terminal
+
 def test_passed_real_requires_real_entry_and_close_trade_proof():
     state = _state()
     state.record_real_submission("R-E", "entry", 3120)
@@ -253,13 +454,21 @@ def test_order_ownership_current_order_and_direction_volume_checks():
         state.require_current_order("UNRELATED")
     assert exc_info.value.failure_code == "order_not_owned_by_trial_run"
 
-    state.record_real_submission("R2", "entry", 3121, direction="short")
+    state.record_real_order_update("R1", status="cancelled")
+    state.record_real_submission(
+        "R2",
+        "entry",
+        3121,
+        direction="long",
+        attempt=1,
+        parent_order_id="R1",
+    )
     with pytest.raises(TrialRunExecutionError) as exc_info:
         state.require_current_order("R1")
     assert exc_info.value.failure_code == "order_not_current"
 
     with pytest.raises(TrialRunExecutionError) as exc_info:
-        state.require_current_order("R2", direction="long")
+        state.require_current_order("R2", direction="short")
     assert exc_info.value.failure_code == "invalid_trial_transition"
 
     with pytest.raises(TrialRunExecutionError) as exc_info:

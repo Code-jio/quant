@@ -198,6 +198,54 @@ class RiskManagerTest(unittest.TestCase):
         self.assertFalse(second.allowed)
         self.assertIn("Duplicate signal", second.reason)
 
+    def test_rolling_rate_snapshot_reserves_the_close_slot_for_entries(self):
+        class Clock:
+            def __init__(self):
+                self.value = 100.0
+
+            def __call__(self):
+                return self.value
+
+            def advance(self, seconds):
+                self.value += seconds
+
+        clock = Clock()
+        manager = RiskManager({"max_orders_per_minute": 5}, monotonic_clock=clock)
+        signal = self._signal(order_type=OrderType.LIMIT, price=100.0)
+
+        for _ in range(4):
+            self.assertTrue(manager.check_signal(signal, positions={}).allowed)
+            manager.record_order(signal)
+
+        snapshot = manager.order_rate_snapshot(required_capacity=2)
+        self.assertEqual(snapshot["remaining"], 1)
+        self.assertGreater(snapshot["retry_after_seconds"], 0)
+
+        entry_check = manager.check_signal(signal, positions={})
+        self.assertFalse(entry_check.allowed)
+        self.assertIn("rate", entry_check.reason.lower())
+
+        close_check = manager.check_signal(
+            self._signal(order_type=OrderType.LIMIT, price=100.0, offset=OffsetFlag.CLOSE),
+            positions={"rb2505": Position(symbol="rb2505", direction=Direction.NET, volume=1)},
+        )
+        self.assertTrue(close_check.allowed)
+        close_signal = self._signal(
+            order_type=OrderType.LIMIT,
+            price=100.0,
+            offset=OffsetFlag.CLOSE,
+        )
+        manager.record_order(close_signal)
+        self.assertEqual(manager.order_rate_snapshot()["remaining"], 0)
+        sixth_check = manager.check_signal(
+            close_signal,
+            positions={"rb2505": Position(symbol="rb2505", direction=Direction.NET, volume=1)},
+        )
+        self.assertFalse(sixth_check.allowed)
+
+        clock.advance(60.1)
+        self.assertEqual(manager.order_rate_snapshot()["remaining"], 5)
+
 
 if __name__ == "__main__":
     unittest.main()

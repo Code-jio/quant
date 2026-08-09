@@ -192,6 +192,23 @@ def test_trial_run_config_exposes_fill_verification_boundaries(monkeypatch, tmp_
     assert body["strategy"]["chase_max_attempts"] == 5
 
 
+def test_trial_run_config_rejects_more_than_five_chase_replacements(monkeypatch, tmp_path):
+    config_path = _trial_config(
+        _config_path(tmp_path, "too-many-replacements"),
+        chase_max_attempts=6,
+    )
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    app = create_app()
+
+    with TestClient(app) as client:
+        response = client.get("/trial-run/config")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert "strategy.chase_max_attempts 必须在 0 到 5 之间" in body["validation_errors"]
+
+
 def test_trial_run_config_requires_strategy_symbol(monkeypatch, tmp_path):
     config_path = _trial_config(_config_path(tmp_path, "missing-symbol"))
     payload = json.loads(config_path.read_text(encoding="utf-8"))
@@ -298,6 +315,41 @@ def test_trial_run_prepare_auto_arms_and_sends_entry_after_first_bar(monkeypatch
         assert status.json()["market_issue"] == ""
         assert len(entry.strategy.signals) == 1
         assert len(gateway.sent_signals) == 1
+        assert status.json()["current_order_id"] == "ORDER_1"
+        assert status.json()["order_chain"][0]["order_id"] == "ORDER_1"
+
+
+def test_trial_run_wait_seconds_uses_exact_execution_current_order(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "exact-current-order"))
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    gateway = install_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client)
+        assert client.post("/trial-run/prepare").status_code == 200
+        entry = trading_state.get("verify_trial")
+        assert entry is not None
+        entry.engine.on_tick(_tick(3130))
+        current = gateway.orders["ORDER_1"]
+        current.create_time = datetime.now()
+        external = Order(
+            order_id="EXTERNAL",
+            symbol="rb2510",
+            direction=Direction.LONG,
+            order_type=OrderType.LIMIT,
+            price=3130,
+            volume=1,
+            status=OrderStatus.SUBMITTED,
+        )
+        external.create_time = datetime.now() - timedelta(seconds=120)
+        gateway.orders[external.order_id] = external
+
+        response = client.get("/trial-run/status")
+
+    assert response.status_code == 200
+    assert response.json()["current_order_id"] == "ORDER_1"
+    assert response.json()["execution_issue"] != "waiting_counterparty"
 
 
 def test_apply_simulated_fill_fills_trial_order_and_updates_strategy(monkeypatch, tmp_path):
@@ -492,6 +544,25 @@ def test_trial_run_prepare_rejects_active_broker_order(monkeypatch, tmp_path):
     assert response.json()["detail"]["failure_code"] == "broker_active_order_exists"
 
 
+def test_trial_run_prepare_rejects_when_entry_rate_capacity_cannot_reserve_close_slot(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "rate-capacity"))
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    install_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client)
+        engine = trading_state.primary_engine()
+        for _ in range(4):
+            engine.risk_manager.record_order()
+
+        response = client.post("/trial-run/prepare")
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["failure_code"] == "rate_capacity_not_ready"
+    assert response.json()["detail"]["retry_after_seconds"] > 0
+
+
 def test_trial_run_prepare_rejects_unavailable_account(monkeypatch, tmp_path):
     config_path = _trial_config(_config_path(tmp_path, "account-unavailable"))
     monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
@@ -583,6 +654,99 @@ def test_trial_run_lifecycle_mutations_cannot_overlap_prepare(monkeypatch, tmp_p
     assert response.json()["detail"]["failure_code"] == "trial_run_prepare_in_progress"
 
 
+@pytest.mark.parametrize("path", ["/trial-run/stop", "/trial-run/reset"])
+def test_trial_run_lifecycle_waits_for_cancel_confirmation_and_flat_reconciliation(
+    monkeypatch,
+    tmp_path,
+    path,
+):
+    config_path = _trial_config(_config_path(tmp_path, "lifecycle-flat"))
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    gateway = install_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client)
+        assert client.post("/trial-run/prepare").status_code == 200
+        entry = trading_state.get("verify_trial")
+        assert entry is not None
+        entry.engine.on_tick(_tick(3130))
+        execution = entry.engine.trial_run_execution
+        assert execution is not None
+        assert execution.current_order_id == "ORDER_1"
+
+        first = client.post(path)
+        assert first.status_code == 409
+        assert first.json()["detail"]["failure_code"] == "trial_order_cancel_pending"
+        assert gateway.cancelled_order_ids == ["ORDER_1"]
+        assert trading_state.get("verify_trial") is entry
+        assert entry.engine.trial_run_execution is execution
+
+        retry = client.post(path)
+        assert retry.status_code == 409
+        assert retry.json()["detail"]["failure_code"] == "trial_order_cancel_pending"
+        assert gateway.cancelled_order_ids == ["ORDER_1"]
+
+        gateway.on_order(gateway.orders["ORDER_1"])
+        completed = client.post(path)
+        assert completed.status_code == 200
+        assert trading_state.get("verify_trial") is None
+        assert entry.engine.trial_run_execution is None
+        expected_state = "idle" if path.endswith("reset") else "stopped"
+        assert completed.json()["status"]["state"] == expected_state
+
+
+def test_failed_order_manager_start_clears_bound_trial_strategy(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "failed-manager-start"))
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    gateway = install_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client)
+        engine = trading_state.primary_engine()
+        assert engine is not None
+        monkeypatch.setattr(engine.order_manager, "start", lambda: False)
+
+        response = client.post("/trial-run/prepare")
+        assert response.status_code == 500
+        assert trading_state.get("verify_trial") is None
+        assert engine.trial_run_execution is None
+        assert engine.strategy is None
+
+        engine.on_tick(_tick(3130))
+        assert gateway.sent_signals == []
+
+
+def test_failed_start_with_inflight_submission_keeps_registered_recovery_entry(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "failed-start-inflight"))
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    install_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client)
+        engine = trading_state.primary_engine()
+        assert engine is not None
+
+        def fail_with_inflight(_config):
+            with engine._trial_submission_lock:
+                engine._trial_submission_in_flight = True
+            return False
+
+        monkeypatch.setattr(engine, "start", fail_with_inflight)
+        response = client.post("/trial-run/prepare")
+
+        assert response.status_code == 500
+        recovery_entry = trading_state.get("verify_trial")
+        assert recovery_entry is not None
+        assert recovery_entry.engine is engine
+        assert engine.trial_run_execution is not None
+
+        with engine._trial_submission_lock:
+            engine._trial_submission_in_flight = False
+
+
 def test_trial_run_stale_first_tick_never_emits_bar_or_order(monkeypatch, tmp_path):
     config_path = _trial_config(_config_path(tmp_path, "stale-first-tick"))
     monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
@@ -659,6 +823,8 @@ def test_trial_run_status_reports_tick_readiness_details(monkeypatch, tmp_path):
     assert body["first_tick_bar_emitted"] is True
     assert body["last_market_price"] == 3130
     assert body["last_market_timestamp"]
+    assert body["chase_state"] == "waiting_timeout"
+    assert body["rate_retry_after_seconds"] == 0.0
 
 
 def test_trial_run_status_reports_waiting_counterparty_after_no_fill_timeout(monkeypatch, tmp_path):

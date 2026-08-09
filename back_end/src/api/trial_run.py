@@ -92,6 +92,10 @@ class _TrialRunState:
             self.execution = execution
         return execution
 
+    def clear_execution(self) -> None:
+        with self._lock:
+            self.execution = None
+
     def snapshot(self) -> Dict[str, Any]:
         with self._lock:
             return {
@@ -326,6 +330,9 @@ def _validate_trial_config(config: Dict[str, Any]) -> tuple[str, List[str]]:
         errors.append("strategy.name 必须为 verify")
     if _int_value(strategy.get("volume")) != 1:
         errors.append("strategy.volume 必须为 1")
+    chase_max_attempts = _int_value(strategy.get("chase_max_attempts"), 5)
+    if chase_max_attempts < 0 or chase_max_attempts > 5:
+        errors.append("strategy.chase_max_attempts 必须在 0 到 5 之间")
     if _bool_value(trial_run.get("auto_arm"), True):
         if _int_value(strategy.get("warmup_bars"), 1) != 1:
             errors.append("strategy.warmup_bars must be 1 when trial_run.auto_arm is true")
@@ -660,6 +667,19 @@ def _require_trial_preflight(trading_state: Any, engine: Any, symbol: str) -> No
             status_code=409,
             detail={"failure_code": "broker_gateway_unavailable", "message": "交易网关不可用"},
         )
+    risk_manager = getattr(engine, "risk_manager", None)
+    if risk_manager is not None:
+        rate_snapshot = risk_manager.order_rate_snapshot(required_capacity=2)
+        if int(rate_snapshot.get("remaining", 0)) < 2:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "failure_code": "rate_capacity_not_ready",
+                    "message": "提交入场委托后必须保留平仓容量",
+                    "remaining": int(rate_snapshot.get("remaining", 0)),
+                    "retry_after_seconds": float(rate_snapshot.get("retry_after_seconds", 0.0)),
+                },
+            )
     try:
         reconciliation = gateway.refresh_reconciliation(timeout_seconds=8.0)
     except Exception as exc:
@@ -736,26 +756,40 @@ def _order_age_seconds(order: Any) -> float:
 def _active_order_wait_seconds(engine: Any, symbol: str) -> float:
     if engine is None or not symbol:
         return 0.0
+    execution = getattr(engine, "trial_run_execution", None)
+    current_order_id = str(getattr(execution, "current_order_id", "") or "")
+    if not current_order_id:
+        return 0.0
     gateway = getattr(engine, "gateway", None)
     orders = getattr(gateway, "orders", {}) if gateway is not None else {}
     if not isinstance(orders, dict):
         return 0.0
 
-    active_statuses = {"submitting", "submitted", "partfilled"}
-    wait_seconds = 0.0
-    for order in orders.values():
-        order_symbol = str(getattr(order, "symbol", "") or "")
-        if not order_symbol or not _symbols_match(order_symbol, symbol):
-            continue
-        status = str(_enum_value(getattr(order, "status", "")) or "").strip().lower()
-        if status not in active_statuses:
-            continue
-        volume = _int_value(getattr(order, "volume", 0))
-        traded_volume = _int_value(getattr(order, "traded_volume", 0))
-        if volume > 0 and traded_volume >= volume:
-            continue
-        wait_seconds = max(wait_seconds, _order_age_seconds(order))
-    return round(wait_seconds, 1)
+    active_statuses = {
+        "submitting",
+        "submitted",
+        "accepted",
+        "broker_accepted",
+        "broker-accepted",
+        "broker accepted",
+        "partfilled",
+        "partialfilled",
+        "partial_filled",
+    }
+    order = orders.get(current_order_id)
+    if order is None:
+        return 0.0
+    order_symbol = str(getattr(order, "symbol", "") or "")
+    if not order_symbol or not _symbols_match(order_symbol, symbol):
+        return 0.0
+    status = str(_enum_value(getattr(order, "status", "")) or "").strip().lower()
+    if status not in active_statuses:
+        return 0.0
+    volume = _int_value(getattr(order, "volume", 0))
+    traded_volume = _int_value(getattr(order, "traded_volume", 0))
+    if volume > 0 and traded_volume >= volume:
+        return 0.0
+    return round(_order_age_seconds(order), 1)
 
 
 def _has_fresh_reconciliation(gateway: Any, max_age_seconds: float = 15.0) -> bool:
@@ -962,6 +996,8 @@ def _status_response(trading_state: Any) -> TrialRunStatusResponse:
             and broker_position_volume == 0
             and not broker_active_order_ids
         ),
+        rate_limit_remaining=_int_value(risk.get("rate_limit_remaining", 0)),
+        rate_limit_retry_after_seconds=float(risk.get("rate_limit_retry_after_seconds", 0.0) or 0.0),
         simulation_state="migration_in_progress",
         simulation_prepare_allowed=False,
         failure_code=str(execution.get("failure_code") or ""),
@@ -1019,6 +1055,8 @@ def _status_response(trading_state: Any) -> TrialRunStatusResponse:
         chase_step_ticks=_int_value(snapshot.get("chase_step_ticks")),
         chase_pending_cancel_order_id=str(snapshot.get("chase_pending_cancel_order_id") or ""),
         chase_resubmit_ready=bool(snapshot.get("chase_resubmit_ready", False)),
+        chase_state=str(snapshot.get("chase_state") or ""),
+        rate_retry_after_seconds=float(snapshot.get("rate_retry_after_seconds") or 0.0),
         last_chase_reason=str(snapshot.get("last_chase_reason") or ""),
         last_chase_order_id=str(snapshot.get("last_chase_order_id") or ""),
         last_chase_price=float(snapshot.get("last_chase_price") or 0.0),
@@ -1046,6 +1084,28 @@ def _action_response(
     )
 
 
+def _cleanup_failed_trial_start(engine: Any, strategy: Any) -> bool:
+    begin_shutdown = getattr(engine, "begin_trial_run_shutdown", None)
+    if callable(begin_shutdown) and begin_shutdown(strategy) is False:
+        return False
+    try:
+        engine.order_manager.stop()
+    except Exception:
+        pass
+    unbind = getattr(engine, "unbind_trial_run_execution", None)
+    if callable(unbind) and unbind() is False:
+        return False
+    clear_strategy = getattr(engine, "clear_strategy", None)
+    if callable(clear_strategy):
+        clear_strategy(strategy)
+    elif getattr(engine, "strategy", None) is strategy:
+        engine.strategy = None
+    finish_shutdown = getattr(engine, "finish_trial_run_shutdown", None)
+    if callable(finish_shutdown):
+        finish_shutdown()
+    return True
+
+
 def _stop_trial_strategy(trading_state: Any, *, reset: bool = False) -> None:
     entry = trading_state.get(TRIAL_STRATEGY_ID)
     if entry is None:
@@ -1054,21 +1114,122 @@ def _stop_trial_strategy(trading_state: Any, *, reset: bool = False) -> None:
         return
 
     strategy = entry.strategy
-    revoke = getattr(strategy, "revoke_authorization", None)
-    if callable(revoke):
-        revoke()
+    engine = entry.engine
+    begin_shutdown = getattr(engine, "begin_trial_run_shutdown", None)
+    if not callable(begin_shutdown) or begin_shutdown(strategy) is False:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "failure_code": "trial_submission_in_flight",
+                "message": "试运行订单正在提交登记，请稍后重试",
+            },
+        )
+    try:
+        engine.order_manager.stop()
+    except Exception:
+        pass
+
+    execution = getattr(engine, "trial_run_execution", None)
+    current_order_id = str(getattr(execution, "current_order_id", "") or "")
+    if current_order_id:
+        already_requested = str(
+            getattr(strategy, "_chase_pending_cancel_order_id", "") or ""
+        ) == current_order_id
+        request_cancel = getattr(engine, "request_trial_run_shutdown_cancel", None)
+        requested = bool(
+            callable(request_cancel)
+            and request_cancel(current_order_id, already_requested=already_requested)
+        )
+        trial_run_state.update(state="cancel_pending", authorized=False)
+        if not requested:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "failure_code": "trial_order_cancel_failed",
+                    "message": f"试运行委托撤单请求失败: {current_order_id}",
+                    "order_id": current_order_id,
+                },
+            )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "failure_code": "trial_order_cancel_pending",
+                "message": f"已请求撤销试运行委托，等待券商确认: {current_order_id}",
+                "order_id": current_order_id,
+            },
+        )
+
+    gateway = getattr(engine, "gateway", None)
+    if gateway is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "failure_code": "broker_gateway_unavailable",
+                "message": "交易网关不可用，不能完成停止前对账",
+            },
+        )
+    try:
+        reconciliation = gateway.refresh_reconciliation(timeout_seconds=8.0)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"failure_code": "trial_reconciliation_required", "message": str(exc)},
+        ) from exc
+    if not isinstance(reconciliation, dict) or not (
+        reconciliation.get("ok") is True and reconciliation.get("fresh") is True
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "failure_code": "trial_reconciliation_required",
+                "message": "停止试运行前必须取得新鲜、完整的券商委托与持仓快照",
+            },
+        )
+
+    symbol = str(getattr(execution, "symbol", "") or getattr(strategy, "symbol", "") or "")
+    active_orders = _active_broker_orders(gateway, symbol)
+    position_volume = _broker_position_volume(gateway, symbol)
+    if active_orders or position_volume:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "failure_code": "flatten_required",
+                "message": "真实委托或持仓尚未归零，不能停止并清除试运行证据",
+                "active_order_ids": [
+                    str(getattr(order, "order_id", "") or "") for order in active_orders
+                ],
+                "position_volume": position_volume,
+            },
+        )
+
+    resolve_untracked = getattr(engine, "resolve_untracked_trial_orders_after_reconciliation", None)
+    if callable(resolve_untracked):
+        resolve_untracked()
+    unbind = getattr(engine, "unbind_trial_run_execution", None)
+    if callable(unbind) and unbind() is False:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "failure_code": "trial_order_state_unresolved",
+                "message": "试运行订单状态尚未完全收敛，不能解绑执行链",
+            },
+        )
+
     try:
         strategy.on_stop()
     except Exception:
         pass
-    try:
-        entry.engine.order_manager.stop()
-    except Exception:
-        pass
-    if _gateway_connected(entry.engine):
-        entry.engine.status = TradingStatus.CONNECTED
-    entry.engine.strategy = None
+    if _gateway_connected(engine):
+        engine.status = TradingStatus.CONNECTED
+    clear_strategy = getattr(engine, "clear_strategy", None)
+    if callable(clear_strategy):
+        clear_strategy(strategy)
+    else:
+        engine.strategy = None
     trading_state.unregister(TRIAL_STRATEGY_ID)
+    finish_shutdown = getattr(engine, "finish_trial_run_shutdown", None)
+    if callable(finish_shutdown):
+        finish_shutdown()
     if reset:
         trial_run_state.reset()
     else:
@@ -1156,8 +1317,20 @@ def register_trial_run_routes(
         if engine is None or not _gateway_connected(engine):
             raise HTTPException(status_code=503, detail="交易主引擎未连接")
 
+        risk_config = copy.deepcopy(config.get("risk", {}))
+        engine.risk_manager.configure({"risk": risk_config})
         _require_trial_preflight(trading_state, engine, allowed_symbol)
         _stop_trial_strategy(trading_state)
+        if getattr(engine, "trial_run_execution", None) is not None or bool(
+            getattr(engine, "has_untracked_trial_orders", lambda: False)()
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "failure_code": "trial_order_state_unresolved",
+                    "message": "上一轮试运行执行域尚未完成撤单与对账，不能开始新一轮",
+                },
+            )
 
         from ..strategy import create_strategy
 
@@ -1170,20 +1343,44 @@ def register_trial_run_routes(
         strategy = create_strategy("verify", strategy_config)
         engine.set_strategy(strategy)
         trading_config = copy.deepcopy(config.get("trading", {}))
-        risk_config = copy.deepcopy(config.get("risk", {}))
         start_config = {**trading_config, "risk": risk_config}
         if strategy_config["auto_arm"]:
             start_config["emit_first_tick_bar"] = True
-        if not engine.start(start_config):
-            trial_run_state.update(state="error", allowed_symbol=allowed_symbol, errors=["试运行策略启动失败"], authorized=False)
-            raise HTTPException(status_code=500, detail="试运行策略启动失败")
-
-        trading_state.register(TRIAL_STRATEGY_ID, strategy, engine, _without_secret_fields(config))
-        subscribe_market_ticks(engine, [allowed_symbol])
-        trial_run_state.start_execution(
+        execution = trial_run_state.start_execution(
             allowed_symbol,
             volume=_int_value(strategy_config.get("volume"), 1),
         )
+        bind = getattr(engine, "bind_trial_run_execution", None)
+        if not callable(bind):
+            trial_run_state.clear_execution()
+            clear_strategy = getattr(engine, "clear_strategy", None)
+            if callable(clear_strategy):
+                clear_strategy(strategy)
+            raise HTTPException(status_code=500, detail="trial-run execution binding unavailable")
+        bind(execution)
+        trading_state.register(TRIAL_STRATEGY_ID, strategy, engine, _without_secret_fields(config))
+        try:
+            started = engine.start(start_config)
+        except Exception:
+            if _cleanup_failed_trial_start(engine, strategy):
+                trading_state.unregister(TRIAL_STRATEGY_ID)
+                trial_run_state.clear_execution()
+            else:
+                trial_run_state.update(
+                    state="error",
+                    allowed_symbol=allowed_symbol,
+                    errors=["试运行启动异常且订单状态尚未收敛"],
+                    authorized=False,
+                )
+            raise
+        if not started:
+            if _cleanup_failed_trial_start(engine, strategy):
+                trading_state.unregister(TRIAL_STRATEGY_ID)
+                trial_run_state.clear_execution()
+            trial_run_state.update(state="error", allowed_symbol=allowed_symbol, errors=["试运行策略启动失败"], authorized=False)
+            raise HTTPException(status_code=500, detail="试运行策略启动失败")
+
+        subscribe_market_ticks(engine, [allowed_symbol])
         trial_run_state.update(
             state="prepared",
             allowed_symbol=allowed_symbol,

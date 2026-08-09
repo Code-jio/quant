@@ -3,10 +3,12 @@
 """
 
 import logging
+import copy
+import threading
 import time
 import traceback
 from datetime import datetime
-from typing import Dict, Any, TYPE_CHECKING
+from typing import Dict, Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..strategy import Signal, Order, Trade, Position
@@ -24,19 +26,33 @@ from .order_manager import OrderManager, PreOrder
 from .risk import RiskManager
 from .bar_aggregator import BarAggregator
 from .symbols import symbol_key, symbols_match
+from .trial_run_execution import TrialRunExecutionState
 from ..common.exceptions import ExceptionHandler
 
 
 class TradingEngine:
     """实盘交易引擎"""
 
-    def __init__(self, gateway: GatewayBase = None):
+    def __init__(self, gateway: Optional[GatewayBase] = None, monotonic_clock=None, clock=None):
         self.gateway = gateway or create_gateway("vnpy")
+        self._monotonic = monotonic_clock or clock or time.monotonic
         self.strategy = None
+        self.trial_run_execution: Optional[TrialRunExecutionState] = None
+        self._trial_bound_strategy = None
+        self._trial_submission_lock = threading.RLock()
+        self._strategy_callback_lock = threading.RLock()
+        self._signal_submission_lock = threading.RLock()
+        self._trial_submission_in_flight = False
+        self._signal_submission_in_flight = False
+        self._trial_run_stopping = False
+        self._trial_shutdown_cancel_requested_order_ids: set[str] = set()
+        self._untracked_trial_order_ids: set[str] = set()
+        self._deferred_trial_callbacks: list[tuple[str, Any]] = []
         self._processed_signal_count = 0
         self.status = TradingStatus.STOPPED
 
-        self.order_manager = OrderManager(self.gateway)
+        self.order_manager = OrderManager(self.gateway, monotonic_clock=self._monotonic)
+        self.order_manager.submit_signal_callback = self.send_signal
         self.gateway.on_order_callback = self._on_order
         self.gateway.on_trade_callback = self._on_trade
         self.gateway.on_tick_callback = self._on_tick
@@ -45,14 +61,17 @@ class TradingEngine:
         self.order_manager.on_order_callback = self._on_order
         self.order_manager.on_trade_callback = self._on_trade
         self.order_manager.on_pre_order_status_change = self._on_pre_order_status_change
+        self.order_manager.on_timer_callback = self.on_timer
 
-        self.risk_manager = RiskManager()
-        self.bar_aggregator: BarAggregator = None  # set in start()
+        self.risk_manager = RiskManager(monotonic_clock=self._monotonic)
+        self.bar_aggregator: Optional[BarAggregator] = None  # set in start()
         self._bar_interval: int = 1
         self._emit_first_tick_bar = False
         self._first_tick_bar_symbols: set[str] = set()
         self._first_tick_bar_emitted_symbols: set[str] = set()
         self._first_tick_bar_skip_reason = ""
+        self._last_strategy_tick: Optional[MarketData] = None
+        self._last_strategy_tick_sequence = 0
 
         self.last_reject_reason = ""
         self._error_count = 0
@@ -61,19 +80,96 @@ class TradingEngine:
 
     def set_strategy(self, strategy):
         """设置策略"""
-        self.strategy = strategy
-        self._processed_signal_count = len(getattr(strategy, "signals", []))
+        with self._strategy_callback_lock:
+            self.strategy = strategy
+            self._processed_signal_count = len(getattr(strategy, "signals", []))
         if hasattr(strategy, "set_position_source"):
             strategy.set_position_source(self.gateway.positions)
 
-    def configure_risk(self, config: Dict[str, Any] = None):
+    def clear_strategy(self, expected_strategy: Any = None) -> bool:
+        with self._strategy_callback_lock:
+            if expected_strategy is not None and self.strategy is not expected_strategy:
+                return False
+            self.strategy = None
+            return True
+
+    def bind_trial_run_execution(self, execution: TrialRunExecutionState) -> None:
+        with self._trial_submission_lock:
+            if self.trial_run_execution is not None and self.trial_run_execution is not execution:
+                raise RuntimeError("trial_execution_already_bound")
+            if self._trial_submission_in_flight or self._untracked_trial_order_ids:
+                raise RuntimeError("trial_submission_in_flight")
+            self.trial_run_execution = execution
+            self._trial_bound_strategy = self.strategy
+            self._trial_run_stopping = False
+            self._trial_shutdown_cancel_requested_order_ids.clear()
+
+    def unbind_trial_run_execution(self) -> bool:
+        with self._trial_submission_lock:
+            execution = self.trial_run_execution
+            if (
+                self._trial_submission_in_flight
+                or self._untracked_trial_order_ids
+                or (execution is not None and bool(execution.current_order_id))
+            ):
+                return False
+            self.trial_run_execution = None
+            return True
+
+    def begin_trial_run_shutdown(self, expected_strategy: Any = None) -> bool:
+        """Freeze strategy submissions while broker state is reconciled."""
+        with self._trial_submission_lock:
+            self._trial_run_stopping = True
+        with self._strategy_callback_lock:
+            if expected_strategy is not None and self.strategy is not expected_strategy:
+                return False
+            with self._trial_submission_lock:
+                if self._trial_submission_in_flight:
+                    return False
+            revoke = getattr(self.strategy, "revoke_authorization", None) if self.strategy else None
+            if callable(revoke):
+                revoke()
+            return True
+
+    def request_trial_run_shutdown_cancel(self, order_id: str, *, already_requested: bool = False) -> bool:
+        order_id = str(order_id or "")
+        if not order_id:
+            return False
+        with self._trial_submission_lock:
+            if order_id in self._trial_shutdown_cancel_requested_order_ids:
+                return True
+            self._trial_shutdown_cancel_requested_order_ids.add(order_id)
+        if already_requested:
+            return True
+        if self.cancel_order(order_id):
+            return True
+        with self._trial_submission_lock:
+            self._trial_shutdown_cancel_requested_order_ids.discard(order_id)
+        return False
+
+    def has_untracked_trial_orders(self) -> bool:
+        with self._trial_submission_lock:
+            return bool(self._untracked_trial_order_ids)
+
+    def resolve_untracked_trial_orders_after_reconciliation(self) -> None:
+        with self._trial_submission_lock:
+            self._untracked_trial_order_ids.clear()
+
+    def finish_trial_run_shutdown(self) -> None:
+        with self._trial_submission_lock:
+            self._trial_run_stopping = False
+            self._trial_shutdown_cancel_requested_order_ids.clear()
+            if self.trial_run_execution is None:
+                self._trial_bound_strategy = None
+
+    def configure_risk(self, config: Optional[Dict[str, Any]] = None):
         """Configure pre-order risk controls."""
         config = config or {}
         self.risk_manager.configure(config)
         if config.get("initial_capital"):
             self.risk_manager.set_day_open_balance(float(config.get("initial_capital") or 0.0))
 
-    def start(self, config: Dict[str, Any] = None) -> bool:
+    def start(self, config: Optional[Dict[str, Any]] = None) -> bool:
         """启动交易引擎"""
         try:
             if self.status in [TradingStatus.CONNECTING, TradingStatus.TRADING]:
@@ -87,6 +183,8 @@ class TradingEngine:
             self._first_tick_bar_symbols.clear()
             self._first_tick_bar_emitted_symbols.clear()
             self._first_tick_bar_skip_reason = ""
+            self._last_strategy_tick = None
+            self._last_strategy_tick_sequence = 0
             self.bar_aggregator = BarAggregator(
                 interval_minutes=self._bar_interval,
                 on_bar=self._on_bar_completed,
@@ -100,16 +198,34 @@ class TradingEngine:
                     self.status = TradingStatus.ERROR
                     return False
 
-            self.order_manager.start()
-
             if self.strategy:
                 try:
-                    self.strategy.on_init()
-                    self.strategy.on_start()
+                    with self._strategy_callback_lock:
+                        self.strategy.on_init()
+                        set_clock = getattr(self.strategy, "set_monotonic_clock", None)
+                        if callable(set_clock):
+                            set_clock(self._monotonic)
+                        set_market_capability = getattr(self.strategy, "set_market_order_supported", None)
+                        if callable(set_market_capability):
+                            set_market_capability(
+                                bool(
+                                    self.gateway.supports_market_order(
+                                        getattr(self.strategy, "symbol", "")
+                                    )
+                                )
+                            )
+                        self.strategy.on_start()
                 except Exception as e:
                     logger.error(f"策略初始化失败: {e}")
                     self.status = TradingStatus.ERROR
                     return False
+
+            if self.order_manager.start() is False:
+                with self._trial_submission_lock:
+                    if self.trial_run_execution is not None:
+                        self._trial_run_stopping = True
+                self.status = TradingStatus.ERROR
+                return False
 
             self.status = TradingStatus.TRADING
             logger.info("交易引擎已启动")
@@ -123,9 +239,31 @@ class TradingEngine:
             self.status = TradingStatus.ERROR
             raise RuntimeError(f"启动交易引擎失败: {e}") from e
 
-    def stop(self):
+    def stop(self) -> bool:
         """停止交易引擎"""
         try:
+            with self._trial_submission_lock:
+                preserve_trial = self.trial_run_execution is not None or bool(self._untracked_trial_order_ids)
+            if preserve_trial:
+                strategy = self.strategy
+                self.begin_trial_run_shutdown(strategy)
+                self.order_manager.stop()
+                with self._trial_submission_lock:
+                    current_order_id = str(
+                        getattr(self.trial_run_execution, "current_order_id", "") or ""
+                    )
+                if current_order_id:
+                    already_requested = str(
+                        getattr(strategy, "_chase_pending_cancel_order_id", "") or ""
+                    ) == current_order_id
+                    self.request_trial_run_shutdown_cancel(
+                        current_order_id,
+                        already_requested=already_requested,
+                    )
+                self.status = TradingStatus.ERROR
+                logger.error("试运行执行域尚未完成券商对账，保留网关连接和订单证据")
+                return False
+
             if self.strategy:
                 try:
                     self.strategy.on_stop()
@@ -141,45 +279,54 @@ class TradingEngine:
             self.gateway.disconnect()
             self.status = TradingStatus.STOPPED
             logger.info("交易引擎已停止")
+            return True
         except Exception as e:
             logger.error(f"停止交易引擎失败: {e}")
-            self.status = TradingStatus.STOPPED
+            self.status = TradingStatus.ERROR
+            return False
 
     def send_signal(self, signal: 'Signal') -> str:
         """发送交易信号"""
-        self.last_reject_reason = ""
-        if self.status not in (TradingStatus.TRADING, TradingStatus.CONNECTED):
-            # 也检查网关状态，允许网关已连接但引擎未正式 start 的场景（手动交易）
-            if self.gateway.status not in (TradingStatus.CONNECTED, TradingStatus.TRADING):
-                logger.warning("交易引擎未连接")
-                self.last_reject_reason = "Trading engine is not connected"
+        with self._signal_submission_lock:
+            self.last_reject_reason = ""
+            if self._signal_submission_in_flight:
+                self.last_reject_reason = "Another order submission is in progress"
                 return ""
+            self._signal_submission_in_flight = True
+            try:
+                if self.status not in (TradingStatus.TRADING, TradingStatus.CONNECTED):
+                    # 也检查网关状态，允许网关已连接但引擎未正式 start 的场景（手动交易）
+                    if self.gateway.status not in (TradingStatus.CONNECTED, TradingStatus.TRADING):
+                        logger.warning("交易引擎未连接")
+                        self.last_reject_reason = "Trading engine is not connected"
+                        return ""
 
-        try:
-            risk_result = self.risk_manager.check_signal(
-                signal,
-                positions=self.gateway.positions,
-                active_orders=self.gateway.orders.values(),
-                account=getattr(self.gateway, "account", None),
-                market_data=self._market_data_for_symbol(signal.symbol),
-            )
-            if not risk_result.allowed:
-                self.last_reject_reason = risk_result.reason
-                logger.warning(f"风控拒单: {risk_result.reason}")
+                risk_result = self.risk_manager.check_signal(
+                    signal,
+                    positions=self.gateway.positions,
+                    active_orders=self.gateway.orders.values(),
+                    account=getattr(self.gateway, "account", None),
+                    market_data=self._market_data_for_symbol(signal.symbol),
+                )
+                if not risk_result.allowed:
+                    self.last_reject_reason = risk_result.reason
+                    logger.warning(f"风控拒单: {risk_result.reason}")
+                    return ""
+
+                order_id = self.order_manager.submit_order(signal)
+                if order_id:
+                    self.risk_manager.record_order(signal)
+                    logger.info(f"发送信号: {signal.symbol} {signal.direction.value} {signal.volume}@{signal.price}")
+                return order_id
+            except Exception as e:
+                self._error_count += 1
+                logger.error(f"发送信号失败: {e}")
+                if self._error_count >= self._max_errors:
+                    logger.error(f"错误次数过多 ({self._error_count}), 停止交易")
+                    self.stop()
                 return ""
-
-            order_id = self.order_manager.submit_order(signal)
-            if order_id:
-                self.risk_manager.record_order(signal)
-                logger.info(f"发送信号: {signal.symbol} {signal.direction.value} {signal.volume}@{signal.price}")
-            return order_id
-        except Exception as e:
-            self._error_count += 1
-            logger.error(f"发送信号失败: {e}")
-            if self._error_count >= self._max_errors:
-                logger.error(f"错误次数过多 ({self._error_count}), 停止交易")
-                self.stop()
-            return ""
+            finally:
+                self._signal_submission_in_flight = False
 
     def cancel_order(self, order_id: str) -> bool:
         """撤销订单"""
@@ -216,18 +363,31 @@ class TradingEngine:
         """行情推送（外部主动调用，兼容旧接口）"""
         self._on_tick(tick)
 
+    def on_timer(self, now_monotonic: Optional[float] = None):
+        """Run timer-driven strategy work without requiring another tick."""
+        with self._strategy_callback_lock:
+            tick = self._last_strategy_tick
+            quote_sequence = self._last_strategy_tick_sequence
+        if tick is not None:
+            self._maybe_chase_strategy_order(
+                tick,
+                now_monotonic=now_monotonic,
+                quote_sequence=quote_sequence,
+            )
+
     def _on_tick(self, tick: MarketData):
         """行情推送内部处理，同时更新预埋单市场数据"""
         stale_reason = self._stale_market_data_reason(tick)
         if stale_reason:
             self.last_reject_reason = stale_reason
             self._first_tick_bar_skip_reason = "stale_market_data"
-            mark_stale = getattr(self.strategy, "mark_market_data_stale", None) if self.strategy else None
-            if callable(mark_stale):
-                try:
-                    mark_stale(tick.symbol, stale_reason)
-                except Exception as e:
-                    logger.error(f"标记过期行情失败: {e}")
+            with self._strategy_callback_lock:
+                mark_stale = getattr(self.strategy, "mark_market_data_stale", None) if self.strategy else None
+                if callable(mark_stale):
+                    try:
+                        mark_stale(tick.symbol, stale_reason)
+                    except Exception as e:
+                        logger.error(f"标记过期行情失败: {e}")
             logger.warning("忽略过期行情 tick: %s", stale_reason)
             return
 
@@ -238,25 +398,40 @@ class TradingEngine:
             "timestamp": tick.timestamp,
         })
         # Update strategy capital from live account (per-tick)
-        if self.strategy:
-            available = getattr(self.gateway.account, "available", 0.0)
-            if available > 0:
-                self.strategy.current_capital = available
-            on_tick = getattr(self.strategy, "on_tick", None)
-            if callable(on_tick):
-                try:
-                    on_tick(tick)
-                    self._dispatch_strategy_signals()
-                    self._maybe_chase_strategy_order(tick)
-                except Exception as e:
-                    logger.error(f"处理 Tick 策略回调失败: {e}")
+        with self._strategy_callback_lock:
+            strategy = self.strategy
+            if strategy:
+                strategy_symbol = str(getattr(strategy, "symbol", "") or "")
+                if not strategy_symbol or self._symbols_match(tick.symbol, strategy_symbol):
+                    self._last_strategy_tick = tick
+                    self._last_strategy_tick_sequence += 1
+                available = getattr(self.gateway.account, "available", 0.0)
+                if available > 0:
+                    strategy.current_capital = available
+                on_tick = getattr(strategy, "on_tick", None)
+                if callable(on_tick):
+                    try:
+                        on_tick(tick)
+                        self._dispatch_strategy_signals()
+                    except Exception as e:
+                        logger.error(f"处理 Tick 策略回调失败: {e}")
+                quote_sequence = self._last_strategy_tick_sequence
+            else:
+                quote_sequence = 0
+
+        self._maybe_chase_strategy_order(
+            tick,
+            now_monotonic=self._monotonic(),
+            quote_sequence=quote_sequence,
+        )
 
         # Bar aggregation — only calls on_bar when a bar completes
         if self.bar_aggregator:
             try:
                 finished = self.bar_aggregator.push(tick)
                 if finished is None:
-                    self._maybe_emit_first_tick_bar(tick)
+                    with self._strategy_callback_lock:
+                        self._maybe_emit_first_tick_bar(tick)
             except Exception as e:
                 logger.error(f"Bar 聚合失败: {e}")
 
@@ -291,11 +466,14 @@ class TradingEngine:
         """Append the processed tick to a bounded rolling window of live data."""
         import pandas as pd
 
+        strategy = self.strategy
+        if strategy is None:
+            return bar
         if bar is None:
             bar = self._tick_to_bar(tick)
         bar_frame = pd.DataFrame([bar.to_dict()], index=[tick.timestamp])
 
-        existing = self.strategy.data.get(tick.symbol)
+        existing = strategy.data.get(tick.symbol)
         if existing is None or existing.empty:
             updated = bar_frame
         else:
@@ -306,27 +484,31 @@ class TradingEngine:
         if len(updated) > 1000:
             updated = updated.iloc[-1000:]
 
-        self.strategy.data[tick.symbol] = updated
+        strategy.data[tick.symbol] = updated
         return bar
 
     def _on_bar_completed(self, symbol: str, bar):
         """Called by BarAggregator when a bar completes."""
-        if not self.strategy:
-            return
-        try:
-            self.strategy.current_date = bar["datetime"]
-            self._append_live_bar_via_bar(symbol, bar)
-            self.strategy.on_bar(bar)
-            self._dispatch_strategy_signals()
-        except Exception as e:
-            logger.error(f"处理 Bar 回调失败: {e}")
+        with self._strategy_callback_lock:
+            if not self.strategy:
+                return
+            try:
+                self.strategy.current_date = bar["datetime"]
+                self._append_live_bar_via_bar(symbol, bar)
+                self.strategy.on_bar(bar)
+                self._dispatch_strategy_signals()
+            except Exception as e:
+                logger.error(f"处理 Bar 回调失败: {e}")
 
     def _append_live_bar_via_bar(self, symbol: str, bar):
         """Append a completed bar to strategy data."""
         import pandas as pd
 
+        strategy = self.strategy
+        if strategy is None:
+            return
         bar_frame = pd.DataFrame([bar.to_dict()], index=[bar["datetime"]])
-        existing = self.strategy.data.get(symbol)
+        existing = strategy.data.get(symbol)
         if existing is None or existing.empty:
             updated = bar_frame
         else:
@@ -334,7 +516,7 @@ class TradingEngine:
             updated = updated[~updated.index.duplicated(keep="last")].sort_index()
         if len(updated) > 1000:
             updated = updated.iloc[-1000:]
-        self.strategy.data[symbol] = updated
+        strategy.data[symbol] = updated
 
     def _maybe_emit_first_tick_bar(self, tick: MarketData):
         """Let verification flows advance on the first valid tick instead of waiting for a full minute."""
@@ -389,12 +571,74 @@ class TradingEngine:
 
     def _dispatch_strategy_signals(self):
         """Send newly generated strategy signals to the broker gateway."""
-        signals = getattr(self.strategy, "signals", [])
+        strategy = self.strategy
+        if strategy is None:
+            return
+        signals = getattr(strategy, "signals", [])
         if self._processed_signal_count > len(signals):
             self._processed_signal_count = len(signals)
 
         new_signals = signals[self._processed_signal_count:]
         for signal in new_signals:
+            if not self._submit_strategy_signal(signal):
+                break
+        self._processed_signal_count = len(signals)
+
+    def _begin_trial_submission(self) -> bool:
+        with self._trial_submission_lock:
+            if self._trial_run_stopping:
+                raise RuntimeError("trial_run_stopping")
+            if self.trial_run_execution is None:
+                if self.strategy is not None and self.strategy is self._trial_bound_strategy:
+                    raise RuntimeError("trial_execution_unbound")
+                return False
+            if self._trial_submission_in_flight:
+                self._mark_trial_execution_failed(
+                    "order_chain_registration_failed",
+                    "concurrent_trial_submission",
+                )
+                raise RuntimeError("concurrent_trial_submission")
+            self._trial_submission_in_flight = True
+            return True
+
+    def _finish_trial_submission(self) -> None:
+        with self._trial_submission_lock:
+            self._trial_submission_in_flight = False
+            callbacks = list(self._deferred_trial_callbacks)
+            self._deferred_trial_callbacks.clear()
+        for callback_type, payload in callbacks:
+            if callback_type == "order":
+                self._on_order(payload)
+            else:
+                self._on_trade(payload)
+        with self._trial_submission_lock:
+            stopping = self._trial_run_stopping
+            current_order_id = str(
+                getattr(self.trial_run_execution, "current_order_id", "") or ""
+            )
+        if stopping and current_order_id:
+            self.request_trial_run_shutdown_cancel(current_order_id)
+
+    def _defer_trial_callback(self, callback_type: str, payload: Any) -> bool:
+        with self._trial_submission_lock:
+            if not self._trial_submission_in_flight:
+                return False
+            try:
+                payload = copy.copy(payload)
+            except Exception:
+                pass
+            self._deferred_trial_callbacks.append((callback_type, payload))
+            return True
+
+    def _submit_strategy_signal(self, signal: 'Signal') -> str:
+        try:
+            trial_submission = self._begin_trial_submission()
+        except RuntimeError as exc:
+            reject_callback = getattr(self.strategy, "mark_signal_rejected", None)
+            if callable(reject_callback):
+                reject_callback(str(exc))
+            return ""
+        try:
             order_id = self.send_signal(signal)
             if not order_id:
                 reject_callback = getattr(self.strategy, "mark_signal_rejected", None)
@@ -402,29 +646,126 @@ class TradingEngine:
                     reject_callback(getattr(self, "last_reject_reason", ""))
                 logger.warning(
                     "Strategy signal rejected: %s %s %s",
-                    signal.symbol, signal.direction, signal.volume,
+                    signal.symbol,
+                    signal.direction,
+                    signal.volume,
                 )
-            else:
-                self._notify_strategy_signal_submitted(signal, order_id)
-        self._processed_signal_count = len(signals)
+                return ""
+            metadata = self._notify_strategy_signal_submitted(signal, order_id)
+            if not self._record_trial_submission(signal, order_id, metadata):
+                return ""
+            return order_id
+        finally:
+            if trial_submission:
+                self._finish_trial_submission()
 
     def _notify_strategy_signal_submitted(self, signal: 'Signal', order_id: str):
         notify = getattr(self.strategy, "on_signal_submitted", None) if self.strategy else None
         if callable(notify):
             try:
-                notify(signal, order_id)
+                return notify(signal, order_id)
             except Exception as e:
                 logger.error("Strategy order-submit notification failed: %s", e)
+        return {}
 
-    def _maybe_chase_strategy_order(self, tick: MarketData):
-        action_fn = getattr(self.strategy, "next_chase_action", None) if self.strategy else None
-        if not callable(action_fn):
+    def _mark_trial_execution_failed(
+        self,
+        code: str,
+        basis: str,
+        *,
+        execution: Optional[TrialRunExecutionState] = None,
+    ) -> None:
+        if execution is None:
+            with self._trial_submission_lock:
+                execution = self.trial_run_execution
+        if execution is None:
             return
         try:
-            action = action_fn(tick) or {}
-        except Exception as e:
-            logger.error("Strategy chase decision failed: %s", e)
-            return
+            execution.mark_failed(code, basis)
+        except Exception as exc:
+            logger.error("Unable to mark trial run failed (%s): %s", code, exc)
+
+    def _fail_untracked_trial_order(self, order_id: str, reason: str) -> bool:
+        with self._trial_submission_lock:
+            self._untracked_trial_order_ids.add(order_id)
+        cancelled = self.cancel_order(order_id)
+        basis = "broker_cancel_requested" if cancelled else "broker_cancel_request_failed"
+        self._mark_trial_execution_failed(
+            "order_chain_registration_failed",
+            f"{basis}:{reason}",
+        )
+        reject_callback = getattr(self.strategy, "mark_signal_rejected", None)
+        if callable(reject_callback):
+            reject_callback("order_chain_registration_failed")
+        return False
+
+    def _record_trial_submission(self, signal, order_id: str, metadata: Any) -> bool:
+        execution = self.trial_run_execution
+        if execution is None:
+            return True
+        if not isinstance(metadata, dict) or not metadata:
+            logger.error("Trial-run order %s has no ownership metadata", order_id)
+            return self._fail_untracked_trial_order(order_id, "missing_order_metadata")
+        try:
+            execution.record_real_submission(
+                order_id=order_id,
+                role=str(metadata.get("role") or ""),
+                price=float(metadata.get("price", getattr(signal, "price", 0.0)) or 0.0),
+                direction=metadata.get("direction", getattr(signal, "direction", "")),
+                offset=metadata.get("offset", getattr(signal, "offset", "")),
+                attempt=int(metadata.get("attempt", 0)),
+                parent_order_id=str(metadata.get("parent_order_id") or ""),
+                status="submitting",
+                symbol=str(metadata.get("symbol") or getattr(signal, "symbol", "")),
+                volume=int(metadata.get("volume", getattr(signal, "volume", 1))),
+            )
+            return True
+        except Exception as exc:
+            logger.error("Trial-run submission evidence rejected for %s: %s", order_id, exc)
+            return self._fail_untracked_trial_order(order_id, type(exc).__name__)
+
+    def _maybe_chase_strategy_order(
+        self,
+        tick: MarketData,
+        now_monotonic: Optional[float] = None,
+        quote_sequence: Optional[int] = None,
+    ):
+        with self._strategy_callback_lock:
+            with self._trial_submission_lock:
+                if self._trial_run_stopping:
+                    return
+            strategy = self.strategy
+            action_fn = getattr(strategy, "next_chase_action", None) if strategy else None
+            if not callable(action_fn):
+                return
+            role_fn = getattr(strategy, "pending_chase_role", None)
+            role = role_fn() if callable(role_fn) else "entry"
+            required = 1 if role in {"exit", "close"} else 2
+            rate_snapshot = self.risk_manager.order_rate_snapshot(
+                now_monotonic,
+                required_capacity=required,
+            )
+            capacity_notice = getattr(strategy, "on_rate_capacity", None)
+            if rate_snapshot["remaining"] < required:
+                if callable(capacity_notice):
+                    capacity_notice(False, rate_snapshot)
+                return
+            if callable(capacity_notice):
+                capacity_notice(True, rate_snapshot)
+            if self._stale_market_data_reason(tick):
+                waiting_quote = getattr(strategy, "on_fresh_quote_required", None)
+                if callable(waiting_quote):
+                    waiting_quote()
+                return
+            try:
+                action = action_fn(
+                    tick,
+                    now_monotonic=now_monotonic,
+                    quote_sequence=quote_sequence,
+                ) or {}
+            except Exception as e:
+                logger.error("Strategy chase decision failed: %s", e)
+                return
 
         action_type = action.get("action")
         if action_type == "cancel":
@@ -432,9 +773,10 @@ class TradingEngine:
             if not order_id:
                 return
             if not self.cancel_order(order_id):
-                failed = getattr(self.strategy, "on_chase_cancel_failed", None)
-                if callable(failed):
-                    failed(order_id)
+                with self._strategy_callback_lock:
+                    failed = getattr(strategy, "on_chase_cancel_failed", None)
+                    if callable(failed):
+                        failed(order_id)
                 logger.warning("Strategy chase cancel failed: %s", order_id)
             return
 
@@ -442,14 +784,15 @@ class TradingEngine:
             signal = action.get("signal")
             if not signal:
                 return
-            order_id = self.send_signal(signal)
-            if order_id:
-                self._notify_strategy_signal_submitted(signal, order_id)
-                self._processed_signal_count = max(self._processed_signal_count, len(getattr(self.strategy, "signals", [])))
-            else:
-                reject_callback = getattr(self.strategy, "mark_signal_rejected", None)
-                if callable(reject_callback):
-                    reject_callback(getattr(self, "last_reject_reason", ""))
+            with self._strategy_callback_lock:
+                if self.strategy is not strategy:
+                    return
+                order_id = self._submit_strategy_signal(signal)
+                if order_id:
+                    self._processed_signal_count = max(
+                        self._processed_signal_count,
+                        len(getattr(strategy, "signals", [])),
+                    )
 
     def _market_data_for_symbol(self, symbol: str) -> Dict[str, Any]:
         data = self._lookup_symbol_mapping(self.order_manager.market_data, symbol)
@@ -506,21 +849,119 @@ class TradingEngine:
 
     def _on_order(self, order: 'Order'):
         """订单回调"""
-        self.order_manager.update_order(order)
-        if self.strategy:
+        if self._defer_trial_callback("order", order):
+            return
+        order_id = str(getattr(order, "order_id", "") or "")
+        status_value = str(
+            getattr(getattr(order, "status", None), "value", getattr(order, "status", "")) or ""
+        ).strip().lower()
+        with self._trial_submission_lock:
+            execution = self.trial_run_execution
+            strategy = self.strategy
+            untracked_order = order_id in self._untracked_trial_order_ids
+        if execution is not None and execution.owns_order(order_id):
             try:
-                self.strategy.on_order(order)
-            except Exception as e:
-                logger.error(f"策略订单回调失败: {e}")
+                execution.record_real_order_update(
+                    order_id,
+                    status=getattr(getattr(order, "status", ""), "value", getattr(order, "status", "")),
+                    symbol=getattr(order, "symbol", None),
+                    volume=int(getattr(order, "volume", 1) or 0),
+                    direction=getattr(order, "direction", None),
+                    traded_volume=int(getattr(order, "traded_volume", 0) or 0),
+                )
+            except Exception as exc:
+                logger.error("Trial-run order evidence rejected for %s: %s", order_id, exc)
+                current_order_id = execution.current_order_id
+                if current_order_id:
+                    self.cancel_order(current_order_id)
+                self._mark_trial_execution_failed(
+                    "order_evidence_conflict",
+                    f"order_id={order_id}:{type(exc).__name__}",
+                    execution=execution,
+                )
+                reject_callback = getattr(strategy, "mark_signal_rejected", None)
+                if callable(reject_callback):
+                    reject_callback("order_evidence_conflict")
+                return
+        if order_id:
+            self.gateway.orders[order_id] = order
+        self.order_manager.update_order(order)
+        if status_value in {"cancelled", "filled", "rejected", "failed"}:
+            with self._trial_submission_lock:
+                self._trial_shutdown_cancel_requested_order_ids.discard(order_id)
+                if untracked_order:
+                    self._untracked_trial_order_ids.discard(order_id)
+        if strategy:
+            with self._strategy_callback_lock:
+                try:
+                    if status_value == "cancelled":
+                        cancel_confirmed = getattr(strategy, "on_chase_cancel_confirmed", None)
+                        if callable(cancel_confirmed):
+                            cancel_confirmed(
+                                order_id,
+                                quote_sequence=self._last_strategy_tick_sequence,
+                                market=self._last_strategy_tick,
+                            )
+                    strategy.on_order(order)
+                except Exception as e:
+                    logger.error(f"策略订单回调失败: {e}")
 
     def _on_trade(self, trade: 'Trade'):
         """成交回调"""
-        if self.strategy:
-            try:
-                self.strategy.update_position(trade.symbol, trade)
-                self.strategy.on_trade(trade)
-            except Exception as e:
-                logger.error(f"策略成交回调失败: {e}")
+        if self._defer_trial_callback("trade", trade):
+            return
+        order_id = str(getattr(trade, "order_id", "") or "")
+        with self._trial_submission_lock:
+            execution = self.trial_run_execution
+            strategy = self.strategy
+            untracked_order = order_id in self._untracked_trial_order_ids
+        if execution is not None:
+            if not execution.owns_order(order_id) and not untracked_order:
+                return
+            if untracked_order:
+                self._mark_trial_execution_failed(
+                    "untracked_order_fill",
+                    f"order_id={order_id}",
+                    execution=execution,
+                )
+            else:
+                current_order_id = execution.current_order_id
+                try:
+                    execution.record_real_trade(
+                        order_id=order_id,
+                        trade_id=str(getattr(trade, "trade_id", "") or ""),
+                        symbol=getattr(trade, "symbol", None),
+                        volume=int(getattr(trade, "volume", 1) or 0),
+                        direction=getattr(trade, "direction", None),
+                    )
+                except Exception as exc:
+                    logger.error("Trial-run trade evidence rejected for %s: %s", order_id, exc)
+                    current_order_id = execution.current_order_id
+                    if current_order_id:
+                        self.cancel_order(current_order_id)
+                    self._mark_trial_execution_failed(
+                        "trade_evidence_conflict",
+                        f"order_id={order_id}:{type(exc).__name__}",
+                        execution=execution,
+                    )
+                    reject_callback = getattr(strategy, "mark_signal_rejected", None)
+                    if callable(reject_callback):
+                        reject_callback("trade_evidence_conflict")
+                    return
+                if current_order_id and current_order_id != order_id:
+                    if not self.cancel_order(current_order_id):
+                        self._mark_trial_execution_failed(
+                            "late_fill_cancel_failed",
+                            f"filled_order={order_id}:active_order={current_order_id}",
+                            execution=execution,
+                        )
+        if strategy:
+            with self._strategy_callback_lock:
+                try:
+                    strategy.update_position(trade.symbol, trade)
+                    strategy.on_trade(trade)
+                except Exception as e:
+                    logger.error(f"策略成交回调失败: {e}")
 
     def _on_pre_order_status_change(self, pre_order: PreOrder):
         """预埋单状态变更回调"""

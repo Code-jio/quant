@@ -265,6 +265,8 @@ class TrialRunStatusResponse(BaseModel):
     chase_step_ticks: int = 0
     chase_pending_cancel_order_id: str = ""
     chase_resubmit_ready: bool = False
+    chase_state: str = ""
+    rate_retry_after_seconds: float = 0.0
     last_chase_reason: str = ""
     last_chase_order_id: str = ""
     last_chase_price: float = 0.0

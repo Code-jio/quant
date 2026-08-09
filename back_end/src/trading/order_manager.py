@@ -36,8 +36,9 @@ class PreOrderStatus(Enum):
 class OrderManager:
     """订单管理器"""
 
-    def __init__(self, gateway):  # 使用对象而非类型提示避免循环导入
+    def __init__(self, gateway, monotonic_clock=None, clock=None):  # 使用对象而非类型提示避免循环导入
         self.gateway = gateway
+        self._monotonic = monotonic_clock or clock or time.monotonic
         self.lock = threading.RLock()
 
         # 普通订单存储
@@ -52,6 +53,8 @@ class OrderManager:
         self.on_order_callback: Optional[Callable] = None
         self.on_trade_callback: Optional[Callable] = None
         self.on_pre_order_status_change: Optional[Callable] = None
+        self.on_timer_callback: Optional[Callable[[float], None]] = None
+        self.submit_signal_callback: Optional[Callable[[Signal], str]] = None
 
         # 市场数据
         self.market_data: Dict[str, dict] = {}
@@ -59,22 +62,49 @@ class OrderManager:
         # 控制线程
         self._running = False
         self._monitor_thread = None
+        self._monitor_stop_event: Optional[threading.Event] = None
+        self._monitor_lifecycle_lock = threading.RLock()
+        self._monitor_join_timeout_seconds = 2.0
 
-    def start(self):
+    def start(self) -> bool:
         """启动订单管理器"""
-        if self._running:
-            return
-        self._running = True
-        self._monitor_thread = threading.Thread(target=self._monitor_pre_orders, daemon=True)
-        self._monitor_thread.start()
+        with self._monitor_lifecycle_lock:
+            if self._monitor_thread is not None and self._monitor_thread.is_alive():
+                logger.warning("订单管理器旧监控线程尚未退出，拒绝重复启动")
+                return False
+            stop_event = threading.Event()
+            self._monitor_stop_event = stop_event
+            self._running = True
+            self._monitor_thread = threading.Thread(
+                target=self._monitor_pre_orders,
+                args=(stop_event,),
+                daemon=True,
+            )
+            self._monitor_thread.start()
         logger.info("订单管理器已启动")
+        return True
 
-    def stop(self):
+    def stop(self) -> bool:
         """停止订单管理器"""
-        self._running = False
-        if self._monitor_thread:
-            self._monitor_thread.join(timeout=2)
-        logger.info("订单管理器已停止")
+        with self._monitor_lifecycle_lock:
+            self._running = False
+            stop_event = self._monitor_stop_event
+            monitor_thread = self._monitor_thread
+            if stop_event is not None:
+                stop_event.set()
+
+        if monitor_thread is not None and monitor_thread is not threading.current_thread():
+            monitor_thread.join(timeout=self._monitor_join_timeout_seconds)
+        stopped = monitor_thread is None or not monitor_thread.is_alive()
+        if stopped:
+            with self._monitor_lifecycle_lock:
+                if self._monitor_thread is monitor_thread:
+                    self._monitor_thread = None
+                    self._monitor_stop_event = None
+            logger.info("订单管理器已停止")
+        else:
+            logger.error("订单管理器监控线程未在超时内退出")
+        return stopped
 
     def submit_order(self, signal: Signal) -> str:
         """提交普通订单"""
@@ -103,35 +133,10 @@ class OrderManager:
     def cancel_order(self, order_id: str) -> bool:
         """撤销订单"""
         with self.lock:
-            # 先尝试在网关层撤销
             success = self.gateway.cancel_order(order_id)
-            if success and order_id in self.active_orders:
-                order = self.active_orders[order_id]
-                order.status = OrderStatus.CANCELLED
-                order.update_time = datetime.now()
-
-                # 移动到已完成订单
-                self.completed_orders[order_id] = self.active_orders.pop(order_id)
-
-                # 更新网关中的订单状态
-                if order_id in self.gateway.orders:
-                    self.gateway.orders[order_id] = order
-
-                # 调用回调
-                if self.on_order_callback:
-                    self.on_order_callback(order)
-
-                logger.info(f"订单已撤销: {order_id}")
-            elif success and order_id in self.gateway.orders:
-                # 如果在网关中有但在管理器中没有，则直接更新网关订单
-                order = self.gateway.orders[order_id]
-                order.status = OrderStatus.CANCELLED
-                order.update_time = datetime.now()
-
-                if self.on_order_callback:
-                    self.on_order_callback(order)
-
-            return success
+            if success:
+                logger.info(f"已发出撤单请求: {order_id}")
+            return bool(success)
 
     def update_order(self, order: Order) -> None:
         """Synchronize a broker order callback into local order books."""
@@ -395,7 +400,12 @@ class OrderManager:
         )
 
         # 提交订单
-        order_id = self.submit_order(signal)
+        submit = self.submit_signal_callback
+        if submit is None:
+            logger.error("预埋单缺少受风控保护的信号提交器，拒绝触发: %s", pre_order.pre_order_id)
+            pre_order.related_order_id = ""
+            return
+        order_id = submit(signal)
         pre_order.related_order_id = order_id
 
         logger.info(f"预埋单已触发: {pre_order.pre_order_id} -> 订单{order_id}")
@@ -404,9 +414,9 @@ class OrderManager:
         if self.on_pre_order_status_change:
             self.on_pre_order_status_change(pre_order)
 
-    def _monitor_pre_orders(self):
+    def _monitor_pre_orders(self, stop_event: threading.Event):
         """监控线程 - 检查预埋单触发条件"""
-        while self._running:
+        while not stop_event.is_set():
             try:
                 # 临时保存当前市场价格数据的副本进行检查
                 with self.lock:
@@ -415,10 +425,17 @@ class OrderManager:
                 for symbol in symbols_to_check:
                     self._check_pre_order_triggers(symbol)
 
-                time.sleep(0.1)  # 每100毫秒检查一次
+                timer_callback = self.on_timer_callback
+                if timer_callback:
+                    try:
+                        timer_callback(float(self._monotonic()))
+                    except Exception as exc:
+                        logger.error(f"定时器回调失败: {exc}")
+
+                stop_event.wait(0.1)  # 每100毫秒检查一次
             except Exception as e:
                 logger.error(f"监控预埋单时出错: {e}")
-                time.sleep(1)
+                stop_event.wait(1)
 
 
 @dataclass
@@ -441,6 +458,7 @@ class PreOrder:
     create_time: datetime = field(default_factory=datetime.now)
     update_time: datetime = field(default_factory=datetime.now)
     related_order_id: str = ""  # 关联的实际订单ID
+    _trail_best_price: Optional[float] = field(default=None, init=False, repr=False)
 
     def is_active(self) -> bool:
         """是否为活跃预埋单"""
