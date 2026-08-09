@@ -8,6 +8,7 @@ from datetime import datetime
 import pandas as pd
 from ..base import StrategyBase
 from ..types import Direction, OrderStatus, OrderType
+from ...trading.symbols import symbol_key, symbols_match
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ class VerifyStrategy(StrategyBase):
         self._aggressive_ticks = self._parse_non_negative_int(self.params.get("aggressive_ticks", 1), default=1)
         self._chase_enabled = bool(self.params.get("chase_enabled", True))
         self._chase_interval_seconds = self._parse_positive_float(self.params.get("chase_interval_seconds", 2.0), default=2.0)
-        self._chase_max_attempts = self._parse_non_negative_int(self.params.get("chase_max_attempts", 3), default=3)
+        self._chase_max_attempts = self._parse_non_negative_int(self.params.get("chase_max_attempts", 5), default=5)
         self._chase_step_ticks = self._parse_non_negative_int(self.params.get("chase_step_ticks", 1), default=1)
         self._chase_fallback_to_market = bool(self.params.get("chase_fallback_to_market", True))
         self.auto_arm = bool(self.params.get("auto_arm", False))
@@ -98,18 +99,11 @@ class VerifyStrategy(StrategyBase):
 
     @staticmethod
     def _normalize_symbol_key(symbol: str) -> str:
-        raw = str(symbol or "").strip().lower()
-        if "." not in raw:
-            return raw
-        parts = [part for part in raw.split(".") if part]
-        for part in parts:
-            if any(ch.isdigit() for ch in part):
-                return part
-        return parts[0] if parts else raw
+        return symbol_key(symbol)
 
     @classmethod
     def _symbols_match(cls, left: str, right: str) -> bool:
-        return cls._normalize_symbol_key(left) == cls._normalize_symbol_key(right)
+        return symbols_match(left, right)
 
     @staticmethod
     def _market_price(market, keys: tuple[str, ...]) -> tuple[float, str]:

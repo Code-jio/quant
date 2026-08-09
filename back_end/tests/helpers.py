@@ -1,5 +1,7 @@
 """Shared test helpers for trading gateway tests."""
 
+import time
+
 from src.strategy import Direction, OrderStatus, OrderType, Position
 from src.trading import GatewayBase
 from src.trading.types import AccountInfo, TradingStatus
@@ -41,3 +43,13 @@ class RecordingGateway(GatewayBase):
 
     def query_orders(self):
         return list(self.orders.values())
+
+    def refresh_reconciliation(self, timeout_seconds=8.0):
+        del timeout_seconds
+        self.last_reconciliation = {
+            "ok": True,
+            "fresh": True,
+            "failure_code": "",
+            "refreshed_monotonic": time.monotonic(),
+        }
+        return dict(self.last_reconciliation)

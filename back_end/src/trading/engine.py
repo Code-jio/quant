@@ -23,6 +23,7 @@ from .errors import TradingError
 from .order_manager import OrderManager, PreOrder
 from .risk import RiskManager
 from .bar_aggregator import BarAggregator
+from .symbols import symbol_key, symbols_match
 from ..common.exceptions import ExceptionHandler
 
 
@@ -219,35 +220,14 @@ class TradingEngine:
         """行情推送内部处理，同时更新预埋单市场数据"""
         stale_reason = self._stale_market_data_reason(tick)
         if stale_reason:
-            # Allow the first tick to emit a bar even when slightly stale,
-            # so trial-run verification isn't blocked waiting for a perfectly
-            # fresh tick. Simulation CTP servers often deliver ticks with
-            # timestamps a few seconds behind.  We vouch for the data as
-            # "current enough" so downstream risk checks also pass.
-            first_tick_emitted = False
-            if self._emit_first_tick_bar and self.strategy:
-                tick_key = self._normalize_symbol_key(tick.symbol)
-                if tick_key not in self._first_tick_bar_symbols:
-                    self.order_manager.update_market_data(tick.symbol, {
-                        "last_price": tick.last_price,
-                        "bid_price_1": tick.bid_price_1,
-                        "ask_price_1": tick.ask_price_1,
-                        "timestamp": datetime.now(),
-                    })
-                    self._maybe_emit_first_tick_bar(tick)
-                    first_tick_emitted = True
-
             self.last_reject_reason = stale_reason
             self._first_tick_bar_skip_reason = "stale_market_data"
-            # Don't mark the strategy as stale if we successfully emitted
-            # the first bar — that would overwrite the entry_pending state.
-            if not first_tick_emitted:
-                mark_stale = getattr(self.strategy, "mark_market_data_stale", None) if self.strategy else None
-                if callable(mark_stale):
-                    try:
-                        mark_stale(tick.symbol, stale_reason)
-                    except Exception as e:
-                        logger.error(f"标记过期行情失败: {e}")
+            mark_stale = getattr(self.strategy, "mark_market_data_stale", None) if self.strategy else None
+            if callable(mark_stale):
+                try:
+                    mark_stale(tick.symbol, stale_reason)
+                except Exception as e:
+                    logger.error(f"标记过期行情失败: {e}")
             logger.warning("忽略过期行情 tick: %s", stale_reason)
             return
 
@@ -401,18 +381,11 @@ class TradingEngine:
 
     @staticmethod
     def _normalize_symbol_key(symbol: str) -> str:
-        raw = str(symbol or "").strip().lower()
-        if "." not in raw:
-            return raw
-        parts = [part for part in raw.split(".") if part]
-        for part in parts:
-            if any(ch.isdigit() for ch in part):
-                return part
-        return parts[0] if parts else raw
+        return symbol_key(symbol)
 
     @classmethod
     def _symbols_match(cls, left: str, right: str) -> bool:
-        return cls._normalize_symbol_key(left) == cls._normalize_symbol_key(right)
+        return symbols_match(left, right)
 
     def _dispatch_strategy_signals(self):
         """Send newly generated strategy signals to the broker gateway."""

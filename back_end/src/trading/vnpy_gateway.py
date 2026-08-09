@@ -8,7 +8,6 @@ vn.py/vnpy_ctp for the real CTP connection.
 from __future__ import annotations
 
 import logging
-import re
 import threading
 import time
 from datetime import datetime
@@ -27,30 +26,141 @@ from ..strategy import (
 )
 from .errors import GatewayError
 from .gateway import GatewayBase
+from .symbols import PRODUCT_EXCHANGE, extract_product, is_supported_symbol
 from .types import AccountInfo, MarketData, TradingStatus
 
 logger = logging.getLogger(__name__)
 
+_RECONCILIATION_EVENT = "eQuantTrialReconciliation"
 
-PRODUCT_EXCHANGE = {
-    "IF": "CFFEX", "IC": "CFFEX", "IH": "CFFEX", "IM": "CFFEX",
-    "T": "CFFEX", "TF": "CFFEX", "TS": "CFFEX", "TL": "CFFEX",
-    "CU": "SHFE", "AU": "SHFE", "AG": "SHFE", "RB": "SHFE",
-    "AL": "SHFE", "ZN": "SHFE", "PB": "SHFE", "NI": "SHFE",
-    "SN": "SHFE", "FU": "SHFE", "BU": "SHFE", "HC": "SHFE",
-    "RU": "SHFE", "SP": "SHFE", "SS": "SHFE", "AO": "SHFE",
-    "SC": "INE", "NR": "INE", "BC": "INE", "LU": "INE",
-    "A": "DCE", "B": "DCE", "C": "DCE", "CS": "DCE",
-    "M": "DCE", "Y": "DCE", "P": "DCE", "L": "DCE",
-    "V": "DCE", "PP": "DCE", "J": "DCE", "JM": "DCE",
-    "I": "DCE", "EG": "DCE", "EB": "DCE", "PG": "DCE",
-    "LH": "DCE",
-    "CF": "CZCE", "SR": "CZCE", "TA": "CZCE", "MA": "CZCE",
-    "OI": "CZCE", "RM": "CZCE", "ZC": "CZCE", "FG": "CZCE",
-    "SA": "CZCE", "UR": "CZCE", "AP": "CZCE", "CJ": "CZCE",
-    "PK": "CZCE", "PF": "CZCE", "PX": "CZCE", "SH": "CZCE",
-    "SI": "GFEX", "LC": "GFEX",
-}
+
+def _ctp_contracts_ready(td_api: Any, contract_map: Dict[str, Any]) -> bool:
+    """Require the CTP contract query to finish, not merely yield some rows."""
+    return bool(getattr(td_api, "contract_inited", False) and contract_map)
+
+
+def _build_reconciliation_ctp_gateway(adapter: "VnpyGateway") -> Any:
+    """Build a CTP gateway that exposes query-completion fences to the adapter."""
+    from vnpy.event import Event
+    from vnpy_ctp.gateway.ctp_gateway import CtpGateway, CtpTdApi, symbol_contract_map
+
+    class ReconciliationTdApi(CtpTdApi):
+        def __init__(self, gateway: Any) -> None:
+            super().__init__(gateway)
+            self._snapshot_reqids: Dict[str, int] = {}
+            self._snapshot_counts: Dict[str, int] = {}
+
+        def _emit_completion(
+            self,
+            kind: str,
+            error: Dict[str, Any],
+            request_id: int,
+        ) -> None:
+            payload = {
+                "kind": kind,
+                "request_id": int(request_id),
+                "error_id": int((error or {}).get("ErrorID", 0) or 0),
+                "error_msg": str((error or {}).get("ErrorMsg", "") or ""),
+                "item_count": self._snapshot_counts.pop(kind, 0),
+            }
+            self.gateway.event_engine.put(Event(_RECONCILIATION_EVENT, payload))
+
+        def onRspQryInvestorPosition(
+            self,
+            data: Dict[str, Any],
+            error: Dict[str, Any],
+            reqid: int,
+            last: bool,
+        ) -> None:
+            is_snapshot = self._snapshot_reqids.get("positions") == reqid
+            if is_snapshot and data and data.get("InstrumentID"):
+                self._snapshot_counts["positions"] += 1
+            try:
+                super().onRspQryInvestorPosition(data, error, reqid, last)
+            finally:
+                if last and is_snapshot:
+                    self._snapshot_reqids.pop("positions", None)
+                    self._emit_completion("positions", error, reqid)
+
+        def onRspQryTradingAccount(
+            self,
+            data: Dict[str, Any],
+            error: Dict[str, Any],
+            reqid: int,
+            last: bool,
+        ) -> None:
+            is_snapshot = self._snapshot_reqids.get("account") == reqid
+            if is_snapshot and data and data.get("AccountID"):
+                self._snapshot_counts["account"] += 1
+            try:
+                super().onRspQryTradingAccount(data, error, reqid, last)
+            finally:
+                if last and is_snapshot:
+                    self._snapshot_reqids.pop("account", None)
+                    self._emit_completion("account", error, reqid)
+
+        def onRspQryOrder(
+            self,
+            data: Dict[str, Any],
+            error: Dict[str, Any],
+            reqid: int,
+            last: bool,
+        ) -> None:
+            is_snapshot = self._snapshot_reqids.get("orders") == reqid
+            if is_snapshot and data and data.get("InstrumentID"):
+                self._snapshot_counts["orders"] += 1
+            if data and data.get("InstrumentID") and not (error or {}).get("ErrorID"):
+                self.onRtnOrder(data)
+            if last and is_snapshot:
+                self._snapshot_reqids.pop("orders", None)
+                self._emit_completion("orders", error, reqid)
+
+        def query_positions_snapshot(self) -> int:
+            if not _ctp_contracts_ready(self, symbol_contract_map):
+                return -99
+            request = {"BrokerID": self.brokerid, "InvestorID": self.userid}
+            self.reqid += 1
+            self._snapshot_reqids["positions"] = self.reqid
+            self._snapshot_counts["positions"] = 0
+            adapter._arm_reconciliation_request("positions", self.reqid)
+            return int(self.reqQryInvestorPosition(request, self.reqid) or 0)
+
+        def query_account_snapshot(self) -> int:
+            self.reqid += 1
+            self._snapshot_reqids["account"] = self.reqid
+            self._snapshot_counts["account"] = 0
+            adapter._arm_reconciliation_request("account", self.reqid)
+            return int(self.reqQryTradingAccount({}, self.reqid) or 0)
+
+        def query_orders_snapshot(self) -> int:
+            if not _ctp_contracts_ready(self, symbol_contract_map):
+                return -99
+            request = {"BrokerID": self.brokerid, "InvestorID": self.userid}
+            self.reqid += 1
+            self._snapshot_reqids["orders"] = self.reqid
+            self._snapshot_counts["orders"] = 0
+            adapter._arm_reconciliation_request("orders", self.reqid)
+            return int(self.reqQryOrder(request, self.reqid) or 0)
+
+    class ReconciliationCtpGateway(CtpGateway):
+        default_name = CtpGateway.default_name
+
+        def __init__(self, event_engine: Any, gateway_name: str) -> None:
+            super().__init__(event_engine, gateway_name)
+            self.td_api = ReconciliationTdApi(self)
+
+        def query_positions_snapshot(self) -> int:
+            return self.td_api.query_positions_snapshot()
+
+        def query_account_snapshot(self) -> int:
+            return self.td_api.query_account_snapshot()
+
+        def query_orders_snapshot(self) -> int:
+            return self.td_api.query_orders_snapshot()
+
+    ReconciliationCtpGateway.__name__ = "QuantReconciliationCtpGateway"
+    adapter._reconciliation_gateway_class = ReconciliationCtpGateway
+    return ReconciliationCtpGateway
 
 
 def _ensure_vnpy_runtime_dir() -> None:
@@ -59,8 +169,7 @@ def _ensure_vnpy_runtime_dir() -> None:
 
 
 def _extract_product(symbol: str) -> str:
-    match = re.match(r"([A-Za-z]+)", symbol)
-    return match.group(1).upper() if match else symbol.upper()
+    return extract_product(symbol)
 
 
 class VnpyGateway(GatewayBase):
@@ -80,6 +189,17 @@ class VnpyGateway(GatewayBase):
         self.latest_ticks: Dict[str, MarketData] = {}
         self.latest_tick_snapshots: Dict[str, Dict[str, Any]] = {}
         self._subscribed_symbols: set[str] = set()
+        self._reconciliation_gateway_class: Any = None
+        self._reconciliation_lock = threading.Lock()
+        self._reconciliation_capture_lock = threading.RLock()
+        self._reconciliation_capture: Dict[str, Any] | None = None
+        self._reconciliation_events = {
+            "orders": threading.Event(),
+            "positions": threading.Event(),
+            "account": threading.Event(),
+        }
+        self._reconciliation_results: Dict[str, Dict[str, Any]] = {}
+        self._reconciliation_expected_reqids: Dict[str, int] = {}
 
     def connect(self, config: Dict[str, Any]) -> bool:
         """Connect to CTP through vn.py."""
@@ -101,7 +221,7 @@ class VnpyGateway(GatewayBase):
                 EVENT_TICK,
                 EVENT_TRADE,
             )
-            from vnpy_ctp import CtpGateway
+            CtpGateway = _build_reconciliation_ctp_gateway(self)
         except ImportError as exc:
             self.status = TradingStatus.ERROR
             raise ImportError(
@@ -115,6 +235,7 @@ class VnpyGateway(GatewayBase):
         self._event_engine.register(EVENT_ORDER, self._on_vnpy_order)
         self._event_engine.register(EVENT_TRADE, self._on_vnpy_trade)
         self._event_engine.register(EVENT_TICK, self._on_vnpy_tick)
+        self._event_engine.register(_RECONCILIATION_EVENT, self._on_reconciliation_event)
 
         self._main_engine = MainEngine(self._event_engine)
         self._main_engine.add_gateway(CtpGateway)
@@ -227,6 +348,165 @@ class VnpyGateway(GatewayBase):
     def query_orders(self) -> List[Order]:
         return list(self.orders.values())
 
+    def refresh_reconciliation(self, timeout_seconds: float = 8.0) -> Dict[str, Any]:
+        """Actively query orders, positions and account with completion fences."""
+        started = time.monotonic()
+        if self.status not in (TradingStatus.CONNECTED, TradingStatus.TRADING) or not self._main_engine:
+            return self._finish_reconciliation(
+                ok=False,
+                failure_code="broker_gateway_not_connected",
+                started=started,
+            )
+
+        timeout = max(0.1, float(timeout_seconds))
+        deadline = started + timeout
+        with self._reconciliation_lock:
+            broker_gateway = self._main_engine.get_gateway(self._gateway_name)
+            required_methods = {
+                "orders": "query_orders_snapshot",
+                "positions": "query_positions_snapshot",
+                "account": "query_account_snapshot",
+            }
+            if broker_gateway is None or any(
+                not callable(getattr(broker_gateway, method_name, None))
+                for method_name in required_methods.values()
+            ):
+                return self._finish_reconciliation(
+                    ok=False,
+                    failure_code="broker_snapshot_unsupported",
+                    started=started,
+                )
+
+            with self._reconciliation_capture_lock:
+                self._reconciliation_capture = {
+                    "orders": {},
+                    "vn_orders": {},
+                    "positions": {},
+                    "account": None,
+                }
+            self._reconciliation_results.clear()
+
+            for kind, method_name in required_methods.items():
+                event = self._reconciliation_events[kind]
+                event.clear()
+                self._reconciliation_expected_reqids.pop(kind, None)
+                method = getattr(broker_gateway, method_name)
+                try:
+                    request_code = self._submit_reconciliation_query(method, deadline)
+                except Exception as exc:
+                    return self._abort_reconciliation(
+                        failure_code="broker_snapshot_query_failed",
+                        started=started,
+                        error_msg=str(exc),
+                    )
+                if request_code != 0:
+                    return self._abort_reconciliation(
+                        failure_code=(
+                            "broker_contracts_unavailable"
+                            if request_code == -99
+                            else "broker_snapshot_query_rejected"
+                        ),
+                        started=started,
+                        request_code=request_code,
+                    )
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not event.wait(remaining):
+                    return self._abort_reconciliation(
+                        failure_code="broker_snapshot_timeout",
+                        started=started,
+                    )
+                result = self._reconciliation_results.get(kind, {})
+                if int(result.get("error_id", 0) or 0):
+                    return self._abort_reconciliation(
+                        failure_code="broker_snapshot_query_failed",
+                        started=started,
+                        error_id=int(result.get("error_id", 0) or 0),
+                        error_msg=str(result.get("error_msg", "") or ""),
+                    )
+                if kind == "account" and int(result.get("item_count", 0) or 0) < 1:
+                    return self._abort_reconciliation(
+                        failure_code="broker_account_unavailable",
+                        started=started,
+                    )
+
+            with self._reconciliation_capture_lock:
+                capture = self._reconciliation_capture or {}
+                if capture.get("account") is None:
+                    return self._abort_reconciliation(
+                        failure_code="broker_account_unavailable",
+                        started=started,
+                    )
+                self.orders = dict(capture.get("orders") or {})
+                self._vn_orders = dict(capture.get("vn_orders") or {})
+                self.positions = dict(capture.get("positions") or {})
+                account = capture.get("account")
+                if account is not None:
+                    self.account = account
+                self._reconciliation_capture = None
+            return self._finish_reconciliation(ok=True, failure_code="", started=started)
+
+    @staticmethod
+    def _submit_reconciliation_query(method: Any, deadline: float) -> int:
+        while time.monotonic() < deadline:
+            code = int(method() or 0)
+            if code == 0 or code == -99:
+                return code
+            time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
+        return -1
+
+    def _on_reconciliation_event(self, event: Any) -> None:
+        data = event.data if isinstance(getattr(event, "data", None), dict) else {}
+        kind = str(data.get("kind") or "")
+        marker = self._reconciliation_events.get(kind)
+        if marker is None:
+            return
+        expected_request_id = self._reconciliation_expected_reqids.get(kind)
+        request_id = int(data.get("request_id", -1) or -1)
+        if expected_request_id is None or request_id != expected_request_id:
+            return
+        self._reconciliation_results[kind] = dict(data)
+        marker.set()
+
+    def _arm_reconciliation_request(self, kind: str, request_id: int) -> None:
+        self._reconciliation_expected_reqids[kind] = int(request_id)
+
+    def _finish_reconciliation(
+        self,
+        *,
+        ok: bool,
+        failure_code: str,
+        started: float,
+        **details: Any,
+    ) -> Dict[str, Any]:
+        snapshot = {
+            "ok": bool(ok),
+            "fresh": bool(ok),
+            "failure_code": str(failure_code),
+            "refreshed_at": datetime.now().isoformat(),
+            "refreshed_monotonic": time.monotonic(),
+            "duration_seconds": round(time.monotonic() - started, 3),
+            **details,
+        }
+        self.last_reconciliation = snapshot
+        return dict(snapshot)
+
+    def _abort_reconciliation(
+        self,
+        *,
+        failure_code: str,
+        started: float,
+        **details: Any,
+    ) -> Dict[str, Any]:
+        with self._reconciliation_capture_lock:
+            self._reconciliation_capture = None
+        self._reconciliation_expected_reqids.clear()
+        return self._finish_reconciliation(
+            ok=False,
+            failure_code=failure_code,
+            started=started,
+            **details,
+        )
+
     def subscribe_market_data(self, symbols: List[str]) -> None:
         """Subscribe ticks through vn.py CTP market data API."""
         if not self._main_engine:
@@ -250,7 +530,7 @@ class VnpyGateway(GatewayBase):
         self._emit_connect_log(msg)
 
         if self.status == TradingStatus.CONNECTING:
-            if "结算信息确认成功" in msg or "合约信息查询成功" in msg:
+            if "合约信息查询成功" in msg:
                 self._connected_event.set()
             elif self._is_connect_error(msg):
                 self._remember_connect_error(msg)
@@ -290,9 +570,10 @@ class VnpyGateway(GatewayBase):
             margin=float(getattr(data, "frozen", 0) or 0),
         )
         self.account = account
+        with self._reconciliation_capture_lock:
+            if self._reconciliation_capture is not None:
+                self._reconciliation_capture["account"] = account
         self.on_account(account)
-        if self.status == TradingStatus.CONNECTING:
-            self._connected_event.set()
 
     def _on_vnpy_position(self, event: Any) -> None:
         data = event.data
@@ -309,6 +590,10 @@ class VnpyGateway(GatewayBase):
             pnl=float(getattr(data, "pnl", 0) or 0),
         )
         self.positions[f"{symbol}_{direction.value}"] = pos
+        with self._reconciliation_capture_lock:
+            if self._reconciliation_capture is not None:
+                key = f"{symbol}_{direction.value}"
+                self._reconciliation_capture["positions"][key] = pos
         self.on_position(pos)
 
     def _on_vnpy_order(self, event: Any) -> None:
@@ -329,6 +614,10 @@ class VnpyGateway(GatewayBase):
         )
         self._vn_orders[vt_orderid] = data
         self.orders[vt_orderid] = order
+        with self._reconciliation_capture_lock:
+            if self._reconciliation_capture is not None:
+                self._reconciliation_capture["orders"][vt_orderid] = order
+                self._reconciliation_capture["vn_orders"][vt_orderid] = data
         self.on_order(order)
 
     def _on_vnpy_trade(self, event: Any) -> None:
@@ -428,6 +717,9 @@ class VnpyGateway(GatewayBase):
     def _split_symbol(symbol: str) -> Tuple[str, Any]:
         from vnpy.trader.constant import Exchange
 
+        if not is_supported_symbol(symbol):
+            raise GatewayError(f"Unknown or exchange-conflicting futures symbol: {symbol}")
+
         if "." in symbol:
             left, right = symbol.split(".", 1)
             if left.upper() in Exchange.__members__:
@@ -437,7 +729,7 @@ class VnpyGateway(GatewayBase):
                     return left, exchange
 
         product = _extract_product(symbol)
-        exchange_code = PRODUCT_EXCHANGE.get(product, "SHFE")
+        exchange_code = PRODUCT_EXCHANGE[product]
         return symbol, Exchange(exchange_code)
 
     @staticmethod

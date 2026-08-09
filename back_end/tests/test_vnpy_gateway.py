@@ -7,11 +7,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.strategy import Direction, OffsetFlag, OrderStatus, OrderType, Signal
+from src.strategy import Direction, OffsetFlag, Order, OrderStatus, OrderType, Position, Signal
+from src.trading.types import AccountInfo
 from src.trading.types import MarketData, TradingStatus
 from src.trading.vnpy_gateway import (
     PRODUCT_EXCHANGE,
     VnpyGateway,
+    _ctp_contracts_ready,
     _extract_product,
 )
 
@@ -139,6 +141,17 @@ class TestIsConnectError:
 
     def test_empty_string(self):
         assert VnpyGateway._is_connect_error("") is False
+
+
+def test_partial_contract_table_is_not_reconciliation_ready():
+    assert _ctp_contracts_ready(
+        SimpleNamespace(contract_inited=False),
+        {"IF2506": object()},
+    ) is False
+    assert _ctp_contracts_ready(
+        SimpleNamespace(contract_inited=True),
+        {"IF2506": object()},
+    ) is True
 
 
 # ── _price_field ──────────────────────────────────────────────────────────────
@@ -400,12 +413,17 @@ class TestSplitSymbol:
         assert symbol == "rb2505"
         assert exchange == _MockExchange.SHFE
 
-    def test_unknown_product_defaults_to_shfe(self, monkeypatch):
+    def test_unknown_product_fails_closed(self, monkeypatch):
         _install_mock_vnpy_constants(monkeypatch)
         gw = VnpyGateway()
-        symbol, exchange = gw._split_symbol("ZZ9999")
-        assert symbol == "ZZ9999"
-        assert exchange == _MockExchange.SHFE
+        with pytest.raises(Exception):
+            gw._split_symbol("ZZ9999")
+
+    def test_known_product_rejects_conflicting_exchange(self, monkeypatch):
+        _install_mock_vnpy_constants(monkeypatch)
+        gw = VnpyGateway()
+        with pytest.raises(Exception):
+            gw._split_symbol("au2606.DCE")
 
 
 # ── Callback handler tests ────────────────────────────────────────────────────
@@ -415,9 +433,19 @@ class TestCallbacks:
         gw = VnpyGateway()
         gw.status = TradingStatus.CONNECTING
         gw._connected_event.clear()
-        event = SimpleNamespace(data=SimpleNamespace(msg="结算信息确认成功"))
+        event = SimpleNamespace(data=SimpleNamespace(msg="合约信息查询成功"))
         gw._on_vnpy_log(event)
         assert gw._connected_event.is_set()
+
+    def test_settlement_confirmation_does_not_precede_contract_readiness(self):
+        gw = VnpyGateway()
+        gw.status = TradingStatus.CONNECTING
+        gw._connected_event.clear()
+        event = SimpleNamespace(data=SimpleNamespace(msg="结算信息确认成功"))
+
+        gw._on_vnpy_log(event)
+
+        assert not gw._connected_event.is_set()
 
     def test_on_vnpy_log_sets_error_on_failure(self):
         gw = VnpyGateway()
@@ -437,7 +465,7 @@ class TestCallbacks:
         gw._on_vnpy_log(event)
         assert not gw._error_event.is_set()
 
-    def test_on_vnpy_account_sets_account_and_connected(self):
+    def test_on_vnpy_account_sets_account_but_waits_for_contracts(self):
         gw = VnpyGateway()
         gw.status = TradingStatus.CONNECTING
         gw._connected_event.clear()
@@ -451,7 +479,7 @@ class TestCallbacks:
         assert gw.account.balance == 500000.0
         assert gw.account.available == 480000.0
         assert gw.account.margin == 20000.0
-        assert gw._connected_event.is_set()
+        assert not gw._connected_event.is_set()
         assert len(calls) == 1
 
     def test_on_vnpy_position_creates_correct_position(self):
@@ -572,3 +600,212 @@ class TestConnectionFlow:
         gw.status = TradingStatus.STOPPED
         signal = Signal(symbol="rb2505", datetime=datetime.now(), direction=Direction.LONG, price=3880, volume=1)
         assert gw.send_order(signal) == ""
+
+
+class TestBrokerReconciliation:
+    @staticmethod
+    def _complete(gateway, kind, error_id=0, item_count=None, request_id=None):
+        if item_count is None:
+            item_count = 1 if kind == "account" else 0
+        if request_id is None:
+            request_id = gateway._reconciliation_expected_reqids.get(kind, 1)
+            gateway._arm_reconciliation_request(kind, request_id)
+        gateway._on_reconciliation_event(SimpleNamespace(data={
+            "kind": kind,
+            "request_id": request_id,
+            "error_id": error_id,
+            "error_msg": "query failed" if error_id else "",
+            "item_count": item_count,
+        }))
+
+    def test_ctp_runtime_exposes_order_query_api(self, monkeypatch):
+        monkeypatch.delitem(sys.modules, "vnpy.trader.constant", raising=False)
+        monkeypatch.delitem(sys.modules, "vnpy_ctp", raising=False)
+        monkeypatch.delitem(sys.modules, "vnpy_ctp.gateway", raising=False)
+        monkeypatch.delitem(sys.modules, "vnpy_ctp.gateway.ctp_gateway", raising=False)
+        from vnpy_ctp.gateway.ctp_gateway import CtpTdApi
+
+        assert hasattr(CtpTdApi, "reqQryOrder")
+
+    def test_refresh_reconciliation_replaces_stale_caches_after_all_fences(self, monkeypatch):
+        constants = _install_mock_vnpy_constants(monkeypatch)
+        gateway = VnpyGateway()
+        gateway.status = TradingStatus.CONNECTED
+        gateway.orders["STALE"] = Order(
+            order_id="STALE",
+            symbol="rb2505",
+            direction=Direction.LONG,
+            order_type=OrderType.LIMIT,
+            price=3800,
+            volume=1,
+            status=OrderStatus.SUBMITTED,
+        )
+        gateway.positions["STALE"] = Position(
+            symbol="rb2505",
+            direction=Direction.LONG,
+            volume=9,
+        )
+
+        class BrokerSnapshot:
+            def query_orders_snapshot(self):
+                gateway._on_vnpy_order(SimpleNamespace(data=SimpleNamespace(
+                    vt_orderid="FRESH",
+                    symbol="rb2505",
+                    direction=constants.Direction.LONG,
+                    type=constants.OrderType.LIMIT,
+                    price=3880.0,
+                    volume=1,
+                    traded=1,
+                    status=constants.Status.ALLTRADED,
+                    offset=constants.Offset.OPEN,
+                    datetime=datetime.now(),
+                )))
+                TestBrokerReconciliation._complete(gateway, "orders")
+                return 0
+
+            def query_positions_snapshot(self):
+                gateway._on_vnpy_position(SimpleNamespace(data=SimpleNamespace(
+                    symbol="rb2505",
+                    direction=constants.Direction.LONG,
+                    volume=1,
+                    frozen=0,
+                    price=3880.0,
+                    pnl=0.0,
+                )))
+                TestBrokerReconciliation._complete(gateway, "positions")
+                return 0
+
+            def query_account_snapshot(self):
+                gateway._on_vnpy_account(SimpleNamespace(data=SimpleNamespace(
+                    accountid="ACC001",
+                    balance=500000,
+                    available=480000,
+                    frozen=20000,
+                )))
+                TestBrokerReconciliation._complete(gateway, "account")
+                return 0
+
+        broker_snapshot = BrokerSnapshot()
+        gateway._main_engine = SimpleNamespace(get_gateway=lambda name: broker_snapshot)
+
+        result = gateway.refresh_reconciliation(timeout_seconds=0.5)
+
+        assert result["ok"] is True
+        assert result["fresh"] is True
+        assert set(gateway.orders) == {"FRESH"}
+        assert gateway.orders["FRESH"].status == OrderStatus.FILLED
+        assert set(gateway.positions) == {"rb2505_long"}
+        assert gateway.positions["rb2505_long"].volume == 1
+        assert gateway.account == AccountInfo(
+            account_id="ACC001",
+            balance=500000.0,
+            available=480000.0,
+            margin=20000.0,
+        )
+
+    def test_refresh_reconciliation_timeout_keeps_previous_cache(self):
+        gateway = VnpyGateway()
+        gateway.status = TradingStatus.CONNECTED
+        stale_order = Order(
+            order_id="STALE",
+            symbol="rb2505",
+            direction=Direction.LONG,
+            order_type=OrderType.LIMIT,
+            price=3800,
+            volume=1,
+            status=OrderStatus.SUBMITTED,
+        )
+        gateway.orders["STALE"] = stale_order
+        broker_snapshot = SimpleNamespace(
+            query_orders_snapshot=lambda: 0,
+            query_positions_snapshot=lambda: 0,
+            query_account_snapshot=lambda: 0,
+        )
+        gateway._main_engine = SimpleNamespace(get_gateway=lambda name: broker_snapshot)
+
+        result = gateway.refresh_reconciliation(timeout_seconds=0.01)
+
+        assert result["ok"] is False
+        assert result["fresh"] is False
+        assert result["failure_code"] == "broker_snapshot_timeout"
+        assert gateway.orders == {"STALE": stale_order}
+
+    def test_refresh_reconciliation_requires_account_payload(self):
+        gateway = VnpyGateway()
+        gateway.status = TradingStatus.CONNECTED
+
+        class BrokerSnapshot:
+            def query_orders_snapshot(self):
+                TestBrokerReconciliation._complete(gateway, "orders")
+                return 0
+
+            def query_positions_snapshot(self):
+                TestBrokerReconciliation._complete(gateway, "positions")
+                return 0
+
+            def query_account_snapshot(self):
+                TestBrokerReconciliation._complete(gateway, "account", item_count=0)
+                return 0
+
+        gateway._main_engine = SimpleNamespace(get_gateway=lambda name: BrokerSnapshot())
+
+        result = gateway.refresh_reconciliation(timeout_seconds=0.5)
+
+        assert result["ok"] is False
+        assert result["fresh"] is False
+        assert result["failure_code"] == "broker_account_unavailable"
+
+    def test_delayed_completion_from_timed_out_request_cannot_unlock_retry(self):
+        gateway = VnpyGateway()
+        gateway.status = TradingStatus.CONNECTED
+
+        first_snapshot = SimpleNamespace(
+            query_orders_snapshot=lambda: (
+                gateway._arm_reconciliation_request("orders", 1) or 0
+            ),
+            query_positions_snapshot=lambda: 0,
+            query_account_snapshot=lambda: 0,
+        )
+        gateway._main_engine = SimpleNamespace(get_gateway=lambda name: first_snapshot)
+        first_result = gateway.refresh_reconciliation(timeout_seconds=0.01)
+        assert first_result["failure_code"] == "broker_snapshot_timeout"
+
+        class RetrySnapshot:
+            def query_orders_snapshot(self):
+                gateway._on_reconciliation_event(SimpleNamespace(data={
+                    "kind": "orders",
+                    "request_id": 1,
+                    "error_id": 99,
+                    "error_msg": "stale response",
+                    "item_count": 0,
+                }))
+                gateway._arm_reconciliation_request("orders", 2)
+                TestBrokerReconciliation._complete(gateway, "orders", request_id=2)
+                return 0
+
+            def query_positions_snapshot(self):
+                gateway._arm_reconciliation_request("positions", 3)
+                TestBrokerReconciliation._complete(gateway, "positions", request_id=3)
+                return 0
+
+            def query_account_snapshot(self):
+                gateway._arm_reconciliation_request("account", 4)
+                gateway._on_vnpy_account(SimpleNamespace(data=SimpleNamespace(
+                    accountid="ACC001",
+                    balance=500000,
+                    available=480000,
+                    frozen=20000,
+                )))
+                TestBrokerReconciliation._complete(
+                    gateway,
+                    "account",
+                    item_count=1,
+                    request_id=4,
+                )
+                return 0
+
+        gateway._main_engine = SimpleNamespace(get_gateway=lambda name: RetrySnapshot())
+        retry_result = gateway.refresh_reconciliation(timeout_seconds=0.5)
+
+        assert retry_result["ok"] is True
+        assert retry_result["failure_code"] == ""

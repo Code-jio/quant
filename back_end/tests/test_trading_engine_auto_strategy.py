@@ -170,9 +170,28 @@ def test_verify_strategy_first_tick_accepts_vt_symbol_variants():
     assert gateway.sent_signals[0].price == 814.0
 
 
-def test_first_tick_bar_emits_despite_slightly_stale_tick():
-    """Stale ticks should still emit the first bar so trial runs aren't
-    blocked waiting for a perfectly fresh tick in simulation envs."""
+def test_verify_strategy_rejects_same_contract_on_wrong_exchange():
+    gateway = RecordingGateway()
+    engine = TradingEngine(gateway)
+    strategy = VerifyStrategy("verify", {
+        "symbol": "au2606",
+        "warmup_bars": 1,
+        "readiness_bars": 1,
+        "hold_bars": 3,
+        "volume": 1,
+        "auto_arm": True,
+    })
+    engine.set_strategy(strategy)
+
+    assert engine.start({"initial_capital": 100000.0, "emit_first_tick_bar": True}) is True
+    engine.on_tick(make_tick("DCE.au2606", 812.0, datetime.now()))
+
+    assert strategy.snapshot()["tick_count"] == 0
+    assert strategy.snapshot()["bar_count"] == 0
+    assert gateway.sent_signals == []
+
+
+def test_stale_first_tick_never_emits_bar_or_order():
     gateway = RecordingGateway()
     engine = TradingEngine(gateway)
     strategy = VerifyStrategy("verify", {
@@ -186,25 +205,28 @@ def test_first_tick_bar_emits_despite_slightly_stale_tick():
     engine.set_strategy(strategy)
 
     risk_config = {"max_market_data_age_seconds": 5}
-    engine.configure_risk({"risk": risk_config})
-    assert engine.start({"initial_capital": 100000.0, "emit_first_tick_bar": True}) is True
+    assert engine.start({
+        "initial_capital": 100000.0,
+        "emit_first_tick_bar": True,
+        "risk": risk_config,
+    }) is True
 
-    # Tick timestamped 10 seconds ago — would normally be rejected as stale
     stale_ts = datetime.now() - timedelta(seconds=10)
     engine.on_tick(make_tick("rb2610", 3130.0, stale_ts))
 
-    # First bar should still have been emitted via the fast path
     snapshot = strategy.snapshot()
-    assert snapshot["bar_count"] == 1
-    assert snapshot["state"] == "entry_pending"
-    assert len(strategy.signals) == 1
-    assert len(gateway.sent_signals) == 1
+    assert snapshot["tick_count"] == 0
+    assert snapshot["bar_count"] == 0
+    assert snapshot["state"] == "waiting_market_data"
+    assert strategy.signals == []
+    assert gateway.sent_signals == []
 
-    # A second stale tick for the same symbol should NOT create another bar
     engine.on_tick(make_tick("rb2610", 3140.0, datetime.now() - timedelta(seconds=8)))
     snapshot = strategy.snapshot()
-    assert snapshot["bar_count"] == 1
-    assert len(strategy.signals) == 1
+    assert snapshot["tick_count"] == 0
+    assert snapshot["bar_count"] == 0
+    assert strategy.signals == []
+    assert gateway.sent_signals == []
 
 
 def test_broker_order_callback_updates_order_manager_books():

@@ -312,3 +312,12 @@ def test_chase_no_fallback_when_disabled():
     action = s.next_chase_action(_tick(3135, ts=datetime.now() + timedelta(seconds=7)))
     assert action == {}
     assert s._last_chase_reason == "max_attempts_reached"
+
+
+def test_verify_strategy_defaults_to_five_chase_attempts():
+    from src.strategy import create_strategy
+
+    strategy = create_strategy("verify", {"symbol": "rb2510"})
+    strategy.on_init()
+
+    assert strategy.snapshot()["chase_max_attempts"] == 5

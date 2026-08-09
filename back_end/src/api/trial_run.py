@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import functools
 import json
 import os
 import threading
@@ -14,7 +15,15 @@ from typing import Any, Callable, Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Request
 
 from ..trading import TradingStatus
-from .models import TrialRunActionResponse, TrialRunConfigResponse, TrialRunStatusResponse
+from ..trading.symbols import is_supported_symbol, symbol_key, symbols_match
+from ..trading.trial_run_execution import TrialRunExecutionState
+from .models import (
+    TrialRunActionResponse,
+    TrialRunConfigResponse,
+    TrialRunSimulateFillRequest,
+    TrialRunSimulateFillResponse,
+    TrialRunStatusResponse,
+)
 
 TRIAL_STRATEGY_ID = "verify_trial"
 
@@ -33,6 +42,8 @@ class _TrialRunState:
         self.last_errors: List[str] = []
         self.authorized = False
         self.prepared_at = 0.0
+        self.execution: Optional[TrialRunExecutionState] = None
+        self._prepare_in_progress = False
 
     def update(
         self,
@@ -62,6 +73,24 @@ class _TrialRunState:
             self.last_errors = []
             self.authorized = False
             self.prepared_at = 0.0
+            self.execution = None
+
+    def try_begin_prepare(self) -> bool:
+        with self._lock:
+            if self._prepare_in_progress:
+                return False
+            self._prepare_in_progress = True
+            return True
+
+    def end_prepare(self) -> None:
+        with self._lock:
+            self._prepare_in_progress = False
+
+    def start_execution(self, symbol: str, volume: int = 1) -> TrialRunExecutionState:
+        execution = TrialRunExecutionState(symbol=symbol, volume=volume)
+        with self._lock:
+            self.execution = execution
+        return execution
 
     def snapshot(self) -> Dict[str, Any]:
         with self._lock:
@@ -71,10 +100,30 @@ class _TrialRunState:
                 "errors": list(self.last_errors),
                 "authorized": self.authorized,
                 "prepared_at": self.prepared_at,
+                "execution": self.execution.serialize() if self.execution else {},
             }
 
 
 trial_run_state = _TrialRunState()
+
+
+def _exclusive_trial_prepare(func: Callable[..., Any]) -> Callable[..., Any]:
+    @functools.wraps(func)
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
+        if not trial_run_state.try_begin_prepare():
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "failure_code": "trial_run_prepare_in_progress",
+                    "message": "已有试运行准备流程正在执行",
+                },
+            )
+        try:
+            return func(*args, **kwargs)
+        finally:
+            trial_run_state.end_prepare()
+
+    return wrapped
 
 
 def _configured_path(*, allow_example: bool = True) -> Optional[Path]:
@@ -112,6 +161,11 @@ def _safe_subset(source: Dict[str, Any], allowed_keys: set[str]) -> Dict[str, An
     return {key: source[key] for key in allowed_keys if key in source}
 
 
+def _dict_section(source: Dict[str, Any], key: str) -> Dict[str, Any]:
+    value = source.get(key)
+    return value if isinstance(value, dict) else {}
+
+
 def _mask_account_id(account_id: Any) -> str:
     value = str(account_id or "").strip()
     if not value:
@@ -126,18 +180,11 @@ def _clean_symbol(value: Any) -> str:
 
 
 def _normalize_symbol_key(symbol: Any) -> str:
-    raw = str(symbol or "").strip().lower()
-    if "." not in raw:
-        return raw
-    parts = [part for part in raw.split(".") if part]
-    for part in parts:
-        if any(ch.isdigit() for ch in part):
-            return part
-    return parts[0] if parts else raw
+    return symbol_key(symbol)
 
 
 def _symbols_match(left: Any, right: Any) -> bool:
-    return _normalize_symbol_key(left) == _normalize_symbol_key(right)
+    return symbols_match(left, right)
 
 
 def _int_value(value: Any, default: int = 0) -> int:
@@ -167,11 +214,87 @@ def _bool_value(value: Any, default: bool = False) -> bool:
     return default
 
 
+def _is_production_environment(config: Dict[str, Any]) -> bool:
+    trial_run = _dict_section(config, "trial_run")
+    trading = _dict_section(config, "trading")
+    production_markers = {"prod", "production", "real", "live", "实盘", "生产"}
+    candidates = [
+        trial_run.get("vnpy_environment"),
+        trial_run.get("environment"),
+        trading.get("vnpy_environment"),
+        trading.get("environment"),
+    ]
+
+    def _environment_texts(value: Any) -> List[str]:
+        text = str(value or "").strip().lower()
+        texts = [text]
+        try:
+            restored = text.encode("gbk").decode("utf-8").strip().lower()
+        except UnicodeError:
+            restored = ""
+        if restored and restored not in texts:
+            texts.append(restored)
+        return texts
+
+    return any(
+        marker in text
+        for value in candidates
+        for text in _environment_texts(value)
+        for marker in production_markers
+    )
+
+
+def _environment_kind(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    production_markers = ("prod", "production", "real", "live", "实盘", "生产")
+    if any(marker in text for marker in production_markers):
+        return "production"
+    if any(marker in text for marker in ("sim", "simulation", "仿真", "模拟")):
+        return "simulation"
+    if any(marker in text for marker in ("test", "testing", "测试")):
+        return "test"
+    return ""
+
+
+def _simulation_environment_allowed(config: Dict[str, Any], runtime: Dict[str, Any]) -> bool:
+    trial_run = _dict_section(config, "trial_run")
+    trading = _dict_section(config, "trading")
+    configured_values = [
+        value
+        for value in (
+            trial_run.get("vnpy_environment"),
+            trial_run.get("environment"),
+            trading.get("vnpy_environment"),
+            trading.get("environment"),
+        )
+        if str(value or "").strip()
+    ]
+    configured_kinds = {_environment_kind(value) for value in configured_values}
+    runtime_kind = _environment_kind(
+        runtime.get("environment") if isinstance(runtime, dict) else ""
+    )
+    return (
+        len(configured_kinds) == 1
+        and configured_kinds <= {"test", "simulation"}
+        and runtime_kind in configured_kinds
+    )
+
+
+def _simulate_fill_enabled(config: Dict[str, Any], runtime: Dict[str, Any]) -> bool:
+    trial_run = _dict_section(config, "trial_run")
+    return _bool_value(trial_run.get("simulate_fill_enabled"), False) and _simulation_environment_allowed(
+        config,
+        runtime,
+    )
+
+
 def _validate_trial_config(config: Dict[str, Any]) -> tuple[str, List[str]]:
     errors: List[str] = []
-    trial_run = config.get("trial_run") if isinstance(config.get("trial_run"), dict) else {}
-    strategy = config.get("strategy") if isinstance(config.get("strategy"), dict) else {}
-    risk = config.get("risk") if isinstance(config.get("risk"), dict) else {}
+    trial_run = _dict_section(config, "trial_run")
+    strategy = _dict_section(config, "strategy")
+    risk = _dict_section(config, "risk")
 
     trial_symbol = _clean_symbol(trial_run.get("allowed_symbol"))
     strategy_symbol = _clean_symbol(strategy.get("symbol"))
@@ -189,6 +312,13 @@ def _validate_trial_config(config: Dict[str, Any]) -> tuple[str, List[str]]:
     if len(clean_allowed_symbols) != 1:
         errors.append("risk.allowed_symbols 必须且只能包含一个合约")
     risk_symbol = clean_allowed_symbols[0] if len(clean_allowed_symbols) == 1 else ""
+    for field_name, field_symbol in (
+        ("trial_run.allowed_symbol", trial_symbol),
+        ("strategy.symbol", strategy_symbol),
+        ("risk.allowed_symbols[0]", risk_symbol),
+    ):
+        if field_symbol and not is_supported_symbol(field_symbol):
+            errors.append(f"{field_name} 不是已知且交易所一致的期货合约")
     if trial_symbol and strategy_symbol and risk_symbol:
         if len({_normalize_symbol_key(trial_symbol), _normalize_symbol_key(strategy_symbol), _normalize_symbol_key(risk_symbol)}) != 1:
             errors.append("trial_run.allowed_symbol、strategy.symbol、risk.allowed_symbols[0] 必须一致")
@@ -226,10 +356,10 @@ def _read_trial_config(*, allow_example: bool = True) -> tuple[Path, Dict[str, A
 
 
 def _safe_config_response(path: Path, config: Dict[str, Any], allowed_symbol: str, errors: List[str]) -> TrialRunConfigResponse:
-    trial_run = config.get("trial_run") if isinstance(config.get("trial_run"), dict) else {}
-    trading = config.get("trading") if isinstance(config.get("trading"), dict) else {}
-    strategy = config.get("strategy") if isinstance(config.get("strategy"), dict) else {}
-    risk = config.get("risk") if isinstance(config.get("risk"), dict) else {}
+    trial_run = _dict_section(config, "trial_run")
+    trading = _dict_section(config, "trading")
+    strategy = _dict_section(config, "strategy")
+    risk = _dict_section(config, "risk")
     raw_account_id = str(trial_run.get("account_id") or trading.get("username") or "").strip()
     environment = str(
         trial_run.get("vnpy_environment")
@@ -286,7 +416,7 @@ def _safe_config_response(path: Path, config: Dict[str, Any], allowed_symbol: st
     gateway = str(trial_run.get("gateway") or trading.get("gateway") or "vnpy")
     safe_trading = _safe_subset(
         trading,
-        {"gateway", "broker_id", "td_server", "md_server", "app_id", "auth_code", "vnpy_environment", "environment", "fronts"},
+        {"gateway", "broker_id", "td_server", "md_server", "app_id", "vnpy_environment", "environment", "fronts"},
     )
     safe_trading.update({"gateway": gateway, "vnpy_environment": environment, "environment": environment})
     safe_trial_run = {
@@ -351,6 +481,43 @@ def _timestamp_to_text(value: Any) -> str:
     return str(value)
 
 
+def _enum_value(value: Any) -> Any:
+    if hasattr(value, "value"):
+        return value.value
+    return value
+
+
+def _order_to_safe_dict(order: Any) -> Dict[str, Any]:
+    return {
+        "order_id": str(getattr(order, "order_id", "") or ""),
+        "symbol": str(getattr(order, "symbol", "") or ""),
+        "direction": _enum_value(getattr(order, "direction", "")),
+        "order_type": _enum_value(getattr(order, "order_type", "")),
+        "price": float(getattr(order, "price", 0.0) or 0.0),
+        "volume": _int_value(getattr(order, "volume", 0)),
+        "traded_volume": _int_value(getattr(order, "traded_volume", 0)),
+        "status": _enum_value(getattr(order, "status", "")),
+        "offset": _enum_value(getattr(order, "offset", "")),
+        "create_time": _timestamp_to_text(getattr(order, "create_time", "")),
+        "update_time": _timestamp_to_text(getattr(order, "update_time", "")),
+        "error_msg": str(getattr(order, "error_msg", "") or ""),
+    }
+
+
+def _trade_to_safe_dict(trade: Any) -> Dict[str, Any]:
+    return {
+        "trade_id": str(getattr(trade, "trade_id", "") or ""),
+        "order_id": str(getattr(trade, "order_id", "") or ""),
+        "symbol": str(getattr(trade, "symbol", "") or ""),
+        "direction": _enum_value(getattr(trade, "direction", "")),
+        "price": float(getattr(trade, "price", 0.0) or 0.0),
+        "volume": _int_value(getattr(trade, "volume", 0)),
+        "commission": float(getattr(trade, "commission", 0.0) or 0.0),
+        "pnl": float(getattr(trade, "pnl", 0.0) or 0.0),
+        "trade_time": _timestamp_to_text(getattr(trade, "trade_time", "")),
+    }
+
+
 def _market_data_age_seconds(value: Any) -> float:
     if not value:
         return 0.0
@@ -409,8 +576,201 @@ def _has_matching_symbol(symbols: List[str], symbol: str) -> bool:
     return any(_symbols_match(item, symbol) for item in symbols)
 
 
+def _active_broker_orders(gateway: Any, symbol: str) -> List[Any]:
+    try:
+        queried = gateway.query_orders()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"failure_code": "broker_orders_unavailable", "message": str(exc)},
+        ) from exc
+    orders = list(queried or [])
+    cached = getattr(gateway, "orders", {})
+    if isinstance(cached, dict):
+        known = {str(getattr(item, "order_id", "") or "") for item in orders}
+        orders.extend(
+            item
+            for item in cached.values()
+            if str(getattr(item, "order_id", "") or "") not in known
+        )
+    active: List[Any] = []
+    for order in orders:
+        if not _symbols_match(getattr(order, "symbol", ""), symbol):
+            continue
+        is_active = getattr(order, "is_active", None)
+        if callable(is_active):
+            if is_active():
+                active.append(order)
+            continue
+        status = str(_enum_value(getattr(order, "status", "")) or "").lower()
+        if status in {"submitting", "submitted", "partfilled"}:
+            active.append(order)
+    return active
+
+
+def _broker_position_volume(gateway: Any, symbol: str) -> int:
+    try:
+        queried = gateway.query_positions()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"failure_code": "broker_positions_unavailable", "message": str(exc)},
+        ) from exc
+    positions = list(queried or [])
+    cached = getattr(gateway, "positions", {})
+    if isinstance(cached, dict):
+        known = {
+            (str(getattr(item, "symbol", "") or ""), str(_enum_value(getattr(item, "direction", "")) or ""))
+            for item in positions
+        }
+        positions.extend(
+            item
+            for item in cached.values()
+            if (
+                str(getattr(item, "symbol", "") or ""),
+                str(_enum_value(getattr(item, "direction", "")) or ""),
+            )
+            not in known
+        )
+    return sum(
+        abs(_int_value(getattr(position, "volume", 0)))
+        for position in positions
+        if _symbols_match(getattr(position, "symbol", ""), symbol)
+    )
+
+
+def _require_trial_preflight(trading_state: Any, engine: Any, symbol: str) -> None:
+    conflicts = [
+        entry.strategy_id
+        for entry in trading_state.all_entries()
+        if entry.strategy_id != TRIAL_STRATEGY_ID
+    ]
+    if conflicts:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "failure_code": "trial_run_engine_busy",
+                "message": f"主交易引擎已有运行策略: {', '.join(conflicts)}",
+            },
+        )
+
+    gateway = getattr(engine, "gateway", None)
+    if gateway is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"failure_code": "broker_gateway_unavailable", "message": "交易网关不可用"},
+        )
+    try:
+        reconciliation = gateway.refresh_reconciliation(timeout_seconds=8.0)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"failure_code": "broker_snapshot_failed", "message": str(exc)},
+        ) from exc
+    if not isinstance(reconciliation, dict) or not (
+        reconciliation.get("ok") is True and reconciliation.get("fresh") is True
+    ):
+        failure_code = (
+            str(reconciliation.get("failure_code") or "broker_snapshot_unavailable")
+            if isinstance(reconciliation, dict)
+            else "broker_snapshot_unavailable"
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "failure_code": failure_code,
+                "message": "未取得完整的券商账户、持仓和委托快照",
+            },
+        )
+    try:
+        account = gateway.query_account()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"failure_code": "broker_account_unavailable", "message": str(exc)},
+        ) from exc
+    if account is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"failure_code": "broker_account_unavailable", "message": "券商账户查询无结果"},
+        )
+
+    position_volume = _broker_position_volume(gateway, symbol)
+    if position_volume:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "failure_code": "broker_position_not_flat",
+                "message": f"目标合约真实持仓未归零: {position_volume}",
+            },
+        )
+    active_orders = _active_broker_orders(gateway, symbol)
+    if active_orders:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "failure_code": "broker_active_order_exists",
+                "message": "目标合约仍有活动委托",
+                "order_ids": [str(getattr(order, "order_id", "") or "") for order in active_orders],
+            },
+        )
+
+
+def _order_age_seconds(order: Any) -> float:
+    created_at = getattr(order, "create_time", None)
+    if not created_at:
+        return 0.0
+    try:
+        if isinstance(created_at, (int, float)):
+            return max(0.0, time.time() - float(created_at))
+        if isinstance(created_at, str):
+            created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        if isinstance(created_at, datetime):
+            now = datetime.now(created_at.tzinfo) if created_at.tzinfo else datetime.now()
+            return max(0.0, (now - created_at).total_seconds())
+    except (TypeError, ValueError):
+        return 0.0
+    return 0.0
+
+
+def _active_order_wait_seconds(engine: Any, symbol: str) -> float:
+    if engine is None or not symbol:
+        return 0.0
+    gateway = getattr(engine, "gateway", None)
+    orders = getattr(gateway, "orders", {}) if gateway is not None else {}
+    if not isinstance(orders, dict):
+        return 0.0
+
+    active_statuses = {"submitting", "submitted", "partfilled"}
+    wait_seconds = 0.0
+    for order in orders.values():
+        order_symbol = str(getattr(order, "symbol", "") or "")
+        if not order_symbol or not _symbols_match(order_symbol, symbol):
+            continue
+        status = str(_enum_value(getattr(order, "status", "")) or "").strip().lower()
+        if status not in active_statuses:
+            continue
+        volume = _int_value(getattr(order, "volume", 0))
+        traded_volume = _int_value(getattr(order, "traded_volume", 0))
+        if volume > 0 and traded_volume >= volume:
+            continue
+        wait_seconds = max(wait_seconds, _order_age_seconds(order))
+    return round(wait_seconds, 1)
+
+
+def _has_fresh_reconciliation(gateway: Any, max_age_seconds: float = 15.0) -> bool:
+    snapshot = getattr(gateway, "last_reconciliation", {}) if gateway is not None else {}
+    if not isinstance(snapshot, dict):
+        return False
+    if snapshot.get("ok") is not True or snapshot.get("fresh") is not True:
+        return False
+    refreshed = _float_value(snapshot.get("refreshed_monotonic"), 0.0)
+    return refreshed > 0 and time.monotonic() - refreshed <= max_age_seconds
+
+
 def _status_response(trading_state: Any) -> TrialRunStatusResponse:
     state = trial_run_state.snapshot()
+    execution = _dict_section(state, "execution")
     entry = trading_state.get(TRIAL_STRATEGY_ID)
     engine = trading_state.primary_engine()
     strategy = getattr(entry, "strategy", None) if entry else None
@@ -434,11 +794,18 @@ def _status_response(trading_state: Any) -> TrialRunStatusResponse:
     except Exception as exc:
         allowed_symbol = state["allowed_symbol"]
         config_errors = [str(exc)]
-    trial_config = config.get("trial_run") if isinstance(config.get("trial_run"), dict) else {}
+    trial_config = _dict_section(config, "trial_run")
     auto_arm = _bool_value(trial_config.get("auto_arm"), True)
     bar_timeout_seconds = max(1.0, _float_value(trial_config.get("bar_timeout_seconds"), 90.0))
     no_fill_timeout_seconds = max(1.0, _float_value(trial_config.get("no_fill_timeout_seconds"), 10.0))
     simulate_fill_enabled = _bool_value(trial_config.get("simulate_fill_enabled"), False)
+    runtime_config = trading_state.main_config_snapshot()
+    simulation_environment_allowed = bool(
+        config_valid and _simulation_environment_allowed(config, runtime_config)
+    )
+    # Task 1 deliberately keeps the legacy mutation endpoint closed until the
+    # isolated ledger and reconciliation handshake are installed in Task 4.
+    simulate_fill_allowed = False
     snapshot_state = str(snapshot.get("state") or "")
     base_authorized = bool(snapshot.get("authorized", state["authorized"]))
     auto_authorized = auto_arm and entry is not None and snapshot_state not in {"error", "completed"}
@@ -481,7 +848,7 @@ def _status_response(trading_state: Any) -> TrialRunStatusResponse:
     subscribed_symbols = _gateway_subscribed_symbols(engine)
     cached_tick_symbols = _gateway_cached_tick_symbols(engine)
     first_tick_bar_enabled = bool(getattr(engine, "_emit_first_tick_bar", False)) if engine is not None else False
-    emitted_symbols = getattr(engine, "_first_tick_bar_emitted_symbols", set()) if engine is not None else set()
+    emitted_symbols: Any = getattr(engine, "_first_tick_bar_emitted_symbols", set()) if engine is not None else set()
     first_tick_bar_emitted = bar_count > 0 or _normalize_symbol_key(symbol) in set(emitted_symbols or [])
     first_tick_bar_skip_reason = str(getattr(engine, "_first_tick_bar_skip_reason", "") or "") if engine is not None else ""
     last_reject_reason_value = str(snapshot.get("last_reject_reason") or last_reject_reason or "")
@@ -539,9 +906,67 @@ def _status_response(trading_state: Any) -> TrialRunStatusResponse:
             position_volume = int(getattr(strategy.get_position(symbol), "volume", 0) or 0)
         except Exception:
             position_volume = 0
+    gateway = getattr(engine, "gateway", None) if engine is not None else None
+    broker_position_volume = 0
+    broker_active_order_ids: List[str] = []
+    if gateway is not None:
+        cached_positions = getattr(gateway, "positions", {})
+        if isinstance(cached_positions, dict):
+            broker_position_volume = sum(
+                abs(_int_value(getattr(item, "volume", 0)))
+                for item in cached_positions.values()
+                if _symbols_match(getattr(item, "symbol", ""), symbol or allowed_symbol)
+            )
+        cached_orders = getattr(gateway, "orders", {})
+        if isinstance(cached_orders, dict):
+            broker_active_order_ids = [
+                str(getattr(item, "order_id", "") or "")
+                for item in cached_orders.values()
+                if _symbols_match(getattr(item, "symbol", ""), symbol or allowed_symbol)
+                and (
+                    callable(getattr(item, "is_active", None))
+                    and item.is_active()
+                )
+            ]
+    completed = bool(snapshot.get("completed", False))
+    unfilled_wait_seconds = float(snapshot.get("unfilled_wait_seconds") or 0.0)
+    execution_issue = str(snapshot.get("execution_issue") or "")
+    execution_warning = str(snapshot.get("execution_warning") or "")
+    if not completed:
+        active_order_wait_seconds = _active_order_wait_seconds(engine, symbol or allowed_symbol)
+        if active_order_wait_seconds > unfilled_wait_seconds:
+            unfilled_wait_seconds = active_order_wait_seconds
+        if unfilled_wait_seconds >= no_fill_timeout_seconds:
+            execution_issue = "waiting_counterparty"
+            execution_warning = (
+                f"订单已报入但 {int(unfilled_wait_seconds)} 秒未成交，测试环境可能没有对手盘，"
+                "可等待券商撮合或使用模拟成交回报。"
+            )
 
     return TrialRunStatusResponse(
         state=response_state,
+        run_id=str(execution.get("run_id") or ""),
+        outcome=str(execution.get("final_outcome") or "running"),
+        success_basis=str(execution.get("success_basis") or ""),
+        current_track=str(execution.get("current_track") or "real"),
+        current_order_id=str(execution.get("current_order_id") or ""),
+        entry_order_id=str(execution.get("entry_order_id") or ""),
+        close_order_id=str(execution.get("close_order_id") or ""),
+        order_chain=list(execution.get("order_chain") or []),
+        broker_position_volume=broker_position_volume,
+        simulated_position_volume=_int_value(execution.get("simulated_position_volume")),
+        broker_active_order_ids=broker_active_order_ids,
+        reconcile_ok=bool(
+            connected
+            and _has_fresh_reconciliation(gateway)
+            and broker_position_volume == 0
+            and not broker_active_order_ids
+        ),
+        simulation_state="migration_in_progress",
+        simulation_prepare_allowed=False,
+        failure_code=str(execution.get("failure_code") or ""),
+        runtime_environment=str(runtime_config.get("environment") or ""),
+        simulation_environment_allowed=simulation_environment_allowed,
         connected=connected,
         gateway_status=gateway_status,
         strategy_id=TRIAL_STRATEGY_ID if entry else "",
@@ -555,7 +980,7 @@ def _status_response(trading_state: Any) -> TrialRunStatusResponse:
         started=started,
         market_ready=market_ready,
         ready_to_arm=bool(snapshot.get("ready_to_arm", False)),
-        completed=bool(snapshot.get("completed", False)),
+        completed=completed,
         running=running,
         auto_arm=auto_arm,
         tick_count=tick_count,
@@ -567,13 +992,13 @@ def _status_response(trading_state: Any) -> TrialRunStatusResponse:
         bar_timeout_seconds=bar_timeout_seconds,
         no_fill_timeout_seconds=no_fill_timeout_seconds,
         no_bar_wait_seconds=no_bar_wait_seconds,
-        unfilled_wait_seconds=float(snapshot.get("unfilled_wait_seconds") or 0.0),
+        unfilled_wait_seconds=unfilled_wait_seconds,
         market_warning=market_warning,
-        execution_issue=str(snapshot.get("execution_issue") or ""),
-        execution_warning=str(snapshot.get("execution_warning") or ""),
+        execution_issue=execution_issue,
+        execution_warning=execution_warning,
         simulate_fill_enabled=simulate_fill_enabled,
-        simulate_fill_allowed=bool(simulate_fill_enabled and config_valid),
-        last_fill_source=str(snapshot.get("last_fill_source") or ""),
+        simulate_fill_allowed=simulate_fill_allowed,
+        last_fill_source=str(snapshot.get("last_fill_source") or getattr(strategy, "_last_fill_source", "") or ""),
         last_bar_time=str(snapshot.get("last_bar_time") or ""),
         last_market_price=last_market_price,
         last_market_timestamp=_timestamp_to_text(last_market_timestamp),
@@ -657,7 +1082,7 @@ def trial_run_manual_open_enabled() -> bool:
         if path is None:
             return True
         config = _load_config(path)
-        trial_run = config.get("trial_run") if isinstance(config.get("trial_run"), dict) else {}
+        trial_run = _dict_section(config, "trial_run")
         if trial_run.get("enabled") is not True:
             return True
         _allowed_symbol, errors = _validate_trial_config(config)
@@ -703,6 +1128,7 @@ def register_trial_run_routes(
         summary="准备 VerifyStrategy 试运行",
         tags=["试运行"],
     )
+    @_exclusive_trial_prepare
     def prepare_trial_run(request: Request):
         try:
             path, config, allowed_symbol, errors = _read_trial_config(allow_example=True)
@@ -716,16 +1142,27 @@ def register_trial_run_routes(
             trial_run_state.update(state="error", allowed_symbol=allowed_symbol, errors=errors, authorized=False)
             raise HTTPException(status_code=400, detail={"errors": errors, "config_path": path.name})
 
+        runtime_config = trading_state.main_config_snapshot()
+        if not _simulation_environment_allowed(config, runtime_config):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "failure_code": "trial_run_environment_not_allowed",
+                    "message": "试运行仅允许配置与登录环境一致的测试或仿真柜台",
+                },
+            )
+
         engine = trading_state.primary_engine()
         if engine is None or not _gateway_connected(engine):
             raise HTTPException(status_code=503, detail="交易主引擎未连接")
 
+        _require_trial_preflight(trading_state, engine, allowed_symbol)
         _stop_trial_strategy(trading_state)
 
         from ..strategy import create_strategy
 
         strategy_config = copy.deepcopy(config.get("strategy", {}))
-        trial_config = config.get("trial_run") if isinstance(config.get("trial_run"), dict) else {}
+        trial_config = _dict_section(config, "trial_run")
         strategy_config["auto_arm"] = _bool_value(trial_config.get("auto_arm"), True)
         if strategy_config["auto_arm"]:
             strategy_config["warmup_bars"] = 1
@@ -743,6 +1180,10 @@ def register_trial_run_routes(
 
         trading_state.register(TRIAL_STRATEGY_ID, strategy, engine, _without_secret_fields(config))
         subscribe_market_ticks(engine, [allowed_symbol])
+        trial_run_state.start_execution(
+            allowed_symbol,
+            volume=_int_value(strategy_config.get("volume"), 1),
+        )
         trial_run_state.update(
             state="prepared",
             allowed_symbol=allowed_symbol,
@@ -788,6 +1229,7 @@ def register_trial_run_routes(
         summary="开始试运行验证交易",
         tags=["试运行"],
     )
+    @_exclusive_trial_prepare
     def start_trial_run(request: Request):
         return _start_trial_run(request, action="start")
 
@@ -797,8 +1239,33 @@ def register_trial_run_routes(
         summary="兼容旧版授权试运行交易",
         tags=["试运行"],
     )
+    @_exclusive_trial_prepare
     def arm_trial_run(request: Request):
         return _start_trial_run(request, action="arm")
+
+    @app.post(
+        "/trial-run/simulate-fill",
+        response_model=TrialRunSimulateFillResponse,
+        summary="Simulate a trial-run order fill",
+        tags=["trial-run"],
+    )
+    def simulate_trial_run_fill(body: TrialRunSimulateFillRequest, request: Request):
+        del body
+        record_audit(
+            "trial_run",
+            "simulate_fill",
+            "rejected",
+            request=request,
+            resource=TRIAL_STRATEGY_ID,
+            detail={"failure_code": "simulation_migration_in_progress"},
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "failure_code": "simulation_migration_in_progress",
+                "message": "隔离模拟账本尚未启用",
+            },
+        )
 
     @app.post(
         "/trial-run/stop",
@@ -806,6 +1273,7 @@ def register_trial_run_routes(
         summary="停止试运行策略",
         tags=["试运行"],
     )
+    @_exclusive_trial_prepare
     def stop_trial_run(request: Request):
         _stop_trial_strategy(trading_state)
         record_audit("trial_run", "stop", "success", request=request, resource=TRIAL_STRATEGY_ID)
@@ -817,6 +1285,7 @@ def register_trial_run_routes(
         summary="重置试运行状态",
         tags=["试运行"],
     )
+    @_exclusive_trial_prepare
     def reset_trial_run(request: Request):
         _stop_trial_strategy(trading_state, reset=True)
         record_audit("trial_run", "reset", "success", request=request, resource=TRIAL_STRATEGY_ID)

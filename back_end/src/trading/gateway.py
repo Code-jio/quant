@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -24,6 +25,11 @@ class GatewayBase(ABC):
         self.orders: dict[str, Order] = {}
         self.positions: dict[str, Position] = {}
         self.account = AccountInfo()
+        self.last_reconciliation: dict[str, Any] = {
+            "ok": False,
+            "fresh": False,
+            "failure_code": "broker_snapshot_not_requested",
+        }
 
         self.on_order_callback: Any = None
         self.on_trade_callback: Any = None
@@ -59,6 +65,22 @@ class GatewayBase(ABC):
     @abstractmethod
     def query_orders(self) -> list[Order]:
         """Query current orders."""
+
+    def refresh_reconciliation(self, timeout_seconds: float = 8.0) -> dict[str, Any]:
+        """Request a broker-authoritative account, position and order snapshot.
+
+        Gateways must override this method when they can prove query completion.
+        The default is deliberately fail-closed so a cache read cannot be
+        mistaken for broker reconciliation.
+        """
+        del timeout_seconds
+        self.last_reconciliation = {
+            "ok": False,
+            "fresh": False,
+            "failure_code": "broker_snapshot_unsupported",
+            "refreshed_monotonic": time.monotonic(),
+        }
+        return dict(self.last_reconciliation)
 
     def on_order(self, order: Order) -> None:
         """Order callback entrypoint."""

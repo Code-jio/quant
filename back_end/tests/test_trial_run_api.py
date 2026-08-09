@@ -4,11 +4,13 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
+import pytest
 from fastapi.testclient import TestClient
 
 from src.api import create_app, trading_state
 import src.api.trial_run as trial_run_module
 from src.api.trial_run import trial_run_state
+from src.strategy import Direction, OffsetFlag, Order, OrderStatus, OrderType, Position
 from src.trading.types import MarketData
 
 from tests.helpers import RecordingGateway
@@ -28,6 +30,8 @@ def _trial_config(
     readiness_bars=1,
     hold_bars=3,
     bar_timeout_seconds=90,
+    no_fill_timeout_seconds=None,
+    chase_max_attempts=None,
 ):
     payload = {
         "trial_run": {
@@ -36,6 +40,7 @@ def _trial_config(
             "account_id": "trial-account",
             "auto_arm": auto_arm,
             "bar_timeout_seconds": bar_timeout_seconds,
+            "vnpy_environment": "测试",
         },
         "strategy": {
             "name": "verify",
@@ -55,6 +60,7 @@ def _trial_config(
             "md_server": "tcp://md.example:123",
             "app_id": "trial-app",
             "auth_code": "trial-auth-code",
+            "vnpy_environment": "测试",
         },
         "risk": {
             "enabled": True,
@@ -67,6 +73,10 @@ def _trial_config(
             "allow_market_orders": True,
         },
     }
+    if no_fill_timeout_seconds is not None:
+        payload["trial_run"]["no_fill_timeout_seconds"] = no_fill_timeout_seconds
+    if chase_max_attempts is not None:
+        payload["strategy"]["chase_max_attempts"] = chase_max_attempts
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
 
@@ -114,7 +124,7 @@ def install_gateway(monkeypatch):
     return gateway
 
 
-def login(client):
+def login(client, *, environment="测试"):
     response = client.post(
         "/auth/login",
         json={
@@ -122,6 +132,7 @@ def login(client):
             "password": "test-password",
             "broker_id": "2071",
             "gateway_type": "vnpy",
+            "environment": environment,
         },
     )
     assert response.status_code == 200
@@ -153,7 +164,8 @@ def test_trial_run_config_is_public_and_prefills_non_password_connection_fields(
     assert body["trading"]["td_server"] == "tcp://td.example:123"
     assert body["trading"]["md_server"] == "tcp://md.example:123"
     assert body["trading"]["app_id"] == "trial-app"
-    assert body["trading"]["auth_code"] == "trial-auth-code"
+    assert "auth_code" not in body["trading"]
+    assert "trial-auth-code" not in response.text
     assert "secret-password" not in response.text
     assert "trial-account" not in response.text
 
@@ -197,6 +209,24 @@ def test_trial_run_config_requires_strategy_symbol(monkeypatch, tmp_path):
     assert "strategy.symbol 不能为空" in body["validation_errors"]
 
 
+def test_trial_run_config_rejects_unknown_futures_product(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "unknown-product"))
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["trial_run"]["allowed_symbol"] = "ZZ9999"
+    payload["strategy"]["symbol"] = "ZZ9999"
+    payload["risk"]["allowed_symbols"] = ["ZZ9999"]
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    app = create_app()
+
+    with TestClient(app) as client:
+        response = client.get("/trial-run/config")
+
+    assert response.status_code == 200
+    assert response.json()["valid"] is False
+    assert any("不是已知且交易所一致" in item for item in response.json()["validation_errors"])
+
+
 def test_trial_run_config_requires_short_auto_arm_warmup(monkeypatch, tmp_path):
     config_path = _trial_config(_config_path(tmp_path, "invalid-auto-arm"), warmup_bars=2)
     monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
@@ -217,7 +247,14 @@ def test_trial_run_mutations_require_login(monkeypatch, tmp_path):
     app = create_app()
 
     with TestClient(app) as client:
-        for path in ["/trial-run/prepare", "/trial-run/start", "/trial-run/arm", "/trial-run/stop", "/trial-run/reset"]:
+        for path in [
+            "/trial-run/prepare",
+            "/trial-run/start",
+            "/trial-run/arm",
+            "/trial-run/stop",
+            "/trial-run/reset",
+            "/trial-run/simulate-fill",
+        ]:
             response = client.post(path)
             assert response.status_code == 401
 
@@ -240,9 +277,12 @@ def test_trial_run_prepare_auto_arms_and_sends_entry_after_first_bar(monkeypatch
         assert prepared.json()["success"] is True
         assert prepared.json()["status"]["state"] == "waiting_market_data"
         assert prepared.json()["status"]["strategy_id"] == "verify_trial"
+        assert prepared.json()["status"]["run_id"]
+        assert prepared.json()["status"]["current_track"] == "real"
         assert prepared.json()["status"]["auto_arm"] is True
         assert prepared.json()["status"]["first_tick_bar_enabled"] is True
         assert gateway.subscribed_symbols == [["rb2510"]]
+        assert gateway.sent_signals == []
 
         entry = trading_state.get("verify_trial")
         assert entry is not None
@@ -290,9 +330,260 @@ def test_apply_simulated_fill_fills_trial_order_and_updates_strategy(monkeypatch
     assert entry.strategy.get_position("rb2510").volume == 1
 
 
-def test_trial_run_stale_first_tick_still_emits_bar_for_trial_flow(monkeypatch, tmp_path):
-    """A slightly stale tick should still emit the first bar so the trial-run
-    fast path isn't blocked in simulation environments."""
+def test_trial_run_simulate_fill_is_fail_closed_during_ledger_migration(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "simulate-fill-api"))
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["trial_run"]["simulate_fill_enabled"] = True
+    payload["trial_run"]["vnpy_environment"] = "测试"
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    gateway = install_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client)
+        assert client.post("/trial-run/prepare").status_code == 200
+
+        response = client.post("/trial-run/simulate-fill", json={"order_id": "ORDER_1"})
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "failure_code": "simulation_migration_in_progress",
+        "message": "隔离模拟账本尚未启用",
+    }
+    assert gateway.positions == {}
+
+
+def test_trial_run_status_exposes_migration_and_execution_contract(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "simulate-fill-disabled"))
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["trial_run"]["simulate_fill_enabled"] = True
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    install_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client)
+        response = client.get("/trial-run/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["outcome"] == "running"
+    assert body["current_track"] == "real"
+    assert body["order_chain"] == []
+    assert body["simulation_state"] == "migration_in_progress"
+    assert body["simulate_fill_allowed"] is False
+    assert body["simulation_environment_allowed"] is True
+    assert body["runtime_environment"] == "测试"
+
+
+@pytest.mark.parametrize(
+    ("config_environment", "runtime_environment"),
+    [
+        ("测试", "实盘"),
+        ("实盘", "测试"),
+        ("测试", "仿真"),
+        ("仿真", "测试"),
+    ],
+)
+def test_trial_run_simulation_environment_requires_both_sources_non_production(
+    monkeypatch,
+    tmp_path,
+    config_environment,
+    runtime_environment,
+):
+    config_path = _trial_config(_config_path(tmp_path, "simulate-fill-production"))
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["trial_run"]["simulate_fill_enabled"] = True
+    payload["trial_run"]["vnpy_environment"] = config_environment
+    payload["trading"]["vnpy_environment"] = config_environment
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    install_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client, environment=runtime_environment)
+        response = client.get("/trial-run/status")
+
+    assert response.status_code == 200
+    assert response.json()["simulation_environment_allowed"] is False
+
+
+def test_main_config_snapshot_is_runtime_authoritative_and_secret_free(monkeypatch):
+    install_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client, environment="测试")
+        snapshot = trading_state.main_config_snapshot()
+
+    assert snapshot == {
+        "gateway": "vnpy",
+        "environment": "测试",
+        "td_server": "",
+        "md_server": "",
+    }
+    assert "password" not in snapshot
+    assert "auth_code" not in snapshot
+
+
+def test_trial_run_prepare_rejects_another_registered_strategy(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "strategy-conflict"))
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    install_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client)
+        engine = trading_state.primary_engine()
+        assert engine is not None
+        trading_state.register("other_strategy", object(), engine, {})
+
+        response = client.post("/trial-run/prepare")
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["failure_code"] == "trial_run_engine_busy"
+
+
+def test_trial_run_prepare_rejects_nonzero_broker_position(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "position-conflict"))
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    gateway = install_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client)
+        gateway.positions["rb2510.long"] = Position(
+            symbol="rb2510.SHFE",
+            direction=Direction.LONG,
+            volume=1,
+        )
+
+        response = client.post("/trial-run/prepare")
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["failure_code"] == "broker_position_not_flat"
+
+
+def test_trial_run_prepare_rejects_active_broker_order(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "order-conflict"))
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    gateway = install_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client)
+        gateway.orders["EXISTING"] = Order(
+            order_id="EXISTING",
+            symbol="SHFE.rb2510",
+            direction=Direction.LONG,
+            order_type=OrderType.LIMIT,
+            price=3130,
+            volume=1,
+            status=OrderStatus.SUBMITTED,
+            offset=OffsetFlag.OPEN,
+        )
+
+        response = client.post("/trial-run/prepare")
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["failure_code"] == "broker_active_order_exists"
+
+
+def test_trial_run_prepare_rejects_unavailable_account(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "account-unavailable"))
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    gateway = install_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client)
+        gateway.account = None
+
+        response = client.post("/trial-run/prepare")
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["failure_code"] == "broker_account_unavailable"
+
+
+def test_trial_run_prepare_rejects_production_environment(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "production-prepare"))
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["trial_run"]["vnpy_environment"] = "实盘"
+    payload["trading"]["vnpy_environment"] = "实盘"
+    config_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    gateway = install_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client, environment="实盘")
+        response = client.post("/trial-run/prepare")
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["failure_code"] == "trial_run_environment_not_allowed"
+    assert gateway.sent_signals == []
+
+
+def test_trial_run_prepare_requires_fresh_broker_snapshot(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "stale-broker-snapshot"))
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    gateway = install_gateway(monkeypatch)
+    gateway.refresh_reconciliation = lambda timeout_seconds=8.0: {
+        "ok": False,
+        "fresh": False,
+        "failure_code": "broker_snapshot_timeout",
+    }
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client)
+        response = client.post("/trial-run/prepare")
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["failure_code"] == "broker_snapshot_timeout"
+
+
+def test_trial_run_prepare_rejects_concurrent_prepare(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "concurrent-prepare"))
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    install_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client)
+        assert trial_run_state.try_begin_prepare() is True
+        try:
+            response = client.post("/trial-run/prepare")
+        finally:
+            trial_run_state.end_prepare()
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["failure_code"] == "trial_run_prepare_in_progress"
+
+
+@pytest.mark.parametrize("path", ["/trial-run/stop", "/trial-run/reset"])
+def test_trial_run_lifecycle_mutations_cannot_overlap_prepare(monkeypatch, tmp_path, path):
+    config_path = _trial_config(_config_path(tmp_path, "lifecycle-conflict"))
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    install_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client)
+        assert trial_run_state.try_begin_prepare() is True
+        try:
+            response = client.post(path)
+        finally:
+            trial_run_state.end_prepare()
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["failure_code"] == "trial_run_prepare_in_progress"
+
+
+def test_trial_run_stale_first_tick_never_emits_bar_or_order(monkeypatch, tmp_path):
     config_path = _trial_config(_config_path(tmp_path, "stale-first-tick"))
     monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
     gateway = install_gateway(monkeypatch)
@@ -310,13 +601,13 @@ def test_trial_run_stale_first_tick_still_emits_bar_for_trial_flow(monkeypatch, 
         status = client.get("/trial-run/status")
         assert status.status_code == 200
         body = status.json()
-        # The stale tick should have emitted the first bar and triggered entry
-        assert body["state"] == "entry_pending"
+        assert body["state"] == "waiting_market_data"
         assert body["tick_count"] == 0
-        assert body["bar_count"] == 1
-        assert body["first_tick_bar_emitted"] is True
-        assert len(entry.strategy.signals) == 1
-        assert len(gateway.sent_signals) == 1
+        assert body["bar_count"] == 0
+        assert body["first_tick_bar_emitted"] is False
+        assert body["market_issue"] == "stale_market_data"
+        assert entry.strategy.signals == []
+        assert gateway.sent_signals == []
 
 
 def test_trial_run_manual_arm_when_auto_arm_disabled(monkeypatch, tmp_path):
@@ -368,6 +659,38 @@ def test_trial_run_status_reports_tick_readiness_details(monkeypatch, tmp_path):
     assert body["first_tick_bar_emitted"] is True
     assert body["last_market_price"] == 3130
     assert body["last_market_timestamp"]
+
+
+def test_trial_run_status_reports_waiting_counterparty_after_no_fill_timeout(monkeypatch, tmp_path):
+    config_path = _trial_config(
+        _config_path(tmp_path, "no-fill-timeout"),
+        no_fill_timeout_seconds=10,
+        chase_max_attempts=5,
+    )
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    gateway = install_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client)
+        assert client.post("/trial-run/prepare").status_code == 200
+
+        entry = trading_state.get("verify_trial")
+        assert entry is not None
+        entry.engine.on_tick(_tick(3130))
+        assert gateway.orders
+        for order in gateway.orders.values():
+            order.create_time = datetime.now() - timedelta(seconds=11)
+
+        response = client.get("/trial-run/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["execution_issue"] == "waiting_counterparty"
+    assert body["unfilled_wait_seconds"] >= 10
+    assert "对手盘" in body["execution_warning"]
+    assert body["no_fill_timeout_seconds"] == 10
+    assert body["chase_max_attempts"] == 5
 
 
 def test_trial_run_status_reports_cached_gateway_tick_before_strategy_receives_it(monkeypatch, tmp_path):

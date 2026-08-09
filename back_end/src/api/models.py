@@ -193,6 +193,26 @@ class TrialRunSimulateFillRequest(BaseModel):
 
 class TrialRunStatusResponse(BaseModel):
     state: str
+    run_id: str = ""
+    outcome: str = "running"
+    success_basis: str = ""
+    current_track: str = "real"
+    current_order_id: str = ""
+    entry_order_id: str = ""
+    close_order_id: str = ""
+    order_chain: List[Dict[str, Any]] = Field(default_factory=list)
+    broker_position_volume: int = 0
+    simulated_position_volume: int = 0
+    broker_active_order_ids: List[str] = Field(default_factory=list)
+    reconcile_ok: bool = False
+    simulation_state: str = "migration_in_progress"
+    simulation_prepare_allowed: bool = False
+    failure_code: str = ""
+    rate_limit_remaining: int = 0
+    rate_limit_retry_after_seconds: float = 0.0
+    hold_deadline_at: str = ""
+    runtime_environment: str = ""
+    simulation_environment_allowed: bool = False
     connected: bool = False
     gateway_status: str = "stopped"
     strategy_id: str = ""

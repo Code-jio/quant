@@ -379,6 +379,19 @@ class TradingState:
             _install_hook_on_engine(engine)
         logger.info("[API] 主引擎已设置")
 
+    def main_config_snapshot(self) -> Dict[str, str]:
+        """Return the non-secret settings used by the successful gateway login."""
+        with self._lock:
+            config = dict(self._main_config)
+        return {
+            "gateway": str(config.get("gateway") or ""),
+            "environment": str(
+                config.get("vnpy_environment") or config.get("environment") or ""
+            ),
+            "td_server": str(config.get("td_server") or ""),
+            "md_server": str(config.get("md_server") or ""),
+        }
+
     def clear_main(self):
         """断开并清理主引擎"""
         with self._lock:
