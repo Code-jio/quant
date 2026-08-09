@@ -26,7 +26,14 @@ from .order_manager import OrderManager, PreOrder
 from .risk import RiskManager
 from .bar_aggregator import BarAggregator
 from .symbols import symbol_key, symbols_match
-from .trial_run_execution import TrialRunExecutionState
+from .trial_run_execution import TrialRunExecutionState, TrialRunOutcome
+from .execution_adapter import (
+    GatewayExecutionAdapter,
+    SimulationFillResult,
+    SimulationLedgerError,
+    TrialRunSimulationAdapter,
+    TrialRunSimulationLedger,
+)
 from ..common.exceptions import ExceptionHandler
 
 
@@ -38,6 +45,11 @@ class TradingEngine:
         self._monotonic = monotonic_clock or clock or time.monotonic
         self.strategy = None
         self.trial_run_execution: Optional[TrialRunExecutionState] = None
+        self._gateway_execution_adapter = GatewayExecutionAdapter(self)
+        self.strategy_execution_adapter = self._gateway_execution_adapter
+        self.simulation_adapter: Optional[TrialRunSimulationAdapter] = None
+        self._simulation_source_order_id = ""
+        self._simulation_requested = False
         self._trial_bound_strategy = None
         self._trial_submission_lock = threading.RLock()
         self._strategy_callback_lock = threading.RLock()
@@ -84,7 +96,209 @@ class TradingEngine:
             self.strategy = strategy
             self._processed_signal_count = len(getattr(strategy, "signals", []))
         if hasattr(strategy, "set_position_source"):
-            strategy.set_position_source(self.gateway.positions)
+            source = (
+                self.simulation_adapter.positions
+                if self.simulation_adapter is not None
+                else self.gateway.positions
+            )
+            strategy.set_position_source(source)
+
+    def begin_simulation_request(self, source_order_id: str) -> bool:
+        """Freeze real-order chasing before the broker cancel is requested."""
+        source_order_id = str(source_order_id or "")
+        with self._strategy_callback_lock:
+            with self._trial_submission_lock:
+                execution = self.trial_run_execution
+                strategy = self.strategy
+                if execution is None or strategy is None:
+                    raise RuntimeError("trial_execution_unbound")
+                can_prepare = getattr(strategy, "can_prepare_simulated_entry", None)
+                if not callable(can_prepare) or not can_prepare(source_order_id):
+                    raise RuntimeError("simulation_entry_not_current")
+                execution.request_simulation(source_order_id)
+                already_requested = bool(
+                    strategy.request_simulation_cancel(source_order_id)
+                )
+                self._simulation_source_order_id = source_order_id
+                self._simulation_requested = True
+                return already_requested
+
+    def rollback_simulation_request(self, source_order_id: str) -> None:
+        """Undo the transition marker when no broker cancel was sent."""
+        source_order_id = str(source_order_id or "")
+        with self._strategy_callback_lock:
+            with self._trial_submission_lock:
+                execution = self.trial_run_execution
+                strategy = self.strategy
+                if execution is not None:
+                    execution.cancel_simulation_request(source_order_id)
+                rollback = getattr(strategy, "rollback_simulation_cancel", None)
+                if callable(rollback):
+                    rollback(source_order_id)
+                self._simulation_source_order_id = ""
+                self._simulation_requested = False
+
+    def activate_simulation(
+        self,
+        ledger: TrialRunSimulationLedger,
+        *,
+        source_order_id: str = "",
+    ) -> TrialRunSimulationAdapter:
+        """Switch execution and strategy position reads after reconciliation."""
+        synthetic_id = ledger.current_order_id
+        synthetic_order = ledger.get_order(synthetic_id) if synthetic_id else None
+        if synthetic_order is None or not source_order_id:
+            raise RuntimeError("simulation_entry_missing")
+        adapter = TrialRunSimulationAdapter(
+            ledger,
+            on_fill=self._on_simulation_fill,
+            on_cancel=self._on_simulation_cancel,
+        )
+        with self._strategy_callback_lock:
+            with self._trial_submission_lock:
+                execution = self.trial_run_execution
+                strategy = self.strategy
+                if execution is None or strategy is None:
+                    raise RuntimeError("trial_execution_unbound")
+                if self._trial_submission_in_flight or self._trial_run_stopping:
+                    raise RuntimeError("trial_submission_in_flight")
+                if execution.real_trade_ids:
+                    raise RuntimeError("real_fill_prevents_simulation")
+                can_prepare = getattr(strategy, "can_prepare_simulated_entry", None)
+                if not callable(can_prepare) or not can_prepare(source_order_id):
+                    raise RuntimeError("simulation_entry_not_current")
+                execution.record_simulated_submission(
+                    synthetic_order.order_id,
+                    "entry",
+                    float(synthetic_order.price),
+                    synthetic_order.direction.value,
+                    synthetic_order.offset.value,
+                    source_order_id=source_order_id,
+                    symbol=synthetic_order.symbol,
+                    volume=synthetic_order.volume,
+                )
+                prepare_entry = getattr(strategy, "prepare_simulated_entry", None)
+                prepared = bool(
+                    callable(prepare_entry)
+                    and prepare_entry(
+                    source_order_id,
+                    synthetic_order_id=synthetic_id,
+                    synthetic_price=float(getattr(synthetic_order, "price", 0.0) or 0.0),
+                    synthetic_direction=getattr(
+                        getattr(synthetic_order, "direction", None),
+                        "value",
+                        getattr(synthetic_order, "direction", "long"),
+                    ),
+                    synthetic_volume=int(getattr(synthetic_order, "volume", 1) or 0),
+                )
+                )
+                if not prepared:
+                    execution.mark_failed(
+                        "simulation_evidence_conflict",
+                        "strategy_rejected_simulation_entry",
+                    )
+                    raise RuntimeError("simulation_entry_not_current")
+                self.simulation_adapter = adapter
+                self.strategy_execution_adapter = adapter
+                self._simulation_source_order_id = str(source_order_id)
+                self._simulation_requested = True
+                set_source = getattr(strategy, "set_position_source", None)
+                if callable(set_source):
+                    set_source(ledger.positions)
+        return adapter
+
+    def disable_simulation(self) -> None:
+        """Restore broker execution after a simulation-track failure."""
+        with self._strategy_callback_lock:
+            with self._trial_submission_lock:
+                self.simulation_adapter = None
+                self.strategy_execution_adapter = self._gateway_execution_adapter
+                strategy = self.strategy
+            if strategy is not None:
+                set_source = getattr(strategy, "set_position_source", None)
+                if callable(set_source):
+                    set_source(self.gateway.positions)
+
+    def clear_simulation_context(self) -> None:
+        """Remove an inactive run's adapter and migration identifiers."""
+        self.disable_simulation()
+        with self._trial_submission_lock:
+            self._simulation_source_order_id = ""
+            self._simulation_requested = False
+
+    def _on_simulation_fill(self, result: SimulationFillResult) -> None:
+        try:
+            with self._strategy_callback_lock:
+                with self._trial_submission_lock:
+                    execution = self.trial_run_execution
+                    strategy = self.strategy
+                    if execution is None or self.simulation_adapter is None:
+                        raise RuntimeError("simulation_not_ready")
+                    if result.order.offset.value == "open":
+                        execution.record_simulated_entry(
+                            result.order.order_id,
+                            result.trade.trade_id,
+                            result.trade.price,
+                            symbol=result.order.symbol,
+                            volume=result.order.volume,
+                            direction=result.order.direction.value,
+                            offset=result.order.offset.value,
+                        )
+                    else:
+                        execution.record_simulated_close(
+                            result.order.order_id,
+                            result.trade.trade_id,
+                            result.trade.price,
+                            symbol=result.order.symbol,
+                            volume=result.order.volume,
+                            direction=result.order.direction.value,
+                            offset=result.order.offset.value,
+                        )
+                if strategy is None:
+                    raise RuntimeError("trial_strategy_missing")
+                strategy.update_position(result.trade.symbol, result.trade)
+                strategy.on_trade(result.trade)
+        except Exception as exc:
+            self._mark_trial_execution_failed(
+                "simulation_evidence_conflict",
+                type(exc).__name__,
+                execution=self.trial_run_execution,
+            )
+            self.disable_simulation()
+            raise SimulationLedgerError("simulation_evidence_conflict") from exc
+
+    def _on_simulation_cancel(self, order: 'Order') -> None:
+        try:
+            with self._strategy_callback_lock:
+                with self._trial_submission_lock:
+                    execution = self.trial_run_execution
+                    strategy = self.strategy
+                    if execution is None or self.simulation_adapter is None:
+                        raise RuntimeError("simulation_not_ready")
+                    execution.record_simulated_order_update(
+                        order.order_id,
+                        "cancelled",
+                        symbol=order.symbol,
+                        volume=order.volume,
+                        direction=order.direction.value,
+                    )
+                if strategy is not None:
+                    cancel_confirmed = getattr(strategy, "on_chase_cancel_confirmed", None)
+                    if callable(cancel_confirmed):
+                        cancel_confirmed(
+                            order.order_id,
+                            quote_sequence=self._last_strategy_tick_sequence,
+                            market=self._last_strategy_tick,
+                        )
+                    strategy.on_order(order)
+        except Exception as exc:
+            self._mark_trial_execution_failed(
+                "simulation_evidence_conflict",
+                type(exc).__name__,
+                execution=self.trial_run_execution,
+            )
+            self.disable_simulation()
+            raise SimulationLedgerError("simulation_evidence_conflict") from exc
 
     def clear_strategy(self, expected_strategy: Any = None) -> bool:
         with self._strategy_callback_lock:
@@ -141,7 +355,7 @@ class TradingEngine:
             self._trial_shutdown_cancel_requested_order_ids.add(order_id)
         if already_requested:
             return True
-        if self.cancel_order(order_id):
+        if self._cancel_strategy_order(order_id):
             return True
         with self._trial_submission_lock:
             self._trial_shutdown_cancel_requested_order_ids.discard(order_id)
@@ -286,7 +500,11 @@ class TradingEngine:
             return False
 
     def send_signal(self, signal: 'Signal') -> str:
-        """发送交易信号"""
+        """Send a manual or external signal through the real broker path."""
+        return self._send_gateway_signal(signal)
+
+    def _send_gateway_signal(self, signal: 'Signal') -> str:
+        """Send a real signal through the existing risk and gateway path."""
         with self._signal_submission_lock:
             self.last_reject_reason = ""
             if self._signal_submission_in_flight:
@@ -329,7 +547,19 @@ class TradingEngine:
                 self._signal_submission_in_flight = False
 
     def cancel_order(self, order_id: str) -> bool:
-        """撤销订单"""
+        """Cancel a manual or external order through the real broker path."""
+        return self._cancel_gateway_order(order_id)
+
+    def _cancel_strategy_order(self, order_id: str) -> bool:
+        """Cancel only the bound strategy order through its selected adapter."""
+        try:
+            return self.strategy_execution_adapter.cancel(order_id)
+        except Exception as e:
+            logger.error(f"撤销策略订单失败: {e}")
+            return False
+
+    def _cancel_gateway_order(self, order_id: str) -> bool:
+        """Request a real broker cancellation; callback confirmation is separate."""
         try:
             return self.order_manager.cancel_order(order_id)
         except Exception as e:
@@ -592,6 +822,8 @@ class TradingEngine:
                 if self.strategy is not None and self.strategy is self._trial_bound_strategy:
                     raise RuntimeError("trial_execution_unbound")
                 return False
+            if self.trial_run_execution.final_outcome is not TrialRunOutcome.RUNNING:
+                raise RuntimeError("trial_execution_terminal")
             if self._trial_submission_in_flight:
                 self._mark_trial_execution_failed(
                     "order_chain_registration_failed",
@@ -639,7 +871,12 @@ class TradingEngine:
                 reject_callback(str(exc))
             return ""
         try:
-            order_id = self.send_signal(signal)
+            adapter = self.strategy_execution_adapter
+            try:
+                order_id = adapter.submit(signal)
+            except Exception as exc:
+                self.last_reject_reason = str(exc) or type(exc).__name__
+                order_id = ""
             if not order_id:
                 reject_callback = getattr(self.strategy, "mark_signal_rejected", None)
                 if callable(reject_callback):
@@ -652,7 +889,41 @@ class TradingEngine:
                 )
                 return ""
             metadata = self._notify_strategy_signal_submitted(signal, order_id)
-            if not self._record_trial_submission(signal, order_id, metadata):
+            if getattr(adapter, "is_simulation", False):
+                execution = self.trial_run_execution
+                synthetic_order = adapter.get_order(order_id)
+                if execution is None or synthetic_order is None:
+                    self._mark_trial_execution_failed(
+                        "simulation_evidence_conflict",
+                        "synthetic_order_missing_after_submission",
+                        execution=execution,
+                    )
+                    return ""
+                try:
+                    execution.record_simulated_submission(
+                        order_id,
+                        str(metadata.get("role") or ""),
+                        float(getattr(synthetic_order, "price", 0.0) or 0.0),
+                        synthetic_order.direction.value,
+                        synthetic_order.offset.value,
+                        source_order_id=self._simulation_source_order_id,
+                        attempt=int(metadata.get("attempt", 0) or 0),
+                        parent_order_id=str(metadata.get("parent_order_id") or ""),
+                        symbol=synthetic_order.symbol,
+                        volume=synthetic_order.volume,
+                    )
+                except Exception as exc:
+                    try:
+                        adapter.cancel(order_id)
+                    except Exception:
+                        pass
+                    self._mark_trial_execution_failed(
+                        "simulation_evidence_conflict",
+                        type(exc).__name__,
+                        execution=execution,
+                    )
+                    return ""
+            elif not self._record_trial_submission(signal, order_id, metadata):
                 return ""
             return order_id
         finally:
@@ -772,7 +1043,7 @@ class TradingEngine:
             order_id = str(action.get("order_id") or "")
             if not order_id:
                 return
-            if not self.cancel_order(order_id):
+            if not self._cancel_strategy_order(order_id):
                 with self._strategy_callback_lock:
                     failed = getattr(strategy, "on_chase_cancel_failed", None)
                     if callable(failed):
@@ -873,7 +1144,7 @@ class TradingEngine:
                 logger.error("Trial-run order evidence rejected for %s: %s", order_id, exc)
                 current_order_id = execution.current_order_id
                 if current_order_id:
-                    self.cancel_order(current_order_id)
+                    self._cancel_strategy_order(current_order_id)
                 self._mark_trial_execution_failed(
                     "order_evidence_conflict",
                     f"order_id={order_id}:{type(exc).__name__}",
@@ -916,6 +1187,24 @@ class TradingEngine:
             strategy = self.strategy
             untracked_order = order_id in self._untracked_trial_order_ids
         if execution is not None:
+            if self.simulation_adapter is not None and execution.owns_order(order_id):
+                try:
+                    execution.record_late_real_fill_conflict(
+                        order_id=order_id,
+                        trade_id=str(getattr(trade, "trade_id", "") or ""),
+                        symbol=getattr(trade, "symbol", None),
+                        volume=int(getattr(trade, "volume", 1) or 0),
+                        direction=getattr(trade, "direction", None),
+                    )
+                except Exception as exc:
+                    logger.error("Late real fill evidence could not be recorded: %s", exc)
+                    self._mark_trial_execution_failed(
+                        "late_real_fill_conflict",
+                        f"order_id={order_id}:{type(exc).__name__}",
+                        execution=execution,
+                    )
+                self.disable_simulation()
+                return
             if not execution.owns_order(order_id) and not untracked_order:
                 return
             if untracked_order:
@@ -938,7 +1227,7 @@ class TradingEngine:
                     logger.error("Trial-run trade evidence rejected for %s: %s", order_id, exc)
                     current_order_id = execution.current_order_id
                     if current_order_id:
-                        self.cancel_order(current_order_id)
+                        self._cancel_strategy_order(current_order_id)
                     self._mark_trial_execution_failed(
                         "trade_evidence_conflict",
                         f"order_id={order_id}:{type(exc).__name__}",
@@ -949,7 +1238,7 @@ class TradingEngine:
                         reject_callback("trade_evidence_conflict")
                     return
                 if current_order_id and current_order_id != order_id:
-                    if not self.cancel_order(current_order_id):
+                    if not self._cancel_strategy_order(current_order_id):
                         self._mark_trial_execution_failed(
                             "late_fill_cancel_failed",
                             f"filled_order={order_id}:active_order={current_order_id}",

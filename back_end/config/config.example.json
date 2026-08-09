@@ -8,8 +8,8 @@
     "allowed_symbol": "rb2610",
     "manual_open_enabled": false,
     "auto_arm": true,
-    "no_fill_timeout_seconds": 10,
-    "simulate_fill_enabled": true,
+    "no_fill_timeout_seconds": 2,
+    "simulate_fill_enabled": false,
     "bar_timeout_seconds": 90
   },
   "backtest": {

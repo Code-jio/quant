@@ -16,10 +16,12 @@ from fastapi import FastAPI, HTTPException, Request
 
 from ..trading import TradingStatus
 from ..trading.symbols import is_supported_symbol, symbol_key, symbols_match
+from ..trading.execution_adapter import TrialRunSimulationLedger, SimulationLedgerError
 from ..trading.trial_run_execution import TrialRunExecutionState
 from .models import (
     TrialRunActionResponse,
     TrialRunConfigResponse,
+    TrialRunSimulationPrepareRequest,
     TrialRunSimulateFillRequest,
     TrialRunSimulateFillResponse,
     TrialRunStatusResponse,
@@ -792,14 +794,95 @@ def _active_order_wait_seconds(engine: Any, symbol: str) -> float:
     return round(_order_age_seconds(order), 1)
 
 
-def _has_fresh_reconciliation(gateway: Any, max_age_seconds: float = 15.0) -> bool:
+def _has_fresh_reconciliation(
+    gateway: Any,
+    max_age_seconds: float = 15.0,
+    monotonic_clock: Optional[Callable[[], float]] = None,
+) -> bool:
     snapshot = getattr(gateway, "last_reconciliation", {}) if gateway is not None else {}
     if not isinstance(snapshot, dict):
         return False
     if snapshot.get("ok") is not True or snapshot.get("fresh") is not True:
         return False
     refreshed = _float_value(snapshot.get("refreshed_monotonic"), 0.0)
-    return refreshed > 0 and time.monotonic() - refreshed <= max_age_seconds
+    now = monotonic_clock() if callable(monotonic_clock) else time.monotonic()
+    age = now - refreshed
+    return refreshed > 0 and 0 <= age <= max_age_seconds
+
+
+def _execution_order(execution: Dict[str, Any], order_id: str) -> Dict[str, Any]:
+    return next(
+        (
+            item
+            for item in execution.get("order_chain", [])
+            if str(item.get("order_id") or "") == str(order_id or "")
+        ),
+        {},
+    )
+
+
+def _simulation_prepare_allowed(
+    engine: Any,
+    strategy: Any,
+    execution: Dict[str, Any],
+    source_order_id: str,
+    timeout_seconds: float,
+) -> bool:
+    if not engine or not strategy or not source_order_id:
+        return False
+    if getattr(engine, "simulation_adapter", None) is not None:
+        return False
+    if str(getattr(engine, "_simulation_source_order_id", "") or ""):
+        return False
+    if str(execution.get("current_order_id") or "") != str(source_order_id):
+        return False
+    if execution.get("real_trade_ids"):
+        return False
+    if execution.get("real_submission_proof") is not True:
+        return False
+    order = _execution_order(execution, source_order_id)
+    if not order or order.get("track") != "real":
+        return False
+    if str(order.get("status") or "").lower() not in {
+        "submitting",
+        "submitted",
+        "accepted",
+        "broker_accepted",
+    }:
+        return False
+    broker_gateway = getattr(engine, "gateway", None)
+    broker_orders = getattr(broker_gateway, "orders", {}) if broker_gateway is not None else {}
+    broker_order = broker_orders.get(source_order_id) if isinstance(broker_orders, dict) else None
+    if broker_order is None:
+        return False
+    if not _symbols_match(getattr(broker_order, "symbol", ""), execution.get("symbol", "")):
+        return False
+    if _int_value(getattr(broker_order, "volume", 0)) != 1:
+        return False
+    if _int_value(getattr(broker_order, "traded_volume", 0)) != 0:
+        return False
+    broker_status = str(
+        _enum_value(getattr(broker_order, "status", "")) or ""
+    ).strip().lower()
+    broker_active_statuses = {
+        "submitting",
+        "submitted",
+        "accepted",
+        "broker_accepted",
+    }
+    chase_cancel_pending = str(
+        getattr(strategy, "_chase_pending_cancel_order_id", "") or ""
+    ) == source_order_id
+    if broker_status not in broker_active_statuses and not (
+        broker_status in {"cancelled", "canceled"} and chase_cancel_pending
+    ):
+        return False
+    metadata = getattr(strategy, "_order_ownership", {}).get(source_order_id, {})
+    submitted = metadata.get("submitted_monotonic")
+    if submitted is None:
+        return False
+    age = max(0.0, float(getattr(engine, "_monotonic", time.monotonic)()) - float(submitted))
+    return age >= float(timeout_seconds)
 
 
 def _status_response(trading_state: Any) -> TrialRunStatusResponse:
@@ -831,15 +914,47 @@ def _status_response(trading_state: Any) -> TrialRunStatusResponse:
     trial_config = _dict_section(config, "trial_run")
     auto_arm = _bool_value(trial_config.get("auto_arm"), True)
     bar_timeout_seconds = max(1.0, _float_value(trial_config.get("bar_timeout_seconds"), 90.0))
-    no_fill_timeout_seconds = max(1.0, _float_value(trial_config.get("no_fill_timeout_seconds"), 10.0))
+    no_fill_timeout_seconds = max(1.0, _float_value(trial_config.get("no_fill_timeout_seconds"), 2.0))
     simulate_fill_enabled = _bool_value(trial_config.get("simulate_fill_enabled"), False)
     runtime_config = trading_state.main_config_snapshot()
     simulation_environment_allowed = bool(
         config_valid and _simulation_environment_allowed(config, runtime_config)
     )
-    # Task 1 deliberately keeps the legacy mutation endpoint closed until the
-    # isolated ledger and reconciliation handshake are installed in Task 4.
-    simulate_fill_allowed = False
+    simulate_fill_enabled = bool(
+        simulate_fill_enabled and simulation_environment_allowed
+    )
+    engine_execution = getattr(engine, "trial_run_execution", None) if engine is not None else None
+    source_order_id = str(getattr(engine, "_simulation_source_order_id", "") or "") if engine is not None else ""
+    simulation_requested = bool(getattr(engine, "_simulation_requested", False)) if engine is not None else False
+    simulation_adapter = getattr(engine, "simulation_adapter", None) if engine is not None else None
+    simulation_state = str(
+        getattr(engine_execution, "simulation_state", "")
+        or ("cancel_pending" if simulation_requested else "not_started")
+    )
+    if simulation_adapter is not None:
+        simulation_state = str(getattr(engine_execution, "simulation_state", "ready") or "ready")
+    prepare_source = source_order_id or str(execution.get("current_order_id") or "")
+    simulation_prepare_allowed = bool(
+        simulate_fill_enabled
+        and _simulation_prepare_allowed(
+            engine,
+            strategy,
+            execution,
+            prepare_source,
+            no_fill_timeout_seconds,
+        )
+    )
+    simulation_current_order_id = str(
+        getattr(getattr(simulation_adapter, "ledger", None), "current_order_id", "") or ""
+    )
+    simulate_fill_allowed = bool(
+        simulate_fill_enabled
+        and simulation_adapter is not None
+        and simulation_current_order_id
+        and str(execution.get("current_order_id") or "")
+        == simulation_current_order_id
+        and str(execution.get("final_outcome") or "running") == "running"
+    )
     snapshot_state = str(snapshot.get("state") or "")
     base_authorized = bool(snapshot.get("authorized", state["authorized"]))
     auto_authorized = auto_arm and entry is not None and snapshot_state not in {"error", "completed"}
@@ -992,14 +1107,17 @@ def _status_response(trading_state: Any) -> TrialRunStatusResponse:
         broker_active_order_ids=broker_active_order_ids,
         reconcile_ok=bool(
             connected
-            and _has_fresh_reconciliation(gateway)
+            and _has_fresh_reconciliation(
+                gateway,
+                monotonic_clock=getattr(engine, "_monotonic", None) if engine is not None else None,
+            )
             and broker_position_volume == 0
             and not broker_active_order_ids
         ),
         rate_limit_remaining=_int_value(risk.get("rate_limit_remaining", 0)),
         rate_limit_retry_after_seconds=float(risk.get("rate_limit_retry_after_seconds", 0.0) or 0.0),
-        simulation_state="migration_in_progress",
-        simulation_prepare_allowed=False,
+        simulation_state=simulation_state,
+        simulation_prepare_allowed=simulation_prepare_allowed,
         failure_code=str(execution.get("failure_code") or ""),
         runtime_environment=str(runtime_config.get("environment") or ""),
         simulation_environment_allowed=simulation_environment_allowed,
@@ -1214,6 +1332,10 @@ def _stop_trial_strategy(trading_state: Any, *, reset: bool = False) -> None:
                 "message": "试运行订单状态尚未完全收敛，不能解绑执行链",
             },
         )
+
+    clear_simulation = getattr(engine, "clear_simulation_context", None)
+    if callable(clear_simulation):
+        clear_simulation()
 
     try:
         strategy.on_stop()
@@ -1441,27 +1563,285 @@ def register_trial_run_routes(
         return _start_trial_run(request, action="arm")
 
     @app.post(
+        "/trial-run/simulation/prepare",
+        response_model=TrialRunActionResponse,
+        summary="Prepare the isolated simulation ledger",
+        tags=["trial-run"],
+    )
+    @_exclusive_trial_prepare
+    def prepare_trial_run_simulation(
+        body: TrialRunSimulationPrepareRequest,
+        request: Request,
+    ):
+        try:
+            _, config, _, errors = _read_trial_config(allow_example=True)
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail={"failure_code": "trial_run_config_invalid", "message": str(exc)}) from exc
+        runtime_config = trading_state.main_config_snapshot()
+        if errors or not _simulate_fill_enabled(config, runtime_config):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "failure_code": "simulation_environment_not_allowed",
+                    "message": "模拟账本仅允许在配置与运行时均为测试或仿真环境时启用",
+                },
+            )
+        engine = trading_state.primary_engine()
+        entry = trading_state.get(TRIAL_STRATEGY_ID)
+        strategy = getattr(entry, "strategy", None) if entry else None
+        execution = getattr(engine, "trial_run_execution", None) if engine is not None else None
+        source_order_id = str(body.source_order_id or "")
+        if engine is None or strategy is None or execution is None:
+            raise HTTPException(
+                status_code=409,
+                detail={"failure_code": "trial_run_not_ready", "message": "试运行执行域尚未准备"},
+            )
+
+        existing_source = str(getattr(engine, "_simulation_source_order_id", "") or "")
+        if getattr(engine, "simulation_adapter", None) is not None:
+            if source_order_id != existing_source:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"failure_code": "order_not_current", "message": "模拟账本已绑定其他源订单"},
+                )
+            return _action_response(trading_state, "simulation_prepare", "模拟账本已准备")
+
+        source = next(
+            (order for order in execution.order_chain if order.order_id == source_order_id),
+            None,
+        )
+        if source is None:
+            raise HTTPException(
+                status_code=409,
+                detail={"failure_code": "order_not_owned_by_trial_run", "message": "源订单不属于当前试运行"},
+            )
+
+        if existing_source and source_order_id != existing_source:
+            raise HTTPException(
+                status_code=409,
+                detail={"failure_code": "order_not_current", "message": "源订单不是当前模拟迁移订单"},
+            )
+
+        if not existing_source:
+            allowed = _simulation_prepare_allowed(
+                engine,
+                strategy,
+                execution.serialize(),
+                source_order_id,
+                max(1.0, _float_value(_dict_section(config, "trial_run").get("no_fill_timeout_seconds"), 2.0)),
+            )
+            if not allowed:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "failure_code": "simulation_prepare_not_allowed",
+                        "message": "真实订单尚未获得成交等待资格或已不再是当前订单",
+                    },
+                )
+            try:
+                already_chasing = engine.begin_simulation_request(source_order_id)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "failure_code": "simulation_prepare_not_allowed",
+                        "message": str(exc),
+                    },
+                ) from exc
+            if not already_chasing:
+                if not engine.cancel_order(source_order_id):
+                    latest_source = next(
+                        (
+                            order
+                            for order in execution.order_chain
+                            if order.order_id == source_order_id
+                        ),
+                        None,
+                    )
+                    if latest_source is None or str(latest_source.status).lower() not in {
+                        "cancelled",
+                        "canceled",
+                    }:
+                        engine.rollback_simulation_request(source_order_id)
+                        raise HTTPException(
+                            status_code=409,
+                            detail={"failure_code": "cancel_request_failed", "message": "券商撤单请求未发出"},
+                        )
+            trial_run_state.update(state="simulation_cancel_pending")
+            record_audit(
+                "trial_run",
+                "simulation_prepare",
+                "cancel_pending",
+                request=request,
+                resource=TRIAL_STRATEGY_ID,
+                detail={"source_order_id": source_order_id},
+            )
+            return _action_response(trading_state, "simulation_prepare", "等待券商撤单确认")
+
+        source_status = str(source.status).lower()
+        if source_status == "filled" or execution.real_trade_ids:
+            engine.rollback_simulation_request(source_order_id)
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "failure_code": "real_fill_prevents_simulation",
+                    "message": "真实委托已成交，继续按真实成交链路完成试运行",
+                },
+            )
+        if source_status in {"rejected", "failed"}:
+            engine.rollback_simulation_request(source_order_id)
+            try:
+                execution.mark_failed(
+                    "source_order_not_cancelled",
+                    f"source_status={source_status}",
+                )
+            except Exception:
+                pass
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "failure_code": "source_order_not_cancelled",
+                    "message": "源委托未取得券商撤单确认，不能迁移到模拟账本",
+                },
+            )
+        if source_status not in {"cancelled", "canceled"}:
+            return _action_response(trading_state, "simulation_prepare", "等待券商撤单确认", success=False)
+        gateway = getattr(engine, "gateway", None)
+        try:
+            reconciliation = gateway.refresh_reconciliation(timeout_seconds=8.0)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={"failure_code": "broker_snapshot_failed", "message": str(exc)},
+            ) from exc
+        if not isinstance(reconciliation, dict) or reconciliation.get("ok") is not True or reconciliation.get("fresh") is not True:
+            raise HTTPException(
+                status_code=409,
+                detail={"failure_code": "broker_snapshot_unavailable", "message": "等待新鲜券商对账快照"},
+            )
+        active_orders = _active_broker_orders(gateway, execution.symbol)
+        position_volume = _broker_position_volume(gateway, execution.symbol)
+        if active_orders or position_volume:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "failure_code": "broker_state_not_flat",
+                    "message": "撤单确认后目标合约仍有活动委托或持仓",
+                },
+            )
+        execution.evaluate(
+            broker_position_volume=position_volume,
+            broker_active_order_ids=[getattr(item, "order_id", "") for item in active_orders],
+            reconcile_ok=True,
+        )
+        ledger = TrialRunSimulationLedger()
+        try:
+            broker_order = next(
+                (
+                    item
+                    for item in getattr(gateway, "orders", {}).values()
+                    if getattr(item, "order_id", "") == source_order_id
+                ),
+                None,
+            )
+            if broker_order is None:
+                broker_order = next(
+                    (
+                        item
+                        for item in (gateway.query_orders() or [])
+                        if getattr(item, "order_id", "") == source_order_id
+                    ),
+                    None,
+                )
+            if broker_order is None:
+                raise SimulationLedgerError("order_not_owned_by_trial_run")
+            broker_status = str(
+                _enum_value(getattr(broker_order, "status", "")) or ""
+            ).strip().lower()
+            if broker_status not in {"cancelled", "canceled"}:
+                raise SimulationLedgerError("source_order_not_cancelled")
+            if _int_value(getattr(broker_order, "traded_volume", 0)) != 0:
+                raise SimulationLedgerError("real_fill_prevents_simulation")
+            ledger.create_entry_from_order(
+                copy.deepcopy(broker_order)
+            )
+        except (StopIteration, ValueError, SimulationLedgerError) as exc:
+            failure_code = getattr(exc, "failure_code", "simulation_entry_create_failed")
+            raise HTTPException(
+                status_code=409,
+                detail={"failure_code": failure_code, "message": str(exc)},
+            ) from exc
+        try:
+            engine.activate_simulation(ledger, source_order_id=source_order_id)
+        except Exception as exc:
+            failure_code = str(exc) or "simulation_activation_failed"
+            raise HTTPException(
+                status_code=409,
+                detail={"failure_code": failure_code, "message": str(exc)},
+            ) from exc
+        trial_run_state.update(state="simulation_ready", errors=[])
+        record_audit(
+            "trial_run",
+            "simulation_prepare",
+            "success",
+            request=request,
+            resource=TRIAL_STRATEGY_ID,
+            detail={"source_order_id": source_order_id, "current_order_id": ledger.current_order_id},
+        )
+        return _action_response(trading_state, "simulation_prepare", "隔离模拟账本已准备")
+
+    @app.post(
         "/trial-run/simulate-fill",
         response_model=TrialRunSimulateFillResponse,
         summary="Simulate a trial-run order fill",
         tags=["trial-run"],
     )
+    @_exclusive_trial_prepare
     def simulate_trial_run_fill(body: TrialRunSimulateFillRequest, request: Request):
-        del body
+        engine = trading_state.primary_engine()
+        entry = trading_state.get(TRIAL_STRATEGY_ID)
+        execution = getattr(engine, "trial_run_execution", None) if engine is not None else None
+        adapter = getattr(engine, "simulation_adapter", None) if engine is not None else None
+        try:
+            _, config, _, errors = _read_trial_config(allow_example=True)
+        except Exception as exc:
+            errors = [str(exc)]
+            config = {}
+        if errors or not _simulate_fill_enabled(config, trading_state.main_config_snapshot()):
+            failure_code = "simulation_environment_not_allowed"
+            raise HTTPException(status_code=409, detail={"failure_code": failure_code, "message": "模拟成交未启用"})
+        if execution is None or entry is None or adapter is None or not getattr(adapter, "is_simulation", False):
+            raise HTTPException(
+                status_code=409,
+                detail={"failure_code": "simulation_not_ready", "message": "隔离模拟账本尚未准备"},
+            )
+        if str(body.order_id or "") != str(execution.current_order_id or ""):
+            raise HTTPException(
+                status_code=409,
+                detail={"failure_code": "order_not_current", "message": "只能成交当前模拟订单"},
+            )
+        try:
+            result = adapter.fill(body.order_id)
+        except (SimulationLedgerError, RuntimeError) as exc:
+            failure_code = getattr(exc, "failure_code", "simulation_evidence_conflict")
+            raise HTTPException(
+                status_code=409,
+                detail={"failure_code": failure_code, "message": str(exc)},
+            ) from exc
         record_audit(
             "trial_run",
             "simulate_fill",
-            "rejected",
+            "success",
             request=request,
             resource=TRIAL_STRATEGY_ID,
-            detail={"failure_code": "simulation_migration_in_progress"},
+            detail={"order_id": body.order_id, "trade_id": result.trade.trade_id},
         )
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "failure_code": "simulation_migration_in_progress",
-                "message": "隔离模拟账本尚未启用",
-            },
+        return TrialRunSimulateFillResponse(
+            success=True,
+            message="模拟成交已记录",
+            order=copy.deepcopy(result.order.__dict__),
+            trade=copy.deepcopy(result.trade.__dict__),
+            status=_status_response(trading_state),
         )
 
     @app.post(

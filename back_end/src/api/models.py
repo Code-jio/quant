@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class LoginRequest(BaseModel):
@@ -185,10 +185,14 @@ class TrialRunConfigResponse(BaseModel):
     errors: List[str] = Field(default_factory=list)
 
 
+class TrialRunSimulationPrepareRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_order_id: str = Field(min_length=1)
+
+
 class TrialRunSimulateFillRequest(BaseModel):
-    order_id: str = ""
-    price: Optional[float] = None
-    volume: Optional[int] = None
+    model_config = ConfigDict(extra="forbid")
+    order_id: str = Field(min_length=1)
 
 
 class TrialRunStatusResponse(BaseModel):
@@ -205,7 +209,7 @@ class TrialRunStatusResponse(BaseModel):
     simulated_position_volume: int = 0
     broker_active_order_ids: List[str] = Field(default_factory=list)
     reconcile_ok: bool = False
-    simulation_state: str = "migration_in_progress"
+    simulation_state: str = "not_started"
     simulation_prepare_allowed: bool = False
     failure_code: str = ""
     rate_limit_remaining: int = 0

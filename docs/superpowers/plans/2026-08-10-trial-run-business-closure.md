@@ -479,7 +479,7 @@ git commit -m "feat(trial-run): drive bounded chase from timer"
 - Replace: `back_end/tests/test_simulated_fill.py`
 - Test: `back_end/tests/test_trial_run_api.py`
 
-- [ ] **Step 1: Write the gateway-immutability test**
+- [x] **Step 1: Write the gateway-immutability test**
 
 Snapshot `gateway.orders` and `gateway.positions`, run a simulated entry fill, then assert both snapshots are unchanged while the simulation ledger holds one synthetic trade and one long position.
 
@@ -493,7 +493,7 @@ assert result.trade.trade_id.startswith("SIM-")
 assert ledger.position_volume("rb2610") == 1
 ```
 
-- [ ] **Step 2: Define the signal-execution adapter contract**
+- [x] **Step 2: Define the signal-execution adapter contract**
 
 Create:
 
@@ -511,7 +511,7 @@ class SignalExecutionAdapter(Protocol):
 
 The default engine behavior remains the gateway/order-manager path. A `TrialRunSimulationAdapter` stores synthetic orders, trades, and positions only in `TrialRunSimulationLedger`.
 
-- [ ] **Step 3: Add the simulation preparation API**
+- [x] **Step 3: Add the simulation preparation API**
 
 Add `POST /trial-run/simulation/prepare` with `{ "source_order_id": "R1" }`.
 
@@ -535,7 +535,7 @@ Set the checked-in trial configuration explicitly:
 - `trial_run.simulate_fill_enabled = true` in the current `config_production.json` only because both its trial and trading environment values are “仿真”;
 - retain the dual config/runtime non-production checks from Task 1, so changing either environment to production disables both preparation and fill without a restart-time loophole.
 
-- [ ] **Step 4: Switch execution only after reconciliation**
+- [x] **Step 4: Switch execution only after reconciliation**
 
 When simulation becomes ready:
 
@@ -548,11 +548,11 @@ Add `VerifyStrategy.prepare_simulated_entry(source_order_id)` so a cancellation 
 
 Any simulation-track failure immediately disables the simulation adapter and restores the gateway position source, while preserving the run evidence. Reset, stop, and logout may clear the run only when broker reconciliation is flat; otherwise Task 5's flatten guard takes precedence.
 
-- [ ] **Step 5: Reimplement `/trial-run/simulate-fill`**
+- [x] **Step 5: Reimplement `/trial-run/simulate-fill`**
 
 The request body is exactly `{ "order_id": "SIM-E-1" }`; configure the Pydantic request model with `extra="forbid"`. The operator cannot override volume, direction, fee, margin, or fill price, and extra fields return `422`. The endpoint accepts only the current synthetic order ID, maps Task 2 ownership errors to `409`, uses that order's stored limit price, updates the isolated ledger, then dispatches the synthetic trade through the same strategy callback order used by the engine. It must not call `gateway.on_order`, `gateway.on_trade`, or `gateway.on_position`.
 
-- [ ] **Step 6: Handle a late real fill conflict**
+- [x] **Step 6: Handle a late real fill conflict**
 
 If a real CTP trade for the canceled source order arrives after the adapter switch, set:
 
@@ -563,7 +563,7 @@ failure_code=late_real_fill_conflict
 
 Disable further simulated fills and require manual reconciliation.
 
-- [ ] **Step 7: Run Task 4 gate**
+- [x] **Step 7: Run Task 4 gate**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest back_end\tests\test_simulated_fill.py back_end\tests\test_trial_run_api.py back_end\tests\test_trading_engine_auto_strategy.py -q
@@ -571,7 +571,7 @@ Disable further simulated fills and require manual reconciliation.
 
 Expected: all tests pass; at least one test explicitly proves real gateway dictionaries are unchanged.
 
-- [ ] **Step 8: Commit Task 4**
+- [x] **Step 8: Commit Task 4**
 
 ```powershell
 git add back_end/src/trading/execution_adapter.py back_end/src/trading/simulated_fill.py back_end/src/trading/engine.py back_end/src/strategy/strategies/verify.py back_end/src/api/models.py back_end/src/api/trial_run.py back_end/config/config.example.json back_end/config/config_production.json back_end/tests/test_simulated_fill.py back_end/tests/test_trial_run_api.py back_end/tests/test_trading_engine_auto_strategy.py

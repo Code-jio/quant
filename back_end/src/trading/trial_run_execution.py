@@ -490,6 +490,165 @@ class TrialRunExecutionState:
         return updated
 
     @_synchronized
+    def request_simulation(self, source_order_id: str) -> TrialOrderAttempt:
+        """Record an operator request to migrate one unfilled real entry."""
+        self._ensure_mutable()
+        order = self._owned_order(source_order_id)
+        if (
+            order.track is not TrialRunTrack.REAL
+            or not _is_entry_role(order.role)
+            or self.current_order_id != source_order_id
+            or _canonical_order_status(order.status) in _TERMINAL_ORDER_STATUSES
+            or self.real_trade_ids
+        ):
+            raise TrialRunExecutionError("invalid_trial_transition")
+        self.simulation_state = "cancel_pending"
+        return order
+
+    @_synchronized
+    def cancel_simulation_request(self, source_order_id: str) -> TrialOrderAttempt:
+        """Restore real-track state when the broker cancel request was not sent."""
+        order = self._owned_order(source_order_id)
+        if order.track is not TrialRunTrack.REAL:
+            raise TrialRunExecutionError("invalid_trial_transition")
+        self.current_track = TrialRunTrack.REAL
+        self.simulation_state = "real_track"
+        return order
+
+    @_synchronized
+    def record_simulated_submission(
+        self,
+        order_id: str,
+        role: str,
+        price: float,
+        direction: str,
+        offset: str,
+        *,
+        source_order_id: str = "",
+        attempt: int = 0,
+        parent_order_id: str = "",
+        symbol: Optional[str] = None,
+        volume: int = 1,
+    ) -> TrialOrderAttempt:
+        """Register a pending synthetic entry or close before it can fill."""
+        self._prepare_mutation(symbol, volume)
+        normalized_role = _normalized_role(role)
+        if not (_is_entry_role(normalized_role) or _is_exit_role(normalized_role)):
+            raise TrialRunExecutionError("invalid_trial_transition")
+        if attempt < 0 or attempt > 5:
+            raise TrialRunExecutionError("invalid_trial_transition")
+
+        parent = None
+        if _is_entry_role(normalized_role):
+            source = self._owned_order(source_order_id)
+            if (
+                source.track is not TrialRunTrack.REAL
+                or not _is_entry_role(source.role)
+                or _canonical_order_status(source.status) != "cancelled"
+                or self.real_trade_ids
+                or self.simulated_entry_trade_id
+                or self.simulated_position_volume != 0
+            ):
+                raise TrialRunExecutionError("invalid_trial_transition")
+            if attempt == 0:
+                if self.simulated_entry_order_id or parent_order_id:
+                    raise TrialRunExecutionError("invalid_trial_transition")
+                parent_order_id = source.order_id
+            else:
+                parent = self._find_order(parent_order_id)
+                if (
+                    parent is None
+                    or parent.track is not TrialRunTrack.SIMULATED
+                    or not _is_entry_role(parent.role)
+                    or _canonical_order_status(parent.status) != "cancelled"
+                    or parent.order_id != self.entry_order_id
+                    or attempt != parent.attempt + 1
+                ):
+                    raise TrialRunExecutionError("invalid_trial_transition")
+        else:
+            if not self.simulated_entry_trade_id or self.simulated_position_volume != 1:
+                raise TrialRunExecutionError("invalid_trial_transition")
+            if attempt == 0:
+                if self.simulated_close_order_id or parent_order_id:
+                    raise TrialRunExecutionError("invalid_trial_transition")
+                parent_order_id = self.simulated_entry_order_id
+            else:
+                parent = self._find_order(parent_order_id)
+                if (
+                    parent is None
+                    or parent.track is not TrialRunTrack.SIMULATED
+                    or not _is_exit_role(parent.role)
+                    or _canonical_order_status(parent.status) != "cancelled"
+                    or parent.order_id != self.close_order_id
+                    or attempt != parent.attempt + 1
+                ):
+                    raise TrialRunExecutionError("invalid_trial_transition")
+
+        if parent is not None and (
+            _normalized_enum_value(direction) != _normalized_enum_value(parent.direction)
+            or _normalized_enum_value(offset) != _normalized_enum_value(parent.offset)
+        ):
+            raise TrialRunExecutionError("invalid_trial_transition")
+
+        order = self._append_order(
+            order_id=order_id,
+            role=normalized_role,
+            track=TrialRunTrack.SIMULATED,
+            attempt=attempt,
+            parent_order_id=parent_order_id,
+            symbol=self.symbol if symbol is None else str(symbol).strip(),
+            direction=direction,
+            offset=offset,
+            price=price,
+            status="submitted",
+        )
+        if _is_entry_role(order.role):
+            if not self.simulated_entry_order_id:
+                self.simulated_entry_order_id = order.order_id
+            self.entry_order_id = order.order_id
+        else:
+            if not self.simulated_close_order_id:
+                self.simulated_close_order_id = order.order_id
+            self.close_order_id = order.order_id
+        self.current_order_id = order.order_id
+        self.current_track = TrialRunTrack.SIMULATED
+        self.simulation_state = "ready" if _is_entry_role(order.role) else "closing"
+        return order
+
+    @_synchronized
+    def record_simulated_order_update(
+        self,
+        order_id: str,
+        status: str,
+        *,
+        symbol: Optional[str] = None,
+        volume: int = 1,
+        direction: Optional[str] = None,
+    ) -> TrialOrderAttempt:
+        self._prepare_mutation(symbol, volume)
+        order = self._owned_order(order_id)
+        if order.track is not TrialRunTrack.SIMULATED:
+            raise TrialRunExecutionError("invalid_trial_transition")
+        status_value = _canonical_order_status(status)
+        if status_value not in {"submitted", "cancelled", "filled"}:
+            raise TrialRunExecutionError("invalid_trial_transition")
+        if (
+            direction is not None
+            and _normalized_enum_value(direction) != _normalized_enum_value(order.direction)
+        ):
+            raise TrialRunExecutionError("invalid_trial_transition")
+        old_status = _canonical_order_status(order.status)
+        if old_status in _TERMINAL_ORDER_STATUSES and status_value != old_status:
+            raise TrialRunExecutionError("invalid_trial_transition")
+        updated = replace(order, status=status_value, updated_at=_now())
+        self.order_chain[self.order_chain.index(order)] = updated
+        if status_value in _TERMINAL_ORDER_STATUSES and self.current_order_id == order_id:
+            self.current_order_id = ""
+        if status_value == "cancelled":
+            self.simulation_state = "cancelled"
+        return updated
+
+    @_synchronized
     def record_simulated_entry(
         self,
         order_id: str,
@@ -504,23 +663,38 @@ class TrialRunExecutionState:
         self._prepare_mutation(symbol, volume)
         if self.simulated_entry_trade_id or self.simulated_position_volume != 0:
             raise TrialRunExecutionError("invalid_trial_transition")
-        order = self._append_order(
-            order_id=order_id,
-            role="entry",
-            track=TrialRunTrack.SIMULATED,
-            attempt=0,
-            parent_order_id="",
-            symbol=self.symbol if symbol is None else str(symbol).strip(),
-            direction=direction,
-            offset=offset,
-            price=price,
-            status="filled",
-        )
+        order = self._find_order(order_id)
+        if order is None:
+            order = self._append_order(
+                order_id=order_id,
+                role="entry",
+                track=TrialRunTrack.SIMULATED,
+                attempt=0,
+                parent_order_id="",
+                symbol=self.symbol if symbol is None else str(symbol).strip(),
+                direction=direction,
+                offset=offset,
+                price=price,
+                status="filled",
+            )
+        else:
+            if (
+                order.track is not TrialRunTrack.SIMULATED
+                or not _is_entry_role(order.role)
+                or _canonical_order_status(order.status) != "submitted"
+                or _normalized_enum_value(direction) != _normalized_enum_value(order.direction)
+                or _normalized_enum_value(offset) != _normalized_enum_value(order.offset)
+            ):
+                raise TrialRunExecutionError("invalid_trial_transition")
+            existing = order
+            order = replace(existing, status="filled", updated_at=_now())
+            self.order_chain[self.order_chain.index(existing)] = order
         self.simulated_entry_order_id = order_id
+        self.entry_order_id = order_id
         self.simulated_entry_trade_id = str(trade_id)
         self.simulated_trade_ids.append(str(trade_id))
         self.simulated_position_volume = 1
-        self.current_order_id = order_id
+        self.current_order_id = ""
         self.current_track = TrialRunTrack.SIMULATED
         self.simulation_state = "holding"
         return order
@@ -542,19 +716,34 @@ class TrialRunExecutionState:
             raise TrialRunExecutionError("invalid_trial_transition")
         if self.simulated_close_trade_id or trade_id in self.simulated_trade_ids:
             raise TrialRunExecutionError("invalid_trial_transition")
-        order = self._append_order(
-            order_id=order_id,
-            role="close",
-            track=TrialRunTrack.SIMULATED,
-            attempt=0,
-            parent_order_id=self.simulated_entry_order_id,
-            symbol=self.symbol if symbol is None else str(symbol).strip(),
-            direction=direction,
-            offset=offset,
-            price=price,
-            status="filled",
-        )
+        order = self._find_order(order_id)
+        if order is None:
+            order = self._append_order(
+                order_id=order_id,
+                role="close",
+                track=TrialRunTrack.SIMULATED,
+                attempt=0,
+                parent_order_id=self.simulated_entry_order_id,
+                symbol=self.symbol if symbol is None else str(symbol).strip(),
+                direction=direction,
+                offset=offset,
+                price=price,
+                status="filled",
+            )
+        else:
+            if (
+                order.track is not TrialRunTrack.SIMULATED
+                or not _is_exit_role(order.role)
+                or _canonical_order_status(order.status) != "submitted"
+                or _normalized_enum_value(direction) != _normalized_enum_value(order.direction)
+                or _normalized_enum_value(offset) != _normalized_enum_value(order.offset)
+            ):
+                raise TrialRunExecutionError("invalid_trial_transition")
+            existing = self._owned_order(order_id)
+            order = replace(existing, status="filled", updated_at=_now())
+            self.order_chain[self.order_chain.index(existing)] = order
         self.simulated_close_order_id = order_id
+        self.close_order_id = order_id
         self.simulated_close_trade_id = str(trade_id)
         self.simulated_trade_ids.append(str(trade_id))
         self.simulated_position_volume = 0
@@ -562,6 +751,48 @@ class TrialRunExecutionState:
         self.current_track = TrialRunTrack.SIMULATED
         self.simulation_state = "flat"
         return order
+
+    @_synchronized
+    def record_late_real_fill_conflict(
+        self,
+        order_id: str,
+        trade_id: str,
+        *,
+        symbol: Optional[str] = None,
+        volume: int = 1,
+        direction: Optional[str] = None,
+    ) -> TrialOrderAttempt:
+        """Invalidate a simulated run when canceled real liquidity arrives late."""
+        self._validate_contract(symbol, volume)
+        order = self._owned_order(order_id)
+        trade_key = str(trade_id or "")
+        if order.track is not TrialRunTrack.REAL or not trade_key:
+            raise TrialRunExecutionError("invalid_trial_transition")
+        if (
+            direction is not None
+            and _normalized_enum_value(direction) != _normalized_enum_value(order.direction)
+        ):
+            raise TrialRunExecutionError("invalid_trial_transition")
+        if self.final_outcome not in {
+            TrialRunOutcome.RUNNING,
+            TrialRunOutcome.PASSED_SIMULATED,
+            TrialRunOutcome.FAILED,
+        }:
+            raise TrialRunExecutionError("invalid_trial_transition")
+        updated = replace(order, status="filled", updated_at=_now())
+        self.order_chain[self.order_chain.index(order)] = updated
+        if trade_key not in self.real_trade_ids:
+            self.real_trade_ids.append(trade_key)
+            self.real_trade_order_ids[trade_key] = order.order_id
+            if _is_entry_role(order.role):
+                self.real_entry_trade_id = trade_key
+            elif _is_exit_role(order.role):
+                self.real_close_trade_id = trade_key
+        self.failure_code = "late_real_fill_conflict"
+        self.success_basis = f"order_id={order_id}"
+        self.final_outcome = TrialRunOutcome.FAILED
+        self.simulation_state = "failed"
+        return updated
 
     @_synchronized
     def require_current_order(

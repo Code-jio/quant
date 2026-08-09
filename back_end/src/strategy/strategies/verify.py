@@ -96,6 +96,7 @@ class VerifyStrategy(StrategyBase):
         self._cancel_quote_object = None
         self._replacement_parent_order_ids = {"entry": "", "exit": ""}
         self._order_ownership = {}
+        self._simulation_requested_order_id = ""
 
         self._initialized = True
         logger.info(
@@ -312,6 +313,12 @@ class VerifyStrategy(StrategyBase):
     ) -> dict:
         if not self._chase_enabled or self.completed or self.trial_state == "error":
             return {}
+        pending_order_id = self._pending_order_id()
+        if (
+            pending_order_id
+            and self._order_ownership.get(pending_order_id, {}).get("track") == "simulated"
+        ):
+            return {}
         if self._bought and not self._close_order_sent and not self._chase_resubmit_ready:
             return {}
 
@@ -464,6 +471,84 @@ class VerifyStrategy(StrategyBase):
             self.trial_state = "ready_to_start"
             logger.info("验证交易开始状态已撤销，回到待开始状态")
 
+    def request_simulation_cancel(self, source_order_id: str) -> bool:
+        """Transfer an existing entry cancellation to simulation preparation."""
+        source_order_id = str(source_order_id or "")
+        if not self.can_prepare_simulated_entry(source_order_id):
+            return False
+        self._simulation_requested_order_id = source_order_id
+        self._chase_state = "cancel_pending"
+        self._chase_resubmit_ready = False
+        self._chase_resubmit_role = ""
+        return self._chase_pending_cancel_order_id == source_order_id
+
+    def can_prepare_simulated_entry(self, source_order_id: str) -> bool:
+        source_order_id = str(source_order_id or "")
+        metadata = self._order_ownership.get(source_order_id)
+        return bool(
+            source_order_id == self._entry_order_id
+            and metadata
+            and metadata.get("role") == "entry"
+            and metadata.get("track", "real") == "real"
+            and not self._bought
+            and not self.completed
+        )
+
+    def rollback_simulation_cancel(self, source_order_id: str) -> None:
+        if self._simulation_requested_order_id != str(source_order_id or ""):
+            return
+        self._simulation_requested_order_id = ""
+        self._chase_pending_cancel_order_id = ""
+        self._chase_resubmit_ready = False
+        self._chase_resubmit_role = ""
+        self._chase_state = "cancel_failed"
+        self._last_chase_reason = "simulation_cancel_failed"
+
+    def prepare_simulated_entry(
+        self,
+        source_order_id: str,
+        *,
+        synthetic_order_id: str = "",
+        synthetic_price: float = 0.0,
+        synthetic_direction: str = "long",
+        synthetic_volume: int = 1,
+    ) -> bool:
+        """Mark the isolated synthetic entry as the only next entry path."""
+        source_order_id = str(source_order_id or "")
+        metadata = self._order_ownership.get(source_order_id)
+        if (
+            source_order_id != self._entry_order_id
+            or not metadata
+            or metadata.get("role") != "entry"
+            or self._bought
+            or int(synthetic_volume) != self._volume
+        ):
+            return False
+        if synthetic_order_id:
+            submitted_monotonic = float(self._monotonic())
+            self._order_ownership[synthetic_order_id] = {
+                **metadata,
+                "role": "entry",
+                "track": "simulated",
+                "status": "submitted",
+                "price": float(synthetic_price or metadata.get("price", 0.0)),
+                "direction": str(synthetic_direction or metadata.get("direction", "long")),
+                "parent_order_id": source_order_id,
+                "attempt": 0,
+                "submitted_monotonic": submitted_monotonic,
+            }
+            self._entry_order_id = synthetic_order_id
+            self._last_order_submitted_monotonic = submitted_monotonic
+        self._simulation_requested_order_id = source_order_id
+        self._entry_order_sent = True
+        self.trade_authorized = False
+        self._chase_pending_cancel_order_id = ""
+        self._chase_resubmit_ready = False
+        self._chase_resubmit_role = ""
+        self._chase_state = "simulation_entry_ready"
+        self.trial_state = "simulation_entry_ready"
+        return True
+
     def mark_market_data_stale(self, symbol: str, reason: str = ""):
         if not self._symbols_match(symbol, self.symbol):
             return
@@ -533,7 +618,7 @@ class VerifyStrategy(StrategyBase):
         logger.info("策略启动，等待有效行情 tick... (阈值 %d)", self.readiness_bars)
 
     def on_tick(self, tick):
-        if self.completed or self.trial_state == "error":
+        if self.completed or self.trial_state in {"error", "simulation_entry_ready"}:
             return
 
         symbol = getattr(tick, "symbol", self.symbol)
@@ -583,7 +668,7 @@ class VerifyStrategy(StrategyBase):
             logger.error("开仓信号生成失败")
 
     def on_bar(self, bar: pd.Series):
-        if self.completed or self.trial_state == "error":
+        if self.completed or self.trial_state in {"error", "simulation_entry_ready"}:
             return
 
         symbol = bar.get("symbol", self.symbol)
@@ -709,6 +794,18 @@ class VerifyStrategy(StrategyBase):
         status = getattr(order, "status", None)
         status_value = getattr(status, "value", str(status or "")).strip().lower()
         metadata["status"] = status_value
+        if (
+            status_value == OrderStatus.CANCELLED.value
+            and order_id == self._simulation_requested_order_id
+        ):
+            self._chase_pending_cancel_order_id = ""
+            self._chase_resubmit_ready = False
+            self._chase_resubmit_role = ""
+            self._chase_state = "real_cancelled"
+            self.trade_authorized = False
+            self._entry_order_sent = True
+            self.trial_state = "real_cancelled"
+            return
         if status_value == OrderStatus.CANCELLED.value and order_id == self._chase_pending_cancel_order_id:
             self._chase_pending_cancel_order_id = ""
             role = metadata["role"]

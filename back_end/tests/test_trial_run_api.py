@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from src.api import create_app, trading_state
 import src.api.trial_run as trial_run_module
 from src.api.trial_run import trial_run_state
-from src.strategy import Direction, OffsetFlag, Order, OrderStatus, OrderType, Position
+from src.strategy import Direction, OffsetFlag, Order, OrderStatus, OrderType, Position, Trade
 from src.trading.types import MarketData
 
 from tests.helpers import RecordingGateway
@@ -354,6 +354,9 @@ def test_trial_run_wait_seconds_uses_exact_execution_current_order(monkeypatch, 
 
 def test_apply_simulated_fill_fills_trial_order_and_updates_strategy(monkeypatch, tmp_path):
     config_path = _trial_config(_config_path(tmp_path, "simulated-fill"))
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["trial_run"]["simulate_fill_enabled"] = True
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
     gateway = install_gateway(monkeypatch)
     app = create_app()
@@ -368,21 +371,278 @@ def test_apply_simulated_fill_fills_trial_order_and_updates_strategy(monkeypatch
 
         assert len(gateway.sent_signals) == 1
         order_id = "ORDER_1"
+        order = gateway.orders[order_id]
+        order.status = OrderStatus.SUBMITTED
+        entry.engine._on_order(order)
+        entry.strategy._order_ownership[order_id]["submitted_monotonic"] = entry.engine._monotonic() - 3
+
+        pending = client.post(
+            "/trial-run/simulation/prepare",
+            json={"source_order_id": order_id},
+        )
+        assert pending.status_code == 200
+        assert pending.json()["status"]["simulation_state"] == "cancel_pending"
+        gateway.on_order(order)
+
+        ready = client.post(
+            "/trial-run/simulation/prepare",
+            json={"source_order_id": order_id},
+        )
+        assert ready.status_code == 200
+        synthetic_id = ready.json()["status"]["current_order_id"]
+        assert synthetic_id.startswith("SIM-E-")
 
         from src.trading.simulated_fill import apply_simulated_fill
 
-        result = apply_simulated_fill(entry.engine, order_id)
+        result = apply_simulated_fill(entry.engine, synthetic_id)
 
     assert result.order.status.value == "filled"
     assert result.order.traded_volume == result.order.volume
-    assert result.trade.order_id == order_id
+    assert result.trade.order_id == synthetic_id
     assert result.trade.symbol == "rb2510"
-    assert any(position.volume == 1 for position in gateway.positions.values())
-    assert any(trade.order_id == order_id for trade in entry.strategy.trades)
+    assert gateway.positions == {}
+    assert any(trade.order_id == synthetic_id for trade in entry.strategy.trades)
     assert entry.strategy.get_position("rb2510").volume == 1
 
 
-def test_trial_run_simulate_fill_is_fail_closed_during_ledger_migration(monkeypatch, tmp_path):
+def test_simulation_prepare_is_idempotent_and_accepts_only_the_exact_request_body(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "simulation-idempotent"))
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["trial_run"]["simulate_fill_enabled"] = True
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    gateway = install_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client)
+        assert client.post("/trial-run/prepare").status_code == 200
+        entry = trading_state.get("verify_trial")
+        entry.engine.on_tick(_tick(3130))
+        source = gateway.orders["ORDER_1"]
+        source.status = OrderStatus.SUBMITTED
+        entry.engine._on_order(source)
+        entry.strategy._order_ownership["ORDER_1"]["submitted_monotonic"] = entry.engine._monotonic() - 3
+
+        first = client.post(
+            "/trial-run/simulation/prepare",
+            json={"source_order_id": "ORDER_1"},
+        )
+        second = client.post(
+            "/trial-run/simulation/prepare",
+            json={"source_order_id": "ORDER_1"},
+        )
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert len(gateway.cancelled_order_ids) == 1
+
+        gateway.on_order(source)
+        ready = client.post(
+            "/trial-run/simulation/prepare",
+            json={"source_order_id": "ORDER_1"},
+        )
+        again = client.post(
+            "/trial-run/simulation/prepare",
+            json={"source_order_id": "ORDER_1"},
+        )
+        assert ready.status_code == 200
+        assert again.status_code == 200
+        assert ready.json()["status"]["current_order_id"] == again.json()["status"]["current_order_id"]
+        synthetic_id = ready.json()["status"]["current_order_id"]
+        fill = client.post("/trial-run/simulate-fill", json={"order_id": synthetic_id})
+        assert fill.status_code == 200
+        assert fill.json()["trade"]["price"] == 3132.0
+        assert fill.json()["status"]["simulate_fill_allowed"] is False
+        assert gateway.positions == {}
+
+        extra = client.post(
+            "/trial-run/simulate-fill",
+            json={"order_id": synthetic_id, "price": 1},
+        )
+        assert extra.status_code == 422
+
+
+def test_stop_clears_simulation_adapter_before_the_next_trial_run(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "simulation-stop-cleanup"))
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["trial_run"]["simulate_fill_enabled"] = True
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    gateway = install_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client)
+        assert client.post("/trial-run/prepare").status_code == 200
+        entry = trading_state.get("verify_trial")
+        engine = entry.engine
+        engine.on_tick(_tick(3130))
+        source = gateway.orders["ORDER_1"]
+        source.status = OrderStatus.SUBMITTED
+        engine._on_order(source)
+        entry.strategy._order_ownership["ORDER_1"]["submitted_monotonic"] = (
+            engine._monotonic() - 3
+        )
+        assert client.post(
+            "/trial-run/simulation/prepare",
+            json={"source_order_id": "ORDER_1"},
+        ).status_code == 200
+        gateway.on_order(source)
+        ready = client.post(
+            "/trial-run/simulation/prepare",
+            json={"source_order_id": "ORDER_1"},
+        )
+        assert ready.status_code == 200
+        assert engine.simulation_adapter is not None
+
+        first_stop = client.post("/trial-run/stop")
+        assert first_stop.status_code == 409
+        assert first_stop.json()["detail"]["failure_code"] == "trial_order_cancel_pending"
+        second_stop = client.post("/trial-run/stop")
+
+        assert second_stop.status_code == 200
+        assert engine.simulation_adapter is None
+        assert engine.strategy_execution_adapter is engine._gateway_execution_adapter
+        assert engine._simulation_source_order_id == ""
+        assert engine._simulation_requested is False
+
+        prepared_again = client.post("/trial-run/prepare")
+        assert prepared_again.status_code == 200
+        next_entry = trading_state.get("verify_trial")
+        assert next_entry.engine.simulation_adapter is None
+        assert next_entry.strategy._position_source is gateway.positions
+
+
+def test_simulation_prepare_cancel_failure_rolls_back_transition(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "simulation-cancel-failure"))
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["trial_run"]["simulate_fill_enabled"] = True
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    gateway = install_gateway(monkeypatch)
+    monkeypatch.setattr(gateway, "cancel_order", lambda _order_id: False)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client)
+        assert client.post("/trial-run/prepare").status_code == 200
+        entry = trading_state.get("verify_trial")
+        entry.engine.on_tick(_tick(3130))
+        source = gateway.orders["ORDER_1"]
+        source.status = OrderStatus.SUBMITTED
+        entry.engine._on_order(source)
+        entry.strategy._order_ownership["ORDER_1"]["submitted_monotonic"] = (
+            entry.engine._monotonic() - 3
+        )
+
+        response = client.post(
+            "/trial-run/simulation/prepare",
+            json={"source_order_id": "ORDER_1"},
+        )
+
+        assert response.status_code == 409
+        assert response.json()["detail"]["failure_code"] == "cancel_request_failed"
+        assert entry.engine._simulation_source_order_id == ""
+        assert entry.engine._simulation_requested is False
+        assert entry.strategy._simulation_requested_order_id == ""
+        assert entry.engine.trial_run_execution.simulation_state == "real_track"
+
+
+def test_simulation_prepare_adopts_an_existing_chase_cancel_without_resending(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "simulation-adopt-cancel"))
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["trial_run"]["simulate_fill_enabled"] = True
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    gateway = install_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client)
+        assert client.post("/trial-run/prepare").status_code == 200
+        entry = trading_state.get("verify_trial")
+        entry.engine.on_tick(_tick(3130))
+        source = gateway.orders["ORDER_1"]
+        source.status = OrderStatus.SUBMITTED
+        entry.engine._on_order(source)
+        entry.strategy._order_ownership["ORDER_1"]["submitted_monotonic"] = (
+            entry.engine._monotonic() - 3
+        )
+        entry.strategy._chase_pending_cancel_order_id = "ORDER_1"
+        source.status = OrderStatus.CANCELLED
+        gateway.cancelled_order_ids.append("ORDER_1")
+
+        pending = client.post(
+            "/trial-run/simulation/prepare",
+            json={"source_order_id": "ORDER_1"},
+        )
+
+        assert pending.status_code == 200
+        assert pending.json()["status"]["simulation_state"] == "cancel_pending"
+        assert gateway.cancelled_order_ids == ["ORDER_1"]
+
+        gateway.on_order(source)
+        ready = client.post(
+            "/trial-run/simulation/prepare",
+            json={"source_order_id": "ORDER_1"},
+        )
+
+        assert ready.status_code == 200
+        assert ready.json()["status"]["current_order_id"].startswith("SIM-E-")
+        assert gateway.cancelled_order_ids == ["ORDER_1"]
+
+
+def test_real_fill_wins_race_before_simulation_activation(monkeypatch, tmp_path):
+    config_path = _trial_config(_config_path(tmp_path, "simulation-real-fill-race"))
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["trial_run"]["simulate_fill_enabled"] = True
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
+    gateway = install_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client)
+        assert client.post("/trial-run/prepare").status_code == 200
+        entry = trading_state.get("verify_trial")
+        entry.engine.on_tick(_tick(3130))
+        source = gateway.orders["ORDER_1"]
+        source.status = OrderStatus.SUBMITTED
+        entry.engine._on_order(source)
+        entry.strategy._order_ownership["ORDER_1"]["submitted_monotonic"] = (
+            entry.engine._monotonic() - 3
+        )
+        pending = client.post(
+            "/trial-run/simulation/prepare",
+            json={"source_order_id": "ORDER_1"},
+        )
+        assert pending.status_code == 200
+
+        source.status = OrderStatus.FILLED
+        source.traded_volume = 1
+        entry.engine._on_trade(
+            Trade(
+                trade_id="REAL-WON-1",
+                order_id="ORDER_1",
+                symbol="rb2510",
+                direction=Direction.LONG,
+                price=3132.0,
+                volume=1,
+            )
+        )
+        response = client.post(
+            "/trial-run/simulation/prepare",
+            json={"source_order_id": "ORDER_1"},
+        )
+
+        assert response.status_code == 409
+        assert response.json()["detail"]["failure_code"] == "real_fill_prevents_simulation"
+        assert entry.engine.simulation_adapter is None
+        assert entry.engine._simulation_source_order_id == ""
+        assert entry.engine.trial_run_execution.real_trade_ids == ["REAL-WON-1"]
+
+
+def test_trial_run_simulate_fill_requires_prepared_isolated_ledger(monkeypatch, tmp_path):
     config_path = _trial_config(_config_path(tmp_path, "simulate-fill-api"))
     payload = json.loads(config_path.read_text(encoding="utf-8"))
     payload["trial_run"]["simulate_fill_enabled"] = True
@@ -399,10 +659,7 @@ def test_trial_run_simulate_fill_is_fail_closed_during_ledger_migration(monkeypa
         response = client.post("/trial-run/simulate-fill", json={"order_id": "ORDER_1"})
 
     assert response.status_code == 409
-    assert response.json()["detail"] == {
-        "failure_code": "simulation_migration_in_progress",
-        "message": "隔离模拟账本尚未启用",
-    }
+    assert response.json()["detail"]["failure_code"] == "simulation_not_ready"
     assert gateway.positions == {}
 
 
@@ -424,7 +681,7 @@ def test_trial_run_status_exposes_migration_and_execution_contract(monkeypatch, 
     assert body["outcome"] == "running"
     assert body["current_track"] == "real"
     assert body["order_chain"] == []
-    assert body["simulation_state"] == "migration_in_progress"
+    assert body["simulation_state"] == "not_started"
     assert body["simulate_fill_allowed"] is False
     assert body["simulation_environment_allowed"] is True
     assert body["runtime_environment"] == "测试"

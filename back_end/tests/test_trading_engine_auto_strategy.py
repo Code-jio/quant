@@ -7,6 +7,7 @@ import pandas as pd
 from src.strategy import Direction, OffsetFlag, Order, OrderStatus, OrderType, Position, Signal, StrategyBase, Trade
 from src.strategy.strategies.verify import VerifyStrategy
 from src.trading import TradingEngine
+from src.trading.execution_adapter import TrialRunSimulationLedger
 from src.trading.order_manager import OrderManager, PreOrder, PreOrderType
 from src.trading.types import MarketData
 from src.trading.trial_run_execution import (
@@ -260,6 +261,214 @@ def test_trial_execution_binding_records_owned_order_callbacks_and_ignores_exter
     assert len(execution.order_chain) == 1
     assert execution.real_trade_ids == []
     assert strategy._bought is False
+
+
+def test_late_real_fill_after_simulation_switch_fails_and_disables_simulation():
+    gateway = RecordingGateway()
+    engine = TradingEngine(gateway)
+    strategy = VerifyStrategy(
+        "verify",
+        {"symbol": "rb2505", "volume": 1, "hold_bars": 1},
+    )
+    strategy.on_init()
+    strategy.on_signal_submitted(
+        Signal(
+            symbol="rb2505",
+            datetime=datetime.now(),
+            direction=Direction.LONG,
+            price=3800.0,
+            volume=1,
+            order_type=OrderType.LIMIT,
+            offset=OffsetFlag.OPEN,
+            comment="buy_open",
+        ),
+        "R1",
+    )
+    engine.set_strategy(strategy)
+    execution = TrialRunExecutionState(run_id="RUN-LATE", symbol="rb2505", volume=1)
+    execution.record_real_submission("R1", "entry", 3800.0, status="submitted")
+    execution.record_real_cancel("R1")
+    source = Order(
+        order_id="R1",
+        symbol="rb2505",
+        direction=Direction.LONG,
+        order_type=OrderType.LIMIT,
+        price=3800.0,
+        volume=1,
+        status=OrderStatus.CANCELLED,
+        offset=OffsetFlag.OPEN,
+    )
+    ledger = TrialRunSimulationLedger()
+    synthetic = ledger.create_entry_from_order(source)
+    engine.bind_trial_run_execution(execution)
+    engine.activate_simulation(ledger, source_order_id="R1")
+    engine.simulation_adapter.fill(synthetic.order_id)
+
+    engine._on_trade(Trade(
+        trade_id="LATE-1",
+        order_id="R1",
+        symbol="rb2505",
+        direction=Direction.LONG,
+        price=3800.0,
+        volume=1,
+    ))
+
+    assert execution.final_outcome is TrialRunOutcome.FAILED
+    assert execution.failure_code == "late_real_fill_conflict"
+    assert engine.simulation_adapter is None
+    assert execution.real_trade_ids == ["LATE-1"]
+
+    engine._on_bar_completed(
+        "rb2505",
+        pd.Series(
+            {
+                "symbol": "rb2505",
+                "datetime": pd.Timestamp.now(),
+                "open": 3800.0,
+                "high": 3802.0,
+                "low": 3799.0,
+                "close": 3801.0,
+                "volume": 100,
+            }
+        ),
+    )
+
+    assert gateway.sent_signals == []
+    assert strategy.trial_state == "error"
+
+
+def test_simulation_switch_only_routes_bound_strategy_orders(monkeypatch):
+    gateway = RecordingGateway()
+    engine = TradingEngine(gateway)
+    strategy = VerifyStrategy("verify", {"symbol": "rb2505", "volume": 1})
+    strategy.on_init()
+    source_signal = Signal(
+        symbol="rb2505",
+        datetime=datetime.now(),
+        direction=Direction.LONG,
+        price=3800.0,
+        volume=1,
+        order_type=OrderType.LIMIT,
+        offset=OffsetFlag.OPEN,
+        comment="buy_open",
+    )
+    strategy.on_signal_submitted(source_signal, "R1")
+    engine.set_strategy(strategy)
+    execution = TrialRunExecutionState(run_id="RUN-ROUTING", symbol="rb2505", volume=1)
+    execution.record_real_submission("R1", "entry", 3800.0, status="submitted")
+    execution.record_real_cancel("R1")
+    engine.bind_trial_run_execution(execution)
+    ledger = TrialRunSimulationLedger()
+    ledger.create_entry_from_order(Order(
+        order_id="R1",
+        symbol="rb2505",
+        direction=Direction.LONG,
+        order_type=OrderType.LIMIT,
+        price=3800.0,
+        volume=1,
+        status=OrderStatus.CANCELLED,
+        offset=OffsetFlag.OPEN,
+    ))
+    engine.activate_simulation(ledger, source_order_id="R1")
+
+    real_submissions = []
+    real_cancellations = []
+    monkeypatch.setattr(
+        engine,
+        "_send_gateway_signal",
+        lambda signal: real_submissions.append(signal) or "REAL-MANUAL-1",
+    )
+    monkeypatch.setattr(
+        engine,
+        "_cancel_gateway_order",
+        lambda order_id: real_cancellations.append(order_id) or True,
+    )
+    manual_signal = Signal(
+        symbol="rb2505",
+        datetime=datetime.now(),
+        direction=Direction.SHORT,
+        price=3799.0,
+        volume=1,
+        order_type=OrderType.LIMIT,
+        offset=OffsetFlag.CLOSE,
+        comment="manual_close",
+    )
+
+    assert engine.send_signal(manual_signal) == "REAL-MANUAL-1"
+    assert engine.cancel_order("REAL-MANUAL-1") is True
+    assert real_submissions == [manual_signal]
+    assert real_cancellations == ["REAL-MANUAL-1"]
+    assert list(ledger.orders) == ["SIM-E-1"]
+
+
+def test_simulated_entry_waits_for_operator_instead_of_auto_chasing():
+    clock = MonotonicClock()
+    gateway = RecordingGateway()
+    engine = TradingEngine(gateway, monotonic_clock=clock)
+    strategy = VerifyStrategy(
+        "verify",
+        {
+            "symbol": "rb2505",
+            "volume": 1,
+            "chase_enabled": True,
+            "chase_interval_seconds": 2,
+            "monotonic_clock": clock,
+        },
+    )
+    strategy.on_init()
+    strategy.on_signal_submitted(
+        Signal(
+            symbol="rb2505",
+            datetime=datetime.now(),
+            direction=Direction.LONG,
+            price=3800.0,
+            volume=1,
+            order_type=OrderType.LIMIT,
+            offset=OffsetFlag.OPEN,
+            comment="buy_open",
+        ),
+        "R1",
+    )
+    engine.set_strategy(strategy)
+    execution = TrialRunExecutionState(run_id="RUN-SIM-WAIT", symbol="rb2505", volume=1)
+    execution.record_real_submission("R1", "entry", 3800.0, status="submitted")
+    execution.record_real_cancel("R1")
+    engine.bind_trial_run_execution(execution)
+    ledger = TrialRunSimulationLedger()
+    synthetic = ledger.create_entry_from_order(Order(
+        order_id="R1",
+        symbol="rb2505",
+        direction=Direction.LONG,
+        order_type=OrderType.LIMIT,
+        price=3800.0,
+        volume=1,
+        status=OrderStatus.CANCELLED,
+        offset=OffsetFlag.OPEN,
+    ))
+    engine.activate_simulation(ledger, source_order_id="R1")
+    tick = MarketData(
+        symbol="rb2505",
+        last_price=3801.0,
+        bid_price_1=3800.0,
+        ask_price_1=3802.0,
+        bid_volume_1=10,
+        ask_volume_1=10,
+        volume=100,
+        turnover=380100.0,
+        timestamp=datetime.now(),
+    )
+
+    clock.advance(30)
+    action = strategy.next_chase_action(
+        tick,
+        now_monotonic=clock(),
+        quote_fresh=True,
+        quote_sequence=1,
+    )
+
+    assert action == {}
+    assert ledger.current_order_id == synthetic.order_id
+    assert ledger.get_order(synthetic.order_id).status is OrderStatus.SUBMITTED
 
 
 def test_synchronous_broker_callbacks_are_replayed_after_order_chain_registration():
