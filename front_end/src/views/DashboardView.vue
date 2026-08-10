@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import GlobalDashboard from '@/components/GlobalDashboard.vue'
@@ -28,19 +28,13 @@ const loadingStrategies = ref(false)
 const isMockMode        = ref(false)
 const lastRefreshTime   = ref('')
 const loggingOut        = ref(false)
-let emptyStrategyStreak = 0
 
 // ── 数据加载 ──────────────────────────────────────────────────────────────
-async function loadStrategies(silent = false) {
-  if (!silent || strategies.value.length === 0) loadingStrategies.value = true
+async function loadStrategies() {
+  if (strategies.value.length === 0) loadingStrategies.value = true
   try {
     const next = await fetchStrategies()
     if (Array.isArray(next)) {
-      if (next.length === 0 && strategies.value.length > 0 && silent) {
-        emptyStrategyStreak += 1
-        if (emptyStrategyStreak < 3) return
-      }
-      emptyStrategyStreak = 0
       strategies.value = next
       isMockMode.value = false
     }
@@ -57,13 +51,9 @@ async function loadStrategies(silent = false) {
   }
 }
 
-// ── 定时自动刷新（每 5s）──────────────────────────────────────────────────
-let refreshTimer = null
 onMounted(() => {
   loadStrategies()
-  refreshTimer = setInterval(() => loadStrategies(true), 5_000)
 })
-onUnmounted(() => clearInterval(refreshTimer))
 
 // ── 登出 ──────────────────────────────────────────────────────────────────
 async function handleLogout() {
@@ -222,7 +212,7 @@ async function handleLogout() {
 
     <footer class="app-footer">
       <span class="c-muted">量化交易系统 &copy; 2026</span>
-      <span class="c-muted">策略自动刷新：5s</span>
+      <span class="c-muted">策略手动刷新</span>
     </footer>
   </div>
 </template>
