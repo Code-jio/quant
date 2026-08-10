@@ -2187,12 +2187,13 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
 
         risk_manager = getattr(engine, "risk_manager", None)
         risk_config = getattr(risk_manager, "config", None)
+        force_close = bool(body.force_close)
         market_disabled = bool(
             risk_config is not None
             and order_type == OrderType.MARKET
             and not getattr(risk_config, "allow_market_orders", True)
         )
-        if market_disabled:
+        if market_disabled or (force_close and order_type == OrderType.MARKET):
             tick_snapshot = _gateway_tick_snapshot(engine.gateway, clean_symbol) or {}
             limit_price = float(
                 tick_snapshot.get("last")
@@ -2230,7 +2231,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         )
 
         try:
-            order_id = engine.send_signal(signal)
+            order_id = engine.send_signal(signal, allow_stale_close=force_close)
             if not order_id:
                 reason = getattr(engine, "last_reject_reason", "")
                 if reason:

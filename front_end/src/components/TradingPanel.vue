@@ -327,6 +327,38 @@ async function handleClosePosition(pos) {
     ElMessage.success(`${pos.symbol} 平仓指令已发送`)
     setTimeout(loadPositions, 500)
   } catch (err) {
+    const detail = String(err?.detail || err?.message || '')
+    if (/Market data is (stale|unavailable)/.test(detail)) {
+      const forcePrice = closePriceFor(pos)
+      if (forcePrice <= 0) {
+        ElMessage.error(`行情已过期且没有可用价格，无法强制限价平仓: ${err.message}`)
+        return
+      }
+      try {
+        await ElMessageBox.confirm(
+          `行情已过期，确认仍以限价 ${fmtPrice(forcePrice)} 强制平仓 ${pos.symbol} ${available}手？`,
+          '强制限价平仓确认',
+          { confirmButtonText: '确认强制平仓', cancelButtonText: '取消', type: 'error' },
+        )
+      } catch {
+        return
+      }
+      try {
+        await closePosition(pos.symbol, {
+          direction,
+          offset: quickCloseOffset.value,
+          volume: 0,
+          price: forcePrice,
+          order_type: 'limit',
+          force_close: true,
+        })
+        ElMessage.success(`${pos.symbol} 强制限价平仓指令已发送`)
+        setTimeout(loadPositions, 500)
+      } catch (retryErr) {
+        ElMessage.error(`强制平仓失败: ${retryErr.message}`)
+      }
+      return
+    }
     ElMessage.error(`平仓失败: ${err.message}`)
   } finally {
     closingKey.value = ''

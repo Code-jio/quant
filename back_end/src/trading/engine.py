@@ -525,11 +525,13 @@ class TradingEngine:
             self.status = TradingStatus.ERROR
             return False
 
-    def send_signal(self, signal: 'Signal') -> str:
+    def send_signal(self, signal: 'Signal', *, allow_stale_close: bool = False) -> str:
         """Send a manual or external signal through the real broker path."""
+        if allow_stale_close:
+            return self._send_gateway_signal(signal, allow_stale_close=True)
         return self._send_gateway_signal(signal)
 
-    def _send_gateway_signal(self, signal: 'Signal') -> str:
+    def _send_gateway_signal(self, signal: 'Signal', *, allow_stale_close: bool = False) -> str:
         """Send a real signal through the existing risk and gateway path."""
         with self._signal_submission_lock:
             self.last_reject_reason = ""
@@ -551,6 +553,7 @@ class TradingEngine:
                     active_orders=self.gateway.orders.values(),
                     account=getattr(self.gateway, "account", None),
                     market_data=self._market_data_for_symbol(signal.symbol),
+                    allow_stale_close=allow_stale_close,
                 )
                 if not risk_result.allowed:
                     self.last_reject_reason = risk_result.reason

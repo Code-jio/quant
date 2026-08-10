@@ -176,6 +176,7 @@ class RiskManager:
         active_orders: Optional[Iterable[Any]] = None,
         account: Optional[AccountInfo] = None,
         market_data: Optional[Mapping[str, Any]] = None,
+        allow_stale_close: bool = False,
     ) -> RiskCheckResult:
         cfg = self.config
         if not cfg.enabled:
@@ -202,7 +203,7 @@ class RiskManager:
         if signal.order_type == OrderType.MARKET and not cfg.allow_market_orders:
             return RiskCheckResult(False, "Market orders are disabled by risk config")
 
-        market_result = self._check_market_data(signal, market_data)
+        market_result = self._check_market_data(signal, market_data, allow_stale_close=allow_stale_close)
         if not market_result.allowed:
             return market_result
 
@@ -289,8 +290,20 @@ class RiskManager:
             return RiskCheckResult(False, f"Daily loss {pct}% exceeds limit {limit}%")
         return RiskCheckResult(True)
 
-    def _check_market_data(self, signal: Signal, market_data: Optional[Mapping[str, Any]]) -> RiskCheckResult:
+    def _check_market_data(
+        self,
+        signal: Signal,
+        market_data: Optional[Mapping[str, Any]],
+        *,
+        allow_stale_close: bool = False,
+    ) -> RiskCheckResult:
         cfg = self.config
+        if allow_stale_close and signal.offset in {
+            OffsetFlag.CLOSE,
+            OffsetFlag.CLOSE_TODAY,
+            OffsetFlag.CLOSE_YESTERDAY,
+        }:
+            return RiskCheckResult(True)
         if not market_data:
             if cfg.max_market_data_age_seconds > 0:
                 return RiskCheckResult(False, f"Market data is unavailable for {signal.symbol}")

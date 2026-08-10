@@ -235,6 +235,38 @@ def test_quick_close_falls_back_to_limit_when_market_disabled(monkeypatch):
     assert signal.order_type == OrderType.LIMIT
     assert signal.price == 3880.0
 
+def test_quick_close_force_limit_when_market_stale(monkeypatch):
+    gateway = install_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client)
+        client.put("/risk/config", json={"risk": {"allow_market_orders": True, "max_market_data_age_seconds": 5}})
+        engine = trading_state.primary_engine()
+        engine.gateway.positions["rb2505.long"] = Position(
+            symbol="rb2505", direction=Direction.LONG, volume=2, price=3880.0
+        )
+
+        stale = client.post(
+            "/positions/rb2505/close",
+            json={"direction": "long", "volume": 0, "price": 0, "order_type": "market"},
+        )
+        assert stale.status_code == 400
+        assert "Market data" in stale.json()["detail"]
+
+        forced = client.post(
+            "/positions/rb2505/close",
+            json={"direction": "long", "volume": 0, "price": 0, "order_type": "market", "force_close": True},
+        )
+
+    assert forced.status_code == 200
+    body = forced.json()
+    assert body["order_type"] == "limit"
+    assert body["price"] == 3880.0
+    signal = gateway.sent_signals[0]
+    assert signal.order_type == OrderType.LIMIT
+    assert signal.price == 3880.0
+
 def test_quick_close_rejects_ambiguous_direction_and_over_volume(monkeypatch):
     install_gateway(monkeypatch)
     app = create_app()

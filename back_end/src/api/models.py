@@ -149,6 +149,7 @@ class ClosePositionRequest(BaseModel):
     direction:  str = ""
     offset:     str = "close"
     order_type: str = ""
+    force_close: bool = False
 
 
 class EmergencyStopRequest(BaseModel):
