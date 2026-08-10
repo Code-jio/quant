@@ -28,6 +28,7 @@ const loadingStrategies = ref(false)
 const isMockMode        = ref(false)
 const lastRefreshTime   = ref('')
 const loggingOut        = ref(false)
+let emptyStrategyStreak = 0
 
 // ── 数据加载 ──────────────────────────────────────────────────────────────
 async function loadStrategies(silent = false) {
@@ -35,6 +36,11 @@ async function loadStrategies(silent = false) {
   try {
     const next = await fetchStrategies()
     if (Array.isArray(next)) {
+      if (next.length === 0 && strategies.value.length > 0 && silent) {
+        emptyStrategyStreak += 1
+        if (emptyStrategyStreak < 3) return
+      }
+      emptyStrategyStreak = 0
       strategies.value = next
       isMockMode.value = false
     }
