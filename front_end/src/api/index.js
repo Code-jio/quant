@@ -88,6 +88,47 @@ async function request(path, options = {}) {
   return res.json()
 }
 
+async function requestBlob(path, options = {}) {
+  const {
+    headers: customHeaders = {},
+    ...fetchOptions
+  } = options
+  const headers = {
+    ...customHeaders,
+  }
+
+  let res
+  const method = fetchOptions.method || 'GET'
+  const url = buildApiUrl(path)
+  try {
+    res = await fetch(url, { ...fetchOptions, headers, credentials: 'include' })
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    console.error('[Quant API Network Error]', { path, url, method, message, error: e })
+    const error = new Error(`网络请求失败: ${message}`, { cause: e })
+    error.path = path
+    error.url = url
+    error.method = method
+    throw error
+  }
+
+  if (!res.ok) {
+    let detailPayload = `HTTP ${res.status}`
+    try { detailPayload = (await res.json()).detail ?? detailPayload } catch { /* ignore */ }
+    const detail = readableDetail(detailPayload, `HTTP ${res.status}`)
+    console.error('[Quant API Error]', { path, url, method, status: res.status, detail: detailPayload, message: detail })
+    const error = new Error(detail)
+    error.status = res.status
+    error.path = path
+    error.url = url
+    error.method = method
+    error.detail = detailPayload
+    throw error
+  }
+
+  return res.blob()
+}
+
 // ── Auth ──────────────────────────────────────────────────────────────────
 /** 获取预设服务器列表 */
 export const fetchServers = () => request('/auth/servers')
@@ -176,6 +217,15 @@ export const stopTrialRun = () =>
 
 export const resetTrialRun = () =>
   request('/trial-run/reset', { method: 'POST' })
+
+export const prepareTrialRunSimulation = (body = {}) =>
+  request('/trial-run/simulation/prepare', { method: 'POST', body: JSON.stringify(body) })
+
+export const simulateTrialRunFill = (body = {}) =>
+  request('/trial-run/simulate-fill', { method: 'POST', body: JSON.stringify(body) })
+
+export const downloadTrialRunReport = () =>
+  requestBlob('/trial-run/report.docx', { method: 'GET' })
 
 // ── 订单簿 ────────────────────────────────────────────────────────────────
 /** 所有委托单（最近 500 条） */

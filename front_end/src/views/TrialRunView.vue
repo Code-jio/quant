@@ -160,6 +160,14 @@
               color="#58a6ff"
             />
             <p v-if="marketWarning" class="market-warning">{{ marketWarning }}</p>
+            <el-alert
+              v-if="executionWarning"
+              class="execution-warning"
+              :title="executionWarning"
+              type="warning"
+              show-icon
+              :closable="false"
+            />
             <div class="diagnostic-grid">
               <div v-for="item in marketDiagnostics" :key="item.label" class="diagnostic-cell">
                 <span>{{ item.label }}</span>
@@ -252,12 +260,99 @@
               <el-icon><Operation /></el-icon>
               快捷平仓
             </el-button>
+
+            <el-button plain :loading="actionLoading.report" :disabled="!canExportReport" @click="exportTrialRunReport">
+              <el-icon><Download /></el-icon>
+              导出测试报告
+            </el-button>
           </div>
         </div>
       </section>
 
-      <section class="panel table-panel">
+      <section class="panel simulation-panel">
+  <div class="panel-head compact">
+    <div>
+      <h2>无对手盘模拟验证</h2>
+      <span>仅测试/仿真环境可用；模拟成交不是券商真实成交</span>
+    </div>
+    <el-tag :type="simulationTagType" effect="plain">{{ simulationStateLabel }}</el-tag>
+  </div>
+  <div class="simulation-body">
+    <el-alert v-if="flattenBlocked" class="flatten-band" title="真实持仓尚未归零" type="error" show-icon :closable="false" description="请先通过快捷平仓或人工处置把真实持仓和活动委托归零。" />
+    <div class="simulation-flow">
+      <el-button type="warning" plain :loading="actionLoading.simulationPrepare" :disabled="!canRequestSimulation" @click="requestSimulationPrepare">
+        <el-icon><SwitchButton /></el-icon>
+        撤单并准备模拟验证
+      </el-button>
+      <el-button disabled :loading="simulationCancelPending">
+        <el-icon><Timer /></el-icon>
+        等待券商撤单确认
+      </el-button>
+      <el-button type="primary" plain :loading="actionLoading.simulateFill" :disabled="!canSimulateEntryFill" @click="simulateSelectedFill('entry')">
+        <el-icon><CircleCheck /></el-icon>
+        模拟开仓成交
+      </el-button>
+      <el-button disabled :loading="simulationHolding">
+        <el-icon><Timer /></el-icon>
+        等待模拟平仓委托
+      </el-button>
+      <el-button type="success" plain :loading="actionLoading.simulateFill" :disabled="!canSimulateCloseFill" @click="simulateSelectedFill('close')">
+        <el-icon><CircleCheck /></el-icon>
+        模拟平仓成交
+      </el-button>
+    </div>
+    <div class="simulation-detail">
+      <span>当前委托：{{ currentTrialOrderText }}</span>
+      <span>模拟持仓：{{ simulatedPositionVolume }} 手</span>
+      <span>券商持仓：{{ brokerPositionVolume }} 手</span>
+      <span>持仓截止：{{ formatTimeValue(holdDeadlineAt) }}</span>
+    </div>
+  </div>
+</section>
+<section class="panel table-panel">
         <el-tabs v-model="activeTab" class="trial-tabs">
+          <el-tab-pane label="试运行订单链" name="trial-chain">
+            <div class="table-scroll">
+              <el-table :data="trialOrderChain" size="small" height="320" empty-text="暂无试运行订单" :row-class-name="trialOrderRowClass">
+                <el-table-column label="当前" width="64">
+                  <template #default="{ row }">
+                    <el-tag v-if="row.order_id === currentOrderId" size="small" type="primary" effect="plain">当前</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="次序" width="96">
+                  <template #default="{ row }">{{ row.sequence }}</template>
+                </el-table-column>
+                <el-table-column prop="order_id" label="委托号" min-width="130" show-overflow-tooltip />
+                <el-table-column label="来源" width="80">
+                  <template #default="{ row }">{{ row.track === 'simulated' ? '模拟' : '真实' }}</template>
+                </el-table-column>
+                <el-table-column prop="symbol" label="合约" min-width="100" show-overflow-tooltip />
+                <el-table-column label="方向" width="72">
+                  <template #default="{ row }">
+                    <el-tag :type="directionType(row.direction)" size="small" effect="plain">{{ directionLabel(row.direction) }}</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="开平" width="72">
+                  <template #default="{ row }">{{ offsetLabel(row.offset) }}</template>
+                </el-table-column>
+                <el-table-column prop="price" label="委托价格" width="96" />
+                <el-table-column label="数量/已成" width="96">
+                  <template #default="{ row }">{{ row.volume }} / {{ row.status === 'filled' ? row.volume : 0 }}</template>
+                </el-table-column>
+                <el-table-column label="委托时间" min-width="150" show-overflow-tooltip>
+                  <template #default="{ row }">{{ formatRowTime(row) }}</template>
+                </el-table-column>
+                <el-table-column label="状态" min-width="110" show-overflow-tooltip>
+                  <template #default="{ row }">
+                    <el-tag :type="orderStatusType(row.status)" size="small" effect="plain">{{ orderStatusLabel(row.status) }}</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="撤单/失败原因" min-width="140" show-overflow-tooltip>
+                  <template #default="{ row }">{{ row.failure_reason || row.error_msg || (row.status === 'rejected' ? '券商拒单' : '--') }}</template>
+                </el-table-column>
+              </el-table>
+            </div>
+          </el-tab-pane>
           <el-tab-pane label="订单" name="orders">
             <div class="table-scroll">
               <el-table :data="orders" size="small" height="320" empty-text="暂无订单">
@@ -360,10 +455,12 @@ import {
   CircleCheck,
   CloseBold,
   Connection,
+  Download,
   Lock,
   Operation,
   RefreshRight,
   SwitchButton,
+  Timer,
   VideoPlay,
   WarningFilled,
 } from '@element-plus/icons-vue'
@@ -380,10 +477,13 @@ import {
   fetchTradingReconcile,
   fetchTrialRunConfig,
   fetchTrialRunStatus,
+  downloadTrialRunReport,
   login,
+  prepareTrialRunSimulation,
   prepareTrialRun,
   resetTrialRun,
   resumeTrading,
+  simulateTrialRunFill,
   startTrialRun,
   stopTrialRun,
 } from '@/api/index.js'
@@ -434,6 +534,9 @@ const actionLoading = reactive({
   resume: false,
   cancelAll: false,
   close: false,
+  simulationPrepare: false,
+  simulateFill: false,
+  report: false,
 })
 
 const hasSession = computed(() => authStore.isLoggedIn)
@@ -495,6 +598,7 @@ const POSITION_DIRECTION_LABELS = {
 }
 
 let pollTimer = null
+let simulationWaitTimer = null
 
 const connected = computed(() => {
   const status = authStatus.value || {}
@@ -578,7 +682,14 @@ const prepared = computed(() => Boolean(trialStatus.value.prepared || ['prepared
 const started = computed(() => Boolean(trialStatus.value.started || statusSnapshot.value.started || ['started', 'armed', 'entry_pending', 'holding', 'closing', 'running', 'completed'].includes(statusCode.value)))
 const closedLoop = computed(() => Boolean(trialStatus.value.completed || statusSnapshot.value.completed || trialStatus.value.closed_loop_completed || statusCode.value === 'completed'))
 const statusCode = computed(() => String(trialStatus.value.status || trialStatus.value.state || 'idle').toLowerCase())
-const trialStatusLabel = computed(() => STATUS_LABELS[statusCode.value] || trialStatus.value.status || trialStatus.value.state || '待准备')
+const trialStatusLabel = computed(() => {
+  const outcome = String(trialStatus.value.outcome || '')
+  if (outcome === 'passed_real') return '真实成交闭环通过'
+  if (outcome === 'passed_simulated') return '真实报单链路通过；成交后处理由模拟成交验证'
+  if (outcome === 'failed') return '试运行失败'
+  if (outcome === 'aborted') return '试运行中止'
+  return STATUS_LABELS[statusCode.value] || trialStatus.value.status || trialStatus.value.state || '待准备'
+})
 const trialStatusType = computed(() => {
   if (marketIssue.value) return 'danger'
   if (['error', 'emergency_stopped'].includes(statusCode.value)) return 'danger'
@@ -589,6 +700,65 @@ const trialStatusType = computed(() => {
 
 const emergencyActive = computed(() => Boolean(riskConfig.value.emergency_stop || riskStatus.value.emergency_stop))
 const activeOrderCount = computed(() => orders.value.filter(order => ACTIVE_ORDER_STATUSES.has(normalizeCode(order.status))).length)
+const executionIssue = computed(() => String(
+  trialStatus.value.execution_issue
+  || trialStatus.value.execution_error
+  || statusSnapshot.value.execution_issue
+  || '',
+))
+const executionWarning = computed(() => String(
+  trialStatus.value.execution_warning
+  || statusSnapshot.value.execution_warning
+  || executionIssue.value
+  || '',
+))
+
+const simulationPrepareAllowed = computed(() => boolOf(
+  trialStatus.value.simulation_prepare_allowed
+  ?? statusSnapshot.value.simulation_prepare_allowed,
+  false,
+))
+const simulateFillAllowed = computed(() => boolOf(
+  trialStatus.value.simulate_fill_allowed
+  ?? statusSnapshot.value.simulate_fill_allowed,
+  false,
+))
+const currentOrderId = computed(() => String(trialStatus.value.current_order_id || ''))
+const trialOrderChain = computed(() => (
+  Array.isArray(trialStatus.value.order_chain)
+    ? trialStatus.value.order_chain.map((order, index) => ({
+        ...order,
+        sequence: Number(order.attempt) === 0 ? '首单' : `追价 ${Number(order.attempt) || ''}`,
+        index,
+      }))
+    : []
+))
+const currentTrialOrder = computed(() => trialOrderChain.value.find(order => order.order_id === currentOrderId.value) || null)
+const simulatedPositionVolume = computed(() => numberOf(trialStatus.value.simulated_position_volume, 0))
+const brokerPositionVolume = computed(() => numberOf(trialStatus.value.broker_position_volume, 0))
+const holdDeadlineAt = computed(() => trialStatus.value.hold_deadline_at || statusSnapshot.value.hold_deadline_at || '')
+const simulationState = computed(() => String(
+  trialStatus.value.simulation_state
+  || statusSnapshot.value.simulation_state
+  || 'not_started',
+))
+const simulationCancelPending = computed(() => ['cancel_pending', 'simulation_cancel_pending'].includes(simulationState.value))
+const simulationReady = computed(() => simulationState.value === 'ready')
+const simulationHolding = computed(() => simulationState.value === 'holding')
+const simulationClosing = computed(() => simulationState.value === 'closing')
+const simulationFlat = computed(() => ['flat', 'passed_simulated', 'passed_real', 'failed', 'aborted'].includes(simulationState.value) || terminalOutcome.value)
+const terminalOutcome = computed(() => ['passed_real', 'passed_simulated', 'failed', 'aborted'].includes(String(trialStatus.value.outcome || '')))
+const flattenBlocked = computed(() => ['flatten_required', 'flatten_required_market_data'].includes(String(trialStatus.value.failure_code || '')))
+const canExportReport = computed(() => hasSession.value && terminalOutcome.value && !actionLoading.report)
+const canRequestSimulation = computed(() => (
+  hasSession.value
+  && connected.value
+  && simulationPrepareAllowed.value
+  && !flattenBlocked.value
+  && !terminalOutcome.value
+  && Boolean(currentOrderId.value)
+  && !actionLoading.simulationPrepare
+))
 const hasCloseablePosition = computed(() => positions.value.some(position => (
   matchesAllowedSymbol(position) && Math.abs(numberOf(position.volume, 0)) > 0
 )))
@@ -613,6 +783,17 @@ const canEmergencyStop = computed(() => hasSession.value && connected.value && !
 const canResume = computed(() => hasSession.value && emergencyActive.value && !actionLoading.resume)
 const canCancelAll = computed(() => hasSession.value && connected.value && activeOrderCount.value > 0 && !actionLoading.cancelAll)
 const canQuickClose = computed(() => hasSession.value && connected.value && hasCloseablePosition.value && !actionLoading.close)
+const canSimulateFill = computed(() => (
+  hasSession.value
+  && connected.value
+  && simulateFillAllowed.value
+  && Boolean(currentTrialOrder.value)
+  && !flattenBlocked.value
+  && !terminalOutcome.value
+  && !actionLoading.simulateFill
+))
+const canSimulateEntryFill = computed(() => canSimulateFill.value && ['open', 'entry'].includes(normalizeCode(currentTrialOrder.value?.offset)))
+const canSimulateCloseFill = computed(() => canSimulateFill.value && ['close', 'exit'].includes(normalizeCode(currentTrialOrder.value?.offset)))
 const prepareButtonLabel = computed(() => autoArm.value ? '开始试运行' : '准备策略')
 const accountEquity = computed(() => numberOf(accountSnapshot.value.balance ?? accountSnapshot.value.equity, 0))
 const accountAvailable = computed(() => numberOf(accountSnapshot.value.available, 0))
@@ -750,9 +931,41 @@ const riskItems = computed(() => [
       ? '--'
       : riskConfig.value.allow_market_orders ? '是' : '否',
   },
+  { label: 'rate_limit_remaining', value: displayValue(trialStatus.value.rate_limit_remaining), className: 'mono' },
+  { label: '下次追价', value: rateLimitRetryText.value, className: 'mono' },
+  { label: '券商持仓', value: `${brokerPositionVolume.value} 手`, className: brokerPositionVolume.value ? 'bad' : 'ok' },
+  { label: '持仓截止', value: formatTimeValue(holdDeadlineAt.value), className: 'mono wrap' },
   { label: 'last_reject_reason', value: trialStatus.value.last_reject_reason || riskStatus.value.last_reject_reason || riskConfig.value.last_reject_reason || '--', className: 'wrap warn' },
 ])
 
+const simulationStateLabel = computed(() => ({
+  not_started: '未开始',
+  cancel_pending: '等待撤单确认',
+  simulation_cancel_pending: '等待撤单确认',
+  ready: '可模拟开仓',
+  holding: '模拟持仓中',
+  closing: '等待模拟平仓',
+  flat: '模拟已归零',
+  cancelled: '已取消',
+  failed: '模拟失败',
+  real_track: '真实轨道',
+  real_cancelled: '真实已撤',
+})[simulationState.value] || simulationState.value)
+const simulationTagType = computed(() => {
+  if (flattenBlocked.value || simulationState.value === 'failed') return 'danger'
+  if (simulationCancelPending.value || simulationHolding.value || simulationClosing.value) return 'warning'
+  if (simulationReady.value || simulationFlat.value) return 'success'
+  return 'info'
+})
+const currentTrialOrderText = computed(() => {
+  if (!currentTrialOrder.value) return '--'
+  const order = currentTrialOrder.value
+  return `${order.order_id} ${directionLabel(order.direction)} ${offsetLabel(order.offset)} @${order.price}`
+})
+const rateLimitRetryText = computed(() => {
+  const seconds = numberOf(trialStatus.value.rate_limit_retry_after_seconds, 0)
+  return seconds > 0 ? `${seconds}s` : '--'
+})
 function pick(source, keys, fallback = '') {
   for (const key of keys) {
     const value = source?.[key]
@@ -847,6 +1060,9 @@ function formatRowTime(row) {
   ]))
 }
 
+function trialOrderRowClass({ row }) {
+  return row.order_id === currentOrderId.value ? 'current-order-row' : ''
+}
 function formatMoney(value) {
   const n = Number(value)
   if (!Number.isFinite(n) || n === 0) return '--'
@@ -1197,13 +1413,114 @@ async function handleQuickClose() {
   )
 }
 
+async function requestSimulationPrepare() {
+  const orderId = currentOrderId.value
+  if (!orderId) {
+    ElMessage.warning('当前没有可迁移到模拟账本的真实委托')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确认撤单 ${orderId} 并准备隔离模拟账本？后续模拟成交不会写入券商账本。`,
+      '准备模拟验证确认',
+      { confirmButtonText: '撤单并准备', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+
+  await runAction(
+    'simulationPrepare',
+    () => prepareTrialRunSimulation({ source_order_id: orderId }),
+    '已请求券商撤单，开始等待确认',
+  )
+  if (!terminalOutcome.value) startSimulationWaitPolling()
+}
+
+function stopSimulationWaitPolling() {
+  if (simulationWaitTimer) {
+    clearInterval(simulationWaitTimer)
+    simulationWaitTimer = null
+  }
+}
+
+function startSimulationWaitPolling() {
+  stopSimulationWaitPolling()
+  simulationWaitTimer = setInterval(async () => {
+    if (terminalOutcome.value || simulationReady.value || simulationFlat.value) {
+      stopSimulationWaitPolling()
+      return
+    }
+    try {
+      const response = await prepareTrialRunSimulation({ source_order_id: currentOrderId.value })
+      if (response?.status) trialStatus.value = response.status
+      await refreshAll(true)
+      if (simulationReady.value || simulationFlat.value || terminalOutcome.value) {
+        stopSimulationWaitPolling()
+      }
+    } catch (err) {
+      stopSimulationWaitPolling()
+      ElMessage.error(err.message || '等待券商撤单确认失败')
+    }
+  }, 1000)
+}
+
+async function simulateSelectedFill(kind = 'entry') {
+  const order = currentTrialOrder.value
+  if (!order) {
+    ElMessage.warning('暂无可模拟成交的当前委托')
+    return
+  }
+  const actionLabel = kind === 'close' ? '平仓' : '开仓'
+  const detail = `${order.order_id} | ${allowedSymbol.value || order.symbol} | ${directionLabel(order.direction)} | ${offsetLabel(order.offset)} | ${order.price} | ${order.volume} 手`
+  try {
+    await ElMessageBox.confirm(
+      `确认模拟${actionLabel}成交？${detail}。此操作只写入隔离模拟账本，不是券商真实成交。`,
+      '模拟成交确认',
+      { confirmButtonText: '确认模拟', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+
+  await runAction(
+    'simulateFill',
+    () => simulateTrialRunFill({ order_id: order.order_id }),
+    `模拟${actionLabel}成交已记录`,
+  )
+}
+
+async function exportTrialRunReport() {
+  actionLoading.report = true
+  try {
+    const blob = await downloadTrialRunReport()
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    const timestamp = formatDateTime(new Date()).replace(/[-:\s]/g, '')
+    link.href = url
+    link.download = `trial-run-report-${timestamp}.docx`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+    ElMessage.success('测试报告下载已开始')
+  } catch (err) {
+    ElMessage.error(err.message || '导出测试报告失败')
+  } finally {
+    actionLoading.report = false
+  }
+}
+
 onMounted(async () => {
   await loadConfig()
   await refreshAll(true)
   startPolling()
 })
 
-onUnmounted(stopPolling)
+onUnmounted(() => {
+  stopPolling()
+  stopSimulationWaitPolling()
+})
 </script>
 
 <style scoped>
@@ -1449,6 +1766,10 @@ onUnmounted(stopPolling)
   line-height: 1.55;
 }
 
+.execution-warning {
+  margin-top: 10px;
+}
+
 .diagnostic-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1600,4 +1921,43 @@ onUnmounted(stopPolling)
     margin-left: 0 !important;
   }
 }
+.simulation-panel {
+  margin-top: 14px;
+}
+
+.simulation-body {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+.simulation-flow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.simulation-flow .el-button + .el-button {
+  margin-left: 0;
+}
+
+.simulation-detail {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 6px 12px;
+  color: var(--q-muted);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.flatten-band {
+  margin-bottom: 4px;
+}
+
+:deep(.current-order-row) {
+  background: rgba(88, 166, 255, .10);
+}
+
 </style>

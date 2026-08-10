@@ -3,8 +3,11 @@ import {
   fetchTrialRunConfig,
   fetchRiskStatus,
   fetchTrialRunStatus,
+  downloadTrialRunReport,
+  prepareTrialRunSimulation,
   prepareTrialRun,
   resetTrialRun,
+  simulateTrialRunFill,
   startTrialRun,
   stopTrialRun,
 } from '@/api/index.js'
@@ -75,6 +78,69 @@ describe('trial-run api client', () => {
       4,
       '/api/trial-run/reset',
       expect.objectContaining({ method: 'POST' }),
+    )
+  })
+
+  it('prepares a trial-run simulation with the source order id', async () => {
+    const response = { success: true, status: { simulation_state: 'cancel_pending' } }
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => response,
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(prepareTrialRunSimulation({ source_order_id: 'ORDER_1' })).resolves.toBe(response)
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/trial-run/simulation/prepare',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ source_order_id: 'ORDER_1' }),
+        credentials: 'include',
+      }),
+    )
+  })
+  it('simulates a trial-run fill with a JSON body', async () => {
+    const response = { ok: true, order_id: 'O1' }
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => response,
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(simulateTrialRunFill({ order_id: 'O1' })).resolves.toBe(response)
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/trial-run/simulate-fill',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ order_id: 'O1' }),
+        credentials: 'include',
+      }),
+    )
+  })
+
+  it('downloads the trial-run report as a blob', async () => {
+    const blob = new Blob(['report'], {
+      type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    })
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      blob: async () => blob,
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(downloadTrialRunReport()).resolves.toBe(blob)
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/trial-run/report.docx',
+      expect.objectContaining({
+        method: 'GET',
+        credentials: 'include',
+      }),
     )
   })
 
