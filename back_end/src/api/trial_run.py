@@ -1582,6 +1582,27 @@ def register_trial_run_routes(
     def get_trial_run_status():
         return _status_response(trading_state)
 
+    @app.get(
+        "/trial-run/report.docx",
+        summary="导出试运行 DOCX 验收报告",
+        tags=["试运行"],
+    )
+    def export_trial_run_report():
+        status = _status_response(trading_state)
+        if str(status.outcome or "running") == "running":
+            raise HTTPException(status_code=409, detail="trial run has no terminal acceptance result")
+        try:
+            path, config, allowed_symbol, errors = _read_trial_config(allow_example=True)
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=f"trial run config unavailable: {exc}") from exc
+        config_response = _safe_config_response(path, config, allowed_symbol, errors)
+        content = generate_trial_run_report(status.model_dump(), config_response.model_dump())
+        filename = f"trial-run-report-{status.run_id or 'unknown'}.docx"
+        return Response(
+            content=content,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     @app.post(
         "/trial-run/prepare",
