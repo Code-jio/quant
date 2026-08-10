@@ -852,6 +852,8 @@ npm.cmd run e2e
 
 - [ ] **Step 3: Verify test-environment real submission**
 
+> 2026-08-11 进度：已确认 `rb2610` 存在 2 手多单真实持仓，并有真实成交记录。待完成真实平仓并确认持仓归零后勾选。
+
 During an active trading session:
 
 1. Log in to the CTP test environment.
