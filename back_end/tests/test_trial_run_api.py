@@ -164,8 +164,8 @@ def test_trial_run_config_is_public_and_prefills_non_password_connection_fields(
     assert body["trading"]["td_server"] == "tcp://td.example:123"
     assert body["trading"]["md_server"] == "tcp://md.example:123"
     assert body["trading"]["app_id"] == "trial-app"
-    assert "auth_code" not in body["trading"]
-    assert "trial-auth-code" not in response.text
+    assert body["trading"]["auth_code"] == "trial-auth-code"
+    assert "trial-auth-code" in response.text
     assert "secret-password" not in response.text
     assert "trial-account" not in response.text
 

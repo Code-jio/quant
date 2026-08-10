@@ -447,7 +447,7 @@ def _safe_config_response(path: Path, config: Dict[str, Any], allowed_symbol: st
     gateway = str(trial_run.get("gateway") or trading.get("gateway") or "vnpy")
     safe_trading = _safe_subset(
         trading,
-        {"gateway", "broker_id", "td_server", "md_server", "app_id", "vnpy_environment", "environment", "fronts"},
+        {"gateway", "broker_id", "td_server", "md_server", "app_id", "auth_code", "vnpy_environment", "environment", "fronts"},
     )
     safe_trading.update({"gateway": gateway, "vnpy_environment": environment, "environment": environment})
     safe_trial_run = {

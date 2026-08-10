@@ -505,16 +505,18 @@ const trades = ref([])
 const positions = ref([])
 const logs = ref([])
 
-const accountForm = reactive({
+const LOGIN_DEFAULTS = {
   username: '',
   password: '',
-  broker_id: '',
-  td_server: '',
-  md_server: '',
-  app_id: '',
-  auth_code: '',
-  environment: '测试',
-})
+  broker_id: '2071',
+  td_server: 'tcp://114.94.128.1:42205',
+  md_server: 'tcp://114.94.128.1:42213',
+  app_id: 'client_TraderMaster_v1.0.0',
+  auth_code: '20260324LHJYMHBG',
+  environment: '仿真',
+}
+
+const accountForm = reactive({ ...LOGIN_DEFAULTS })
 
 const rules = {
   username: [{ required: true, message: '请输入账号', trigger: 'blur' }],
