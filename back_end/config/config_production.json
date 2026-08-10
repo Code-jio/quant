@@ -9,6 +9,7 @@
     "manual_open_enabled": false,
     "auto_arm": true,
     "no_fill_timeout_seconds": 2,
+    "max_hold_seconds": 75,
     "simulate_fill_enabled": true,
     "bar_timeout_seconds": 90
   },
@@ -17,7 +18,7 @@
     "symbol": "rb2610",
     "warmup_bars": 1,
     "readiness_bars": 1,
-    "hold_bars": 3,
+    "hold_bars": 1,
     "volume": 1,
     "contract_multiplier": 10,
     "order_type": "limit",

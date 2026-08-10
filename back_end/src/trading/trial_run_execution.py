@@ -193,6 +193,8 @@ class TrialRunExecutionState:
     broker_position_volume: Optional[int] = None
     broker_active_order_ids: list[str] = field(default_factory=list)
     reconcile_ok: Optional[bool] = None
+    hold_deadline_monotonic: Optional[float] = None
+    hold_deadline_at: str = ""
     failure_code: str = ""
     success_basis: str = ""
     final_outcome: TrialRunOutcome = TrialRunOutcome.RUNNING
@@ -222,6 +224,20 @@ class TrialRunExecutionState:
     @property
     def outcome(self) -> TrialRunOutcome:
         return self.final_outcome
+
+    @_synchronized
+    def set_holding_deadline(self, monotonic_deadline: float, wall_deadline_at: str) -> None:
+        self._prepare_mutation(None, self.volume)
+        self.hold_deadline_monotonic = float(monotonic_deadline)
+        self.hold_deadline_at = str(wall_deadline_at or "")
+
+    @_synchronized
+    def mark_manual_flattened(self) -> "TrialRunExecutionState":
+        if self.final_outcome is not TrialRunOutcome.FAILED:
+            raise TrialRunExecutionError("invalid_trial_transition")
+        self.success_basis = "manual_flatten_after_trial_failure"
+        self.hold_deadline_monotonic = None
+        return self
 
     def _ensure_mutable(self) -> None:
         if self.final_outcome in {
@@ -457,11 +473,8 @@ class TrialRunExecutionState:
             raise TrialRunExecutionError("invalid_trial_transition")
         if direction is not None and _enum_value(direction) != order.direction:
             raise TrialRunExecutionError("invalid_trial_transition")
-        resolved_role = _normalized_role(role or order.role)
-        if not (
-            (_is_entry_role(resolved_role) and _is_entry_role(order.role))
-            or (_is_exit_role(resolved_role) and _is_exit_role(order.role))
-        ):
+        resolved_role = _normalized_role(order.role) if role is None else _normalized_role(role)
+        if role is not None and not _roles_match(resolved_role, order.role):
             raise TrialRunExecutionError("invalid_trial_transition")
         if order.status == "rejected":
             raise TrialRunExecutionError("invalid_trial_transition")

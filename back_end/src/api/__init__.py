@@ -84,7 +84,13 @@ from .models import (
     WeightRequest,
 )
 from .security import SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME, is_open_path, session_store
-from .trial_run import register_trial_run_routes, trial_run_manual_open_enabled
+from .trial_run import (
+    finalize_trial_run_for_disconnect,
+    register_trial_run_routes,
+    trial_run_logout_guard,
+    trial_run_manual_open_enabled,
+    trial_run_state,
+)
 
 logger = logging.getLogger(__name__)
 _DEFAULT_RUNTIME_RISK = runtime_risk_defaults()
@@ -405,6 +411,21 @@ class TradingState:
                 engine.stop()
             except Exception:
                 pass
+
+    def disconnect_main(self) -> bool:
+        """Disconnect the main engine before dropping its references."""
+        with self._lock:
+            engine = self._main_engine
+        if engine is not None and engine.stop() is not True:
+            return False
+        with self._lock:
+            if engine is not None and self._main_engine is not engine:
+                return False
+            self._main_engine = None
+            self._main_config = {}
+            self._entries.clear()
+            self._weights.clear()
+        return True
 
     # ── 连接日志 ──────────────────────────────────────────────────────────────
     def add_log(self, msg: str):
@@ -1241,6 +1262,18 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
     async def lifespan(_app: FastAPI):
         global _event_loop
         _event_loop = asyncio.get_running_loop()
+        try:
+            recovered = trial_run_state.checkpoint_store.abort_non_terminal("backend_restarted")
+            if recovered is not None:
+                trial_run_state.restore_execution(recovered)
+                trial_run_state.update(
+                    state=recovered.final_outcome.value,
+                    allowed_symbol=recovered.symbol,
+                    errors=[recovered.failure_code] if recovered.failure_code else [],
+                    authorized=False,
+                )
+        except Exception as exc:
+            logger.error("Unable to recover trial-run checkpoint: %s", exc)
         for entry in trading_state.all_entries():
             _install_order_hook(entry)
         if trading_state._main_engine:
@@ -1476,7 +1509,21 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         # 若已有连接先断开
         if trading_state._main_engine:
             trading_state.add_log("检测到已有连接，正在断开…")
-            trading_state.clear_main()
+            flatten_detail = trial_run_logout_guard(trading_state)
+            if flatten_detail:
+                raise HTTPException(status_code=409, detail=flatten_detail)
+            finalize_trial_run_for_disconnect(
+                trading_state,
+                abort_code="session_replaced",
+            )
+            if not trading_state.disconnect_main():
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "failure_code": "gateway_disconnect_failed",
+                        "message": "现有交易连接未能安全断开，已保留原会话和引擎",
+                    },
+                )
 
         # 确定网关类型：ctp 作为 vn.py CTP 网关别名保留，便于兼容旧配置。
         requested_gateway = (body.gateway_type or "vnpy").lower()
@@ -1629,6 +1676,20 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
 
     @app.post("/auth/logout", summary="断开连接并注销会话", tags=["认证"])
     async def do_logout(request: Request):
+        flatten_detail = trial_run_logout_guard(trading_state)
+        if flatten_detail:
+            raise HTTPException(status_code=409, detail=flatten_detail)
+        finalize_trial_run_for_disconnect(trading_state)
+        loop = asyncio.get_running_loop()
+        disconnected = await loop.run_in_executor(None, trading_state.disconnect_main)
+        if not disconnected:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "failure_code": "gateway_disconnect_failed",
+                    "message": "交易连接未能安全断开，登录会话保持有效",
+                },
+            )
         auth  = request.headers.get("authorization", "")
         token = auth[7:] if auth.lower().startswith("bearer ") else ""
         if token:
@@ -1640,8 +1701,6 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         response.delete_cookie(SESSION_COOKIE_NAME)
         trading_state.add_log("用户主动断开连接")
         _record_audit("auth", "logout", "success", request=request)
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, trading_state.clear_main)
         return response
 
     # ==================================================================
@@ -1850,14 +1909,25 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         reason = body.reason.strip() or "operator emergency stop"
         for engine in engines:
             engine.risk_manager.set_emergency_stop(True, reason)
+        for entry in trading_state.all_entries():
+            execution = getattr(entry.engine, "trial_run_execution", None)
+            if execution is None:
+                continue
+            try:
+                execution.mark_failed("emergency_stop", reason)
+                persist = getattr(entry.engine, "_persist_trial_execution", None)
+                if callable(persist):
+                    persist()
+            except Exception:
+                pass
 
         cancel_result = _cancel_all_active_orders() if body.cancel_orders else {"cancelled": 0, "failed": 0}
         stopped = 0
         if body.stop_strategies:
             for entry in trading_state.all_entries():
                 try:
-                    entry.engine.stop()
-                    stopped += 1
+                    if entry.engine.stop() is True:
+                        stopped += 1
                 except Exception:
                     logger.exception("[risk] 急停策略停止失败: %s", entry.strategy_id)
 

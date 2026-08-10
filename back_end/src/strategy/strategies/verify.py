@@ -243,6 +243,23 @@ class VerifyStrategy(StrategyBase):
         self._last_order_pricing_source = source
         return rounded
 
+    def request_close_from_tick(self, tick) -> bool:
+        """Force the exit path from a fresh quote when the hold deadline expires."""
+        if self.completed or self._closed or not self._bought or self._close_order_sent:
+            return False
+        if not self._symbols_match(getattr(tick, "symbol", ""), self.symbol):
+            return False
+        price = float(getattr(tick, "last_price", 0.0) or 0.0)
+        if price <= 0:
+            return False
+        order_price = self._marketable_order_price(Direction.SHORT, price, tick)
+        signal = self.sell(self.symbol, order_price, self._volume, order_type=self._order_type)
+        if not signal:
+            return False
+        self._close_order_sent = True
+        self.trial_state = "closing"
+        return True
+
     def _pending_order_id(self) -> str:
         if self._entry_order_sent and not self._bought:
             metadata = self._order_ownership.get(self._entry_order_id, {})
