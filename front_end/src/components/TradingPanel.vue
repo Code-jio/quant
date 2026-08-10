@@ -156,6 +156,13 @@ function closeActionText(pos) {
   if (pos.direction === 'short') return '买入平空'
   return '平仓'
 }
+function closePriceFor(pos) {
+  for (const key of ['last_price', 'cur_price', 'price', 'cost_price', 'avg_price', 'cost']) {
+    const value = Number(pos?.[key])
+    if (value > 0) return value
+  }
+  return 0
+}
 function normalizeOrderForm() {
   form.value.symbol = normalizedSymbol.value
   form.value.volume = Math.max(1, Math.trunc(normalizedVolume.value || 1))
@@ -291,9 +298,16 @@ async function handleClosePosition(pos) {
 
   const key = positionKey(pos)
   const direction = pos.direction === 'long' || pos.direction === 'short' ? pos.direction : ''
+  const marketAllowed = riskState.value?.risk?.allow_market_orders !== false
+  const closePrice = closePriceFor(pos)
+  if (!marketAllowed && closePrice <= 0) {
+    ElMessage.warning(`${pos.symbol} 风控禁止市价单，且当前持仓没有可用价格生成限价`)
+    return
+  }
+  const closeMode = marketAllowed ? '市价' : `限价 ${fmtPrice(closePrice)}`
   try {
     await ElMessageBox.confirm(
-      `确认${closeActionText(pos)} ${pos.symbol} ${available}手，${offsetLabel(quickCloseOffset.value)}，市价？`,
+      `确认${closeActionText(pos)} ${pos.symbol} ${available}手，${offsetLabel(quickCloseOffset.value)}，${closeMode}？`,
       '平仓确认',
       { confirmButtonText: '确认平仓', cancelButtonText: '取消', type: 'warning' },
     )
@@ -307,8 +321,8 @@ async function handleClosePosition(pos) {
       direction,
       offset: quickCloseOffset.value,
       volume: 0,
-      price: 0,
-      order_type: 'market',
+      price: marketAllowed ? 0 : closePrice,
+      order_type: marketAllowed ? 'market' : 'limit',
     })
     ElMessage.success(`${pos.symbol} 平仓指令已发送`)
     setTimeout(loadPositions, 500)

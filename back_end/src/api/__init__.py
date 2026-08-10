@@ -2185,6 +2185,39 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
 
         close_direction = _close_direction_for_position(pos)
 
+        risk_manager = getattr(engine, "risk_manager", None)
+        risk_config = getattr(risk_manager, "config", None)
+        market_disabled = bool(
+            risk_config is not None
+            and order_type == OrderType.MARKET
+            and not getattr(risk_config, "allow_market_orders", True)
+        )
+        if market_disabled:
+            tick_snapshot = _gateway_tick_snapshot(engine.gateway, clean_symbol) or {}
+            limit_price = float(
+                tick_snapshot.get("last")
+                or tick_snapshot.get("last_price")
+                or getattr(pos, "price", 0)
+                or getattr(pos, "cost_price", 0)
+                or 0
+            )
+            if limit_price <= 0:
+                _record_audit(
+                    "order",
+                    "manual_close_position",
+                    "rejected",
+                    resource=clean_symbol,
+                    request=request,
+                    detail={"reason": "market_disabled_without_limit_price"},
+                )
+                raise HTTPException(
+                    status_code=400,
+                    detail="风控禁止市价单，且当前没有可用行情生成限价，无法快捷平仓",
+                )
+            order_type = OrderType.LIMIT
+            order_type_name = "limit"
+            price = _manual_order_price(order_type, limit_price)
+
         signal = Signal(
             symbol=clean_symbol,
             datetime=datetime.now(),
