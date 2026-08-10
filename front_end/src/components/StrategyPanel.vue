@@ -623,7 +623,7 @@ function sigArrow(dir) {
 .status-dot {
   width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
 }
-.dot-run  { background: var(--q-green);  box-shadow: 0 0 6px var(--q-green);  animation: pulse 2s infinite; }
+.dot-run  { background: var(--q-green);  box-shadow: 0 0 6px var(--q-green); }
 .dot-stop { background: var(--q-muted);  }
 .dot-warn { background: var(--q-yellow); box-shadow: 0 0 6px var(--q-yellow); }
 .dot-err  { background: var(--q-red);    box-shadow: 0 0 6px var(--q-red);    }
