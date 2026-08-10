@@ -131,10 +131,10 @@ async function requestBlob(path, options = {}) {
 
 // ── Auth ──────────────────────────────────────────────────────────────────
 /** 获取预设服务器列表 */
-export const fetchServers = () => request('/auth/servers')
+export const fetchServers = (options = {}) => request('/auth/servers', options)
 
 /** 获取当前连接状态（无需鉴权） */
-export const fetchAuthStatus = () => request('/auth/status')
+export const fetchAuthStatus = (options = {}) => request('/auth/status', options)
 
 /** CTP 登录 */
 export const login = (body) =>

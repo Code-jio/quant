@@ -1178,7 +1178,7 @@ async function refreshAll(silent = true) {
   refreshing.value = !silent
   const publicResults = await Promise.allSettled([
     fetchTrialRunStatus(),
-    fetchAuthStatus(),
+    fetchAuthStatus({ redirectOn401: false, suppressErrorLog: true }),
   ])
 
   if (publicResults[0].status === 'fulfilled') trialStatus.value = publicResults[0].value || {}

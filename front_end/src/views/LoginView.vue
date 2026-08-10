@@ -261,7 +261,7 @@ const tdServers = ref([...TD_SERVERS_DEFAULT])
 const mdServers = ref([...MD_SERVERS_DEFAULT])
 
 // 加载服务器预设
-fetchServers().then(data => {
+fetchServers({ suppressErrorLog: true }).then(data => {
   if (data.td_servers?.length) tdServers.value = data.td_servers
   if (data.md_servers?.length) mdServers.value = data.md_servers
 }).catch(() => {/* 用本地默认值 */})
@@ -315,7 +315,7 @@ let pollTimer = null
 function startPolling() {
   pollTimer = setInterval(async () => {
     try {
-      const status = await fetchAuthStatus()
+      const status = await fetchAuthStatus({ suppressErrorLog: true })
       if (status.connect_log?.length) {
         connectLog.value = status.connect_log
         // 自动滚到底部

@@ -168,6 +168,30 @@ test('trial-run exposes the dual-track simulation controls and terminal conclusi
   await expect(apiErrors).toEqual([])
 })
 
+test('login page suppresses optional server preflight errors', async ({ page }) => {
+  const apiErrors = []
+  page.on('console', message => {
+    const text = message.text()
+    if (text.includes('[Quant API Error]') || text.includes('[Quant API Network Error]')) {
+      apiErrors.push(text)
+    }
+  })
+  await page.route('**/*', async route => {
+    const url = route.request().url()
+    const path = new URL(url).pathname
+    if (!path.startsWith('/api/')) return route.continue()
+    if (path.endsWith('/auth/servers') || path.endsWith('/auth/status')) {
+      await route.fulfill({ status: 502, contentType: 'application/json', body: JSON.stringify({ detail: 'HTTP 502' }) })
+      return
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(apiBody(url)) })
+  })
+
+  await page.goto('/login')
+  await expect(page.locator('.login-page')).toBeVisible()
+  await expect(page.getByRole('heading', { name: '量化交易系统' })).toBeVisible()
+  await expect(apiErrors).toEqual([])
+})
 test('trial-run terminal aborted state does not redirect polling', async ({ page }) => {
   const apiErrors = []
   page.on('console', message => {
