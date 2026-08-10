@@ -2,6 +2,24 @@
 
 > 本清单用于在券商测试/仿真环境完成试运行闭环的人工验收。最终结论必须与系统导出的 DOCX 报告结论一致，并保留截图、日志与委托/成交编号作为证据。
 
+## 零、启动系统
+
+- [ ] 启动后端（推荐先启动后端再启动前端）：
+
+```powershell
+cd D:\quant\back_end
+..\.venv\Scripts\python.exe -m uvicorn src.api:app --host 127.0.0.1 --port 8000
+```
+
+- [ ] 启动前端：
+
+```powershell
+cd D:\quant\front_end
+npm.cmd run dev
+```
+
+- [ ] 打开浏览器访问前端地址，进入“试运行操作台”。
+
 ## 一、测试前准备
 
 - [ ] 确认账户已通过券商测试/仿真柜台验证，`config_production.json` 中 `environment` 与登录环境一致。
