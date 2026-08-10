@@ -339,6 +339,13 @@ onUnmounted(stopPolling)
 // ── 登录处理 ──────────────────────────────────────────────────────────────
 const LOGIN_TIMEOUT = 35_000
 
+function ctpHandshakeHint(detail) {
+  const text = String(detail || '')
+  if (/shake hand|decode err|4040|行情接口报错/.test(text)) {
+    return 'CTP 前置握手失败：请确认前置地址、AppID/AuthCode 与柜台环境匹配，或切换其他前置线路；仿真/测试柜台的认证码通常与实盘不同。'
+  }
+  return ''
+}
 function safeLoginPayload(payload) {
   return {
     ...payload,
@@ -411,7 +418,8 @@ async function handleLogin() {
       }),
       error: err,
     })
-    errorMsg.value = err.message ?? '连接失败，请检查账户信息或网络'
+    const loginDetail = err?.detail ?? err?.message ?? ''
+    errorMsg.value = ctpHandshakeHint(loginDetail) || (err.message ?? '连接失败，请检查账户信息或网络')
     connectLog.value.push(`[错误] ${errorMsg.value}`)
   } finally {
     connecting.value = false
