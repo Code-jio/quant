@@ -596,7 +596,7 @@ git commit -m "feat(trial-run): isolate simulated execution ledger"
 - Create: `back_end/tests/test_trial_run_closed_loop.py`
 - Create: `back_end/tests/test_trial_run_store.py`
 
-- [ ] **Step 1: Write the simulated closed-loop integration test**
+- [x] **Step 1: Write the simulated closed-loop integration test**
 
 The test must perform this exact API/domain sequence:
 
@@ -609,15 +609,15 @@ prepare -> valid real tick -> real entry submitted -> real entry canceled
 
 Assert real gateway position remains 0 throughout.
 
-- [ ] **Step 2: Route close signals into the active adapter**
+- [x] **Step 2: Route close signals into the active adapter**
 
 After simulated entry fill, future real market bars continue to drive the same `VerifyStrategy`. When `hold_bars` is reached, the generated close signal goes to `TrialRunSimulationAdapter`, creating a `SIM-` close order. The frontend then manually fills that exact order.
 
-- [ ] **Step 3: Cover the real-fill branch**
+- [x] **Step 3: Cover the real-fill branch**
 
 Set `strategy.hold_bars=1` in both checked-in trial configurations. Add an integration test where a real entry trade arrives from the gateway, the first valid post-fill Bar creates a real close order, and the real close trade returns the gateway position to 0. The evaluator may return `passed_real` only after broker position is 0, no active order remains, and reconciliation succeeds. A real close order uses the independent five-replacement close chain defined in Task 3.
 
-- [ ] **Step 4: Add a hard real-position holding guard**
+- [x] **Step 4: Add a hard real-position holding guard**
 
 Add `trial_run.max_hold_seconds=75` to both checked-in configurations. On a real entry fill, store a monotonic holding deadline and expose its wall-clock equivalent as `hold_deadline_at`.
 
@@ -629,7 +629,7 @@ Add `trial_run.max_hold_seconds=75` to both checked-in configurations. On a real
 
 Test the normal Bar close, the 75-second fresh-tick fallback, stale-market blocking, reset rejection while holding, and manual flatten reconciliation.
 
-- [ ] **Step 5: Cover terminal failures**
+- [x] **Step 5: Cover terminal failures**
 
 Add tests for:
 
@@ -639,7 +639,7 @@ Add tests for:
 - emergency stop during holding;
 - backend restart marker causing `aborted` rather than auto-resume.
 
-- [ ] **Step 6: Persist active-run checkpoints and abort on restart**
+- [x] **Step 6: Persist active-run checkpoints and abort on restart**
 
 Create `TrialRunCheckpointStore` with a configurable SQLite path:
 
@@ -659,13 +659,13 @@ Use `QUANT_TRIAL_RUN_STATE_DB` when set; otherwise use `back_end/data/runtime/tr
 
 Tests must inject a `tmp_path` database, construct a second store instance, and prove a non-terminal run becomes aborted while a terminal run remains unchanged.
 
-- [ ] **Step 7: Run Task 5 gate**
+- [x] **Step 7: Run Task 5 gate**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest back_end\tests\test_trial_run_closed_loop.py back_end\tests\test_trial_run_store.py back_end\tests\test_trial_run_api.py back_end\tests\test_verify_strategy.py -q
 ```
 
-- [ ] **Step 8: Commit Task 5**
+- [x] **Step 8: Commit Task 5**
 
 ```powershell
 git add back_end/src/trading/trial_run_execution.py back_end/src/trading/trial_run_store.py back_end/src/trading/simulated_fill.py back_end/src/trading/engine.py back_end/src/strategy/strategies/verify.py back_end/src/api/__init__.py back_end/src/api/trial_run.py back_end/config/config.example.json back_end/config/config_production.json back_end/tests/test_trial_run_closed_loop.py back_end/tests/test_trial_run_store.py back_end/tests/test_trial_run_api.py back_end/tests/test_verify_strategy.py .gitignore
@@ -682,7 +682,7 @@ git commit -m "feat(trial-run): complete real and simulated close loops"
 - Modify: `front_end/tests/unit/trialRunApi.spec.js`
 - Modify: `front_end/tests/e2e/smoke.spec.js`
 
-- [ ] **Step 1: Add API helper tests**
+- [x] **Step 1: Add API helper tests**
 
 Cover:
 
@@ -692,11 +692,11 @@ Cover:
 - `409` reason-code display;
 - no redirect loop when polling reports an interrupted run.
 
-- [ ] **Step 2: Replace first-active-order selection**
+- [x] **Step 2: Replace first-active-order selection**
 
 Delete the computed behavior that scans global `orders`. The simulation action uses only `trialStatus.current_order_id` and confirms that the current order belongs to the displayed order-chain row.
 
-- [ ] **Step 3: Add an order-chain table**
+- [x] **Step 3: Add an order-chain table**
 
 Columns:
 
@@ -714,7 +714,7 @@ Columns:
 
 The current order row must be visually identifiable without relying on color alone.
 
-- [ ] **Step 4: Implement safe simulation controls**
+- [x] **Step 4: Implement safe simulation controls**
 
 Button sequence:
 
@@ -726,7 +726,7 @@ Button sequence:
 
 Before the 2-second no-fill threshold, show the remaining time and keep the first button disabled. Enable it only from backend `simulation_prepare_allowed`; do not infer eligibility from the browser clock. Each confirmation dialog shows order ID, symbol, 多/空, 开/平, price, volume, and states that this is not a broker fill.
 
-- [ ] **Step 5: Display the two success outcomes**
+- [x] **Step 5: Display the two success outcomes**
 
 - `passed_real`: “真实成交闭环通过”
 - `passed_simulated`: “真实报单链路通过；成交后处理由模拟成交验证”
@@ -737,11 +737,11 @@ Show `导出测试报告` only for terminal outcomes. For `running`, keep it dis
 
 Display `rate_limit_remaining`, the next allowed chase time, broker position, and holding deadline. When `failure_code` is `flatten_required` or `flatten_required_market_data`, show a persistent “真实持仓尚未归零” error band, disable every simulated-fill action, and keep the existing quick-close action prominent until reconciliation reports zero.
 
-- [ ] **Step 6: Make E2E fail on backend errors**
+- [x] **Step 6: Make E2E fail on backend errors**
 
 Use `page.route('/api/**', route => route.fulfill(fixtureFor(route.request())))` to return deterministic fixtures for disconnected, real-order pending, waiting-rate-capacity, chasing, simulation-ready, simulated-holding, flatten-required, and passed-simulated states. Capture `page.on('console')` and fail on unexpected API errors. The smoke test must no longer pass with `/trial-run/status` returning 502.
 
-- [ ] **Step 7: Run Task 6 gate**
+- [x] **Step 7: Run Task 6 gate**
 
 ```powershell
 cd front_end
@@ -754,7 +754,7 @@ npm.cmd run e2e
 
 Expected: zero errors; existing lint warnings may be logged separately but no new warning may come from `TrialRunView.vue` or `src/api/index.js`.
 
-- [ ] **Step 8: Commit Task 6**
+- [x] **Step 8: Commit Task 6**
 
 ```powershell
 git add front_end/src/api/index.js front_end/src/views/TrialRunView.vue front_end/tests/unit/trialRunApi.spec.js front_end/tests/e2e/smoke.spec.js
@@ -772,7 +772,7 @@ git commit -m "feat(trial-run): show dual-track verification workflow"
 - Modify: `front_end/src/api/index.js`
 - Modify: `front_end/src/views/TrialRunView.vue`
 
-- [ ] **Step 1: Write the failing report test**
+- [x] **Step 1: Write the failing report test**
 
 After a `passed_simulated` test run, call `GET /trial-run/report.docx` and assert:
 
@@ -784,7 +784,7 @@ After a `passed_simulated` test run, call `GET /trial-run/report.docx` and asser
 
 Add the complementary `passed_real` assertion.
 
-- [ ] **Step 2: Implement report generation**
+- [x] **Step 2: Implement report generation**
 
 `trial_run_report.py` must generate these sections:
 
@@ -800,17 +800,17 @@ Add the complementary `passed_real` assertion.
 
 手续费和保证金在模拟轨道显示“未计入（0）”，不提供用户输入字段。
 
-- [ ] **Step 3: Reject reports without a terminal conclusion**
+- [x] **Step 3: Reject reports without a terminal conclusion**
 
 For `running`, return `409` with `detail="trial run has no terminal acceptance result"`. `failed` and `aborted` may export failure reports.
 
-- [ ] **Step 4: Run Task 7 gate**
+- [x] **Step 4: Run Task 7 gate**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest back_end\tests\test_trial_run_report.py back_end\tests\test_trial_run_closed_loop.py -q
 ```
 
-- [ ] **Step 5: Commit Task 7**
+- [x] **Step 5: Commit Task 7**
 
 ```powershell
 git add back_end/src/api/trial_run_report.py back_end/src/api/trial_run.py back_end/tests/test_trial_run_report.py front_end/src/api/index.js front_end/src/views/TrialRunView.vue
@@ -827,7 +827,7 @@ git commit -m "feat(trial-run): export dual-track DOCX report"
 - Modify: `.github/workflows/ci.yml`
 - Modify: `docs/superpowers/plans/2026-08-10-trial-run-business-closure.md` (checkboxes only)
 
-- [ ] **Step 1: Run full backend quality gate**
+- [x] **Step 1: Run full backend quality gate**
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest back_end\tests -q
@@ -841,7 +841,7 @@ cd back_end
 ..\.venv\Scripts\python.exe -m mypy src\api\security.py src\api\trial_run.py src\api\trial_run_report.py src\trading\risk.py src\trading\execution_adapter.py src\trading\trial_run_execution.py src\trading\trial_run_store.py src\trading\simulated_fill.py src\data\cache.py src\data\governance.py src\observability.py
 ```
 
-- [ ] **Step 2: Run full frontend quality gate**
+- [x] **Step 2: Run full frontend quality gate**
 
 ```powershell
 cd front_end
@@ -889,7 +889,7 @@ Run at least these manual cases:
 - stale market data at the real holding deadline, proving stop/reset/logout remain blocked until manual flatten reconciliation;
 - backend restart followed by `aborted` and reconciliation.
 
-- [ ] **Step 6: Inspect the final worktree**
+- [x] **Step 6: Inspect the final worktree**
 
 ```powershell
 git status --short
@@ -898,7 +898,7 @@ git diff --check
 
 Acceptance requires no generated database, generated report, newly introduced credential value, `dist`, `.pnpm-store`, or cache file to be staged.
 
-- [ ] **Step 7: Final review and commit**
+- [x] **Step 7: Final review and commit**
 
 Run a main-thread code review focused on order ownership, late-fill races, adapter cleanup, and report truthfulness. Fix all P0/P1 findings, rerun the affected gates, then commit documentation:
 
