@@ -59,7 +59,8 @@ const detailCache = reactive({})   // { [strategy_id]: StrategyDetailResponse }
 const detailLoading = reactive({}) // { [strategy_id]: boolean }
 
 async function loadDetail(strategyId) {
-  detailLoading[strategyId] = true
+  const hasCachedDetail = Boolean(detailCache[strategyId])
+  if (!hasCachedDetail) detailLoading[strategyId] = true
   try {
     detailCache[strategyId] = await fetchStrategyDetail(strategyId)
   } catch { /* 静默 */ } finally {

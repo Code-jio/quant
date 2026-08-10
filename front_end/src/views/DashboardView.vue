@@ -30,16 +30,21 @@ const lastRefreshTime   = ref('')
 const loggingOut        = ref(false)
 
 // ── 数据加载 ──────────────────────────────────────────────────────────────
-async function loadStrategies() {
-  loadingStrategies.value = true
+async function loadStrategies(silent = false) {
+  if (!silent || strategies.value.length === 0) loadingStrategies.value = true
   try {
-    strategies.value = await fetchStrategies()
-    isMockMode.value = false
+    const next = await fetchStrategies()
+    if (Array.isArray(next)) {
+      strategies.value = next
+      isMockMode.value = false
+    }
   } catch (err) {
     if (err.message?.includes('401')) return
-    ElMessage.warning('无法连接后端服务，当前显示模拟数据')
-    strategies.value = MOCK_STRATEGIES
-    isMockMode.value = true
+    if (strategies.value.length === 0) {
+      ElMessage.warning('无法连接后端服务，当前显示模拟数据')
+      strategies.value = MOCK_STRATEGIES
+      isMockMode.value = true
+    }
   } finally {
     loadingStrategies.value = false
     lastRefreshTime.value   = new Date().toLocaleTimeString('zh-CN', { hour12: false })
@@ -50,7 +55,7 @@ async function loadStrategies() {
 let refreshTimer = null
 onMounted(() => {
   loadStrategies()
-  refreshTimer = setInterval(loadStrategies, 5_000)
+  refreshTimer = setInterval(() => loadStrategies(true), 5_000)
 })
 onUnmounted(() => clearInterval(refreshTimer))
 
