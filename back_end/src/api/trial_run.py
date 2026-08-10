@@ -12,13 +12,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 
 from ..trading import TradingStatus
 from ..trading.symbols import is_supported_symbol, symbol_key, symbols_match
 from ..trading.execution_adapter import TrialRunSimulationLedger, SimulationLedgerError
 from ..trading.trial_run_execution import TrialRunExecutionState, TrialRunOutcome
 from ..trading.trial_run_store import TrialRunCheckpointStore
+from .trial_run_report import generate_trial_run_report
 from .models import (
     TrialRunActionResponse,
     TrialRunConfigResponse,
@@ -1447,6 +1448,11 @@ def _stop_trial_strategy(
             },
         )
 
+    if execution is None:
+        raise HTTPException(
+            status_code=409,
+            detail={"failure_code": "trial_execution_unbound", "message": "试运行执行域已丢失，不能完成停止前对账"},
+        )
     symbol = str(getattr(execution, "symbol", "") or getattr(strategy, "symbol", "") or "")
     active_orders = _active_broker_orders(gateway, symbol)
     position_volume = _broker_position_volume(gateway, symbol)
@@ -1920,6 +1926,11 @@ def register_trial_run_routes(
         if source_status not in {"cancelled", "canceled"}:
             return _action_response(trading_state, "simulation_prepare", "等待券商撤单确认", success=False)
         gateway = getattr(engine, "gateway", None)
+        if gateway is None:
+            raise HTTPException(
+                status_code=409,
+                detail={"failure_code": "broker_gateway_unavailable", "message": "交易网关不可用，无法完成券商对账"},
+            )
         try:
             reconciliation = gateway.refresh_reconciliation(timeout_seconds=8.0)
         except Exception as exc:

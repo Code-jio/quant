@@ -27,7 +27,7 @@ def apply_simulated_fill(
     if not order_id:
         raise ValueError("order_id is required")
     adapter = getattr(engine, "simulation_adapter", None)
-    if not getattr(adapter, "is_simulation", False):
+    if adapter is None or not getattr(adapter, "is_simulation", False):
         raise SimulationLedgerError("simulation_not_ready")
     order = adapter.get_order(order_id)
     if order is None:

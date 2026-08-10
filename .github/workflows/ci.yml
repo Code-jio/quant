@@ -32,7 +32,7 @@ jobs:
         run: ruff check src/ tests/
 
       - name: Type check (mypy)
-        run: mypy src/api/security.py src/trading/risk.py src/data/cache.py src/data/governance.py src/observability.py
+        run: mypy src/api/security.py src/api/trial_run.py src/api/trial_run_report.py src/trading/risk.py src/trading/execution_adapter.py src/trading/trial_run_execution.py src/trading/trial_run_store.py src/trading/simulated_fill.py src/data/cache.py src/data/governance.py src/observability.py
 
       - name: Test
         run: pytest tests/ -v --tb=short
