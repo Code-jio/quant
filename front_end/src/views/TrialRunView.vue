@@ -95,6 +95,7 @@
               <el-form-item label="环境">
                 <el-select v-model="accountForm.environment" :disabled="actionLoading.connect">
                   <el-option label="实盘（生产版 API）" value="实盘" />
+                  <el-option label="仿真" value="仿真" />
                   <el-option label="测试" value="测试" />
                 </el-select>
               </el-form-item>

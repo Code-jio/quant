@@ -146,6 +146,7 @@
               <el-form-item label="柜台环境">
                 <el-select v-model="form.environment" :disabled="connecting" style="width:100%">
                   <el-option label="实盘（生产版 API）" value="实盘" />
+                  <el-option label="仿真" value="仿真" />
                   <el-option label="测试" value="测试" />
                 </el-select>
               </el-form-item>
@@ -239,8 +240,22 @@ const router    = useRouter()
 const authStore = useAuthStore()
 
 // ── 预设服务器（本地备用，会从后端覆盖） ──────────────────────────────────
-const TD_SERVERS_DEFAULT = []
-const MD_SERVERS_DEFAULT = []
+const TD_SERVERS_DEFAULT = [
+  { label: '电信 114.94.128.1', value: 'tcp://114.94.128.1:42205' },
+  { label: '联通 140.206.34.161', value: 'tcp://140.206.34.161:42205' },
+  { label: '电信 114.94.128.5', value: 'tcp://114.94.128.5:42205' },
+  { label: '联通 140.206.34.165', value: 'tcp://140.206.34.165:42205' },
+  { label: '电信 114.94.128.6', value: 'tcp://114.94.128.6:42205' },
+  { label: '联通 140.206.34.166', value: 'tcp://140.206.34.166:42205' },
+]
+const MD_SERVERS_DEFAULT = [
+  { label: '电信 114.94.128.1', value: 'tcp://114.94.128.1:42213' },
+  { label: '联通 140.206.34.161', value: 'tcp://140.206.34.161:42213' },
+  { label: '电信 114.94.128.5', value: 'tcp://114.94.128.5:42213' },
+  { label: '联通 140.206.34.165', value: 'tcp://140.206.34.165:42213' },
+  { label: '电信 114.94.128.6', value: 'tcp://114.94.128.6:42213' },
+  { label: '联通 140.206.34.166', value: 'tcp://140.206.34.166:42213' },
+]
 
 const tdServers = ref([...TD_SERVERS_DEFAULT])
 const mdServers = ref([...MD_SERVERS_DEFAULT])
@@ -255,14 +270,14 @@ fetchServers().then(data => {
 const form = reactive({
   username:  '',
   password:  '',
-  broker_id: '',
-  td_server: '',
-  md_server: '',
-  app_id:      '',
-  auth_code:   '',
-  environment: '测试',
-  td_custom:   true,
-  md_custom:   true,
+  broker_id: '2071',
+  td_server: 'tcp://114.94.128.1:42205',
+  md_server: 'tcp://114.94.128.1:42213',
+  app_id:      'client_TraderMaster_v1.0.0',
+  auth_code:   '20260324LHJYMHBG',
+  environment: '仿真',
+  td_custom:   false,
+  md_custom:   false,
   auto_start_strategy: false,
   strategy_name: 'ma_cross',
   strategy_symbol: 'IF9999',
