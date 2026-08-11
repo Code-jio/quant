@@ -582,6 +582,60 @@ class TestCallbacks:
 # ── Connection flow tests ─────────────────────────────────────────────────────
 
 class TestConnectionFlow:
+    @staticmethod
+    def _install_synchronous_connect_runtime(monkeypatch, gateway, refresh_result, reconciliation_ready):
+        """Replace vn.py with a synchronous three-channel-ready runtime."""
+        class EventEngine:
+            def register(self, *_args):
+                return None
+
+        class MainEngine:
+            def __init__(self, _event_engine):
+                pass
+
+            def add_gateway(self, _gateway_class):
+                return None
+
+            def connect(self, _setting, _gateway_name):
+                gateway._td_connected = True
+                gateway._md_connected = True
+                gateway._contracts_ready = True
+                gateway._connected_event.set()
+
+        monkeypatch.setitem(sys.modules, "vnpy.event", SimpleNamespace(EventEngine=EventEngine))
+        monkeypatch.setitem(sys.modules, "vnpy.trader.engine", SimpleNamespace(MainEngine=MainEngine))
+        monkeypatch.setitem(sys.modules, "vnpy.trader.event", SimpleNamespace(
+            EVENT_ACCOUNT="account", EVENT_LOG="log", EVENT_ORDER="order",
+            EVENT_POSITION="position", EVENT_TICK="tick", EVENT_TRADE="trade",
+        ))
+        monkeypatch.setattr("src.trading.vnpy_gateway._ensure_vnpy_runtime_dir", lambda: None)
+        monkeypatch.setattr(
+            "src.trading.vnpy_gateway._build_reconciliation_ctp_gateway",
+            lambda _adapter: object,
+        )
+
+        refresh_calls = []
+
+        def refresh_reconciliation(*, timeout_seconds):
+            refresh_calls.append(timeout_seconds)
+            gateway._reconciliation_ready = reconciliation_ready
+            return dict(refresh_result)
+
+        monkeypatch.setattr(gateway, "refresh_reconciliation", refresh_reconciliation)
+        return refresh_calls
+
+    @staticmethod
+    def _live_connect_config():
+        return {
+            "username": "live-user",
+            "password": "live-password",
+            "broker_id": "9999",
+            "td_server": "tcp://td.example:1234",
+            "md_server": "tcp://md.example:1234",
+            "connect_timeout": 0.1,
+            "reconciliation_timeout": 0.1,
+        }
+
     def test_connect_rejects_missing_credentials(self):
         gw = VnpyGateway()
         with pytest.raises(Exception):
@@ -600,6 +654,32 @@ class TestConnectionFlow:
         gw.status = TradingStatus.STOPPED
         signal = Signal(symbol="rb2505", datetime=datetime.now(), direction=Direction.LONG, price=3880, volume=1)
         assert gw.send_order(signal) == ""
+
+    def test_connect_rejects_transport_ready_session_when_broker_reconciliation_is_not_fresh(self, monkeypatch):
+        gateway = VnpyGateway()
+        refresh_calls = self._install_synchronous_connect_runtime(
+            monkeypatch,
+            gateway,
+            {"ok": False, "fresh": False, "failure_code": "broker_snapshot_timeout"},
+            reconciliation_ready=False,
+        )
+
+        assert gateway.connect(self._live_connect_config()) is False
+        assert refresh_calls == [0.1]
+        assert gateway.status == TradingStatus.ERROR
+
+    def test_connect_accepts_transport_ready_session_only_after_fresh_reconciliation_sets_the_gate(self, monkeypatch):
+        gateway = VnpyGateway()
+        refresh_calls = self._install_synchronous_connect_runtime(
+            monkeypatch,
+            gateway,
+            {"ok": True, "fresh": True, "failure_code": ""},
+            reconciliation_ready=True,
+        )
+
+        assert gateway.connect(self._live_connect_config()) is True
+        assert refresh_calls == [0.1]
+        assert gateway.status == TradingStatus.CONNECTED
 
 
 class TestChannelConnectionHealth:

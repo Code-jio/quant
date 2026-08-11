@@ -2,7 +2,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 import pytest
 
-from src.api import create_app
+from src.api import create_app, trading_state
 from src.api.security import SESSION_COOKIE_NAME, session_store
 from src.trading import GatewayBase
 from src.trading.types import AccountInfo, TradingStatus
@@ -11,6 +11,7 @@ from src.trading.types import AccountInfo, TradingStatus
 class FakeVnpyGateway(GatewayBase):
     def __init__(self):
         super().__init__("VNPY_CTP")
+        self.reconciliation_requests = 0
 
     def connect(self, config):
         self.status = TradingStatus.CONNECTED
@@ -34,6 +35,16 @@ class FakeVnpyGateway(GatewayBase):
 
     def query_orders(self):
         return []
+
+    def refresh_reconciliation(self, timeout_seconds=8.0):
+        self.reconciliation_requests += 1
+        self.last_reconciliation = {
+            "ok": True,
+            "fresh": True,
+            "failure_code": "",
+            "duration_seconds": 0.0,
+        }
+        return dict(self.last_reconciliation)
 
 
 def install_fake_vnpy_gateway(monkeypatch):
@@ -279,11 +290,16 @@ def test_trading_reconcile_reports_account_orders_and_positions(monkeypatch):
         assert login_response.status_code == 200
 
         response = client.get("/trading/reconcile")
+        engine = trading_state.primary_engine()
+        assert engine is not None
+        assert engine.gateway.reconciliation_requests == 1
 
     assert response.status_code == 200
     body = response.json()
     assert body["connected"] is True
     assert body["account"]["account_id"] == "TEST001"
+    assert body["reconciliation"]["ok"] is True
+    assert body["reconciliation"]["fresh"] is True
     assert "orders" in body
     assert "positions" in body
 

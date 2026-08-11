@@ -15,6 +15,7 @@ def test_system_snapshot_uses_independent_td_and_md_connection_states(monkeypatc
                 "md_connected": False,
                 "fully_connected": False,
                 "contracts_ready": False,
+                "reconciliation_ready": False,
                 "order_entry_ready": False,
                 "reconnecting": True,
                 "reconnect_count": 2,
@@ -36,6 +37,7 @@ def test_system_snapshot_uses_independent_td_and_md_connection_states(monkeypatc
     assert snapshot["md_connected"] is False
     assert snapshot["market_connected"] is False
     assert snapshot["contracts_ready"] is False
+    assert snapshot["reconciliation_ready"] is False
     assert snapshot["order_entry_ready"] is False
 
 
@@ -51,4 +53,5 @@ def test_system_snapshot_defaults_to_order_entry_closed_without_a_gateway_snapsh
     snapshot = _build_system_snapshot()
 
     assert snapshot["contracts_ready"] is False
+    assert snapshot["reconciliation_ready"] is False
     assert snapshot["order_entry_ready"] is False
