@@ -564,6 +564,12 @@ class TradingEngine:
                 if order_id:
                     self.risk_manager.record_order(signal)
                     logger.info(f"发送信号: {signal.symbol} {signal.direction.value} {signal.volume}@{signal.price}")
+                else:
+                    gateway_reason = str(
+                        getattr(self.gateway, "last_reject_reason", "") or ""
+                    )
+                    if gateway_reason:
+                        self.last_reject_reason = gateway_reason
                 return order_id
             except Exception as e:
                 self._error_count += 1

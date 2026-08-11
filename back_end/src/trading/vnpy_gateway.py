@@ -8,6 +8,7 @@ vn.py/vnpy_ctp for the real CTP connection.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from datetime import datetime
@@ -26,7 +27,7 @@ from ..strategy import (
 )
 from .errors import GatewayError
 from .gateway import GatewayBase
-from .symbols import PRODUCT_EXCHANGE, extract_product, is_supported_symbol
+from .symbols import PRODUCT_EXCHANGE, extract_product, is_supported_symbol, symbol_key
 from .types import AccountInfo, MarketData, TradingStatus
 
 logger = logging.getLogger(__name__)
@@ -115,6 +116,18 @@ def _build_reconciliation_ctp_gateway(adapter: "VnpyGateway") -> Any:
                 self._snapshot_reqids.pop("orders", None)
                 self._emit_completion("orders", error, reqid)
 
+        def onRspQryInstrument(
+            self,
+            data: Dict[str, Any],
+            error: Dict[str, Any],
+            reqid: int,
+            last: bool,
+        ) -> None:
+            adapter._begin_contract_capability_snapshot(reqid)
+            if data and data.get("InstrumentID"):
+                adapter._record_contract_capability(data)
+            super().onRspQryInstrument(data, error, reqid, last)
+
         def query_positions_snapshot(self) -> int:
             if not _ctp_contracts_ready(self, symbol_contract_map):
                 return -99
@@ -198,6 +211,9 @@ class VnpyGateway(GatewayBase):
         self._connection_generation = 0
         self._reconciliation_worker: threading.Thread | None = None
         self._reconciliation_timeout_seconds = 8.0
+        self._contract_capabilities: Dict[str, Dict[str, Any]] = {}
+        self._contract_capability_request_id: int | None = None
+        self.last_reject_reason = ""
         self._vn_orders: Dict[str, Any] = {}
         self._order_meta: Dict[str, Tuple[str, Any]] = {}
         self.latest_ticks: Dict[str, MarketData] = {}
@@ -226,6 +242,8 @@ class VnpyGateway(GatewayBase):
             self._reconnecting = False
             self._connection_outage = False
             self._connection_generation += 1
+            self._contract_capabilities.clear()
+            self._contract_capability_request_id = None
             self._last_disconnect_reason = ""
             self._connection_changed_at = datetime.now().isoformat()
         self._connected_event.clear()
@@ -407,6 +425,10 @@ class VnpyGateway(GatewayBase):
         if "td" in channels and self._contracts_ready:
             self._contracts_ready = False
             changed = True
+        if "td" in channels and self._contract_capabilities:
+            self._contract_capabilities.clear()
+            self._contract_capability_request_id = None
+            changed = True
         self._connected_event.clear()
         new_outage = not self._connection_outage
         self._reconnecting = True
@@ -502,17 +524,19 @@ class VnpyGateway(GatewayBase):
                 self._connection_outage = False
                 self._connection_generation += 1
                 self._reconciliation_worker = None
+                self._contract_capabilities.clear()
+                self._contract_capability_request_id = None
                 self._connected_event.clear()
                 self._connection_changed_at = datetime.now().isoformat()
             self.status = TradingStatus.STOPPED
 
     def send_order(self, signal: Signal) -> str:
         """Send an order through vn.py."""
+        self.last_reject_reason = ""
         if self.status not in (TradingStatus.CONNECTED, TradingStatus.TRADING):
-            logger.warning("vn.py CTP 未连接，无法发送订单")
-            return ""
+            return self._reject_order("CTP gateway is not connected")
         if not self._main_engine:
-            return ""
+            return self._reject_order("CTP main engine is unavailable")
         with self._connection_lock:
             self._refresh_channel_health_from_vnpy()
             order_entry_ready = (
@@ -523,12 +547,18 @@ class VnpyGateway(GatewayBase):
                 and not self._reconnecting
             )
         if not order_entry_ready:
-            logger.warning("[vn.py] order rejected locally: CTP order entry is not ready")
-            return ""
+            return self._reject_order("CTP order entry is not ready")
+
+        contract_error = self._validate_contract_order(signal)
+        if contract_error:
+            return self._reject_order(contract_error)
 
         from vnpy.trader.object import OrderRequest
 
-        symbol, exchange = self._split_symbol(signal.symbol)
+        try:
+            symbol, exchange = self._split_symbol(signal.symbol)
+        except GatewayError as exc:
+            return self._reject_order(str(exc))
         req = OrderRequest(
             symbol=symbol,
             exchange=exchange,
@@ -546,6 +576,125 @@ class VnpyGateway(GatewayBase):
 
         self._order_meta[vt_orderid] = (symbol, exchange)
         return vt_orderid
+
+    def _reject_order(self, reason: str) -> str:
+        self.last_reject_reason = str(reason or "CTP order rejected locally")
+        logger.warning("[vn.py] order rejected locally: %s", self.last_reject_reason)
+        return ""
+
+    @staticmethod
+    def _raw_contract_field(raw_contract: Any, field: str, default: Any = None) -> Any:
+        if isinstance(raw_contract, dict):
+            return raw_contract.get(field, default)
+        return getattr(raw_contract, field, default)
+
+    def _begin_contract_capability_snapshot(self, request_id: int) -> None:
+        with self._connection_lock:
+            request_id = int(request_id)
+            if self._contract_capability_request_id == request_id:
+                return
+            self._contract_capability_request_id = request_id
+            self._contract_capabilities.clear()
+            self._contracts_ready = False
+
+    def _record_contract_capability(self, raw_contract: Any) -> None:
+        symbol = str(self._raw_contract_field(raw_contract, "InstrumentID", "") or "").strip()
+        exchange = str(self._raw_contract_field(raw_contract, "ExchangeID", "") or "").strip().upper()
+        if not symbol or not exchange:
+            return
+        key = symbol_key(f"{symbol}.{exchange}")
+        if not key:
+            return
+
+        def positive_float(field: str) -> float:
+            try:
+                value = float(self._raw_contract_field(raw_contract, field, 0) or 0)
+            except (TypeError, ValueError):
+                return 0.0
+            return value if math.isfinite(value) and value > 0 else 0.0
+
+        capability = {
+            "symbol": symbol,
+            "exchange": exchange,
+            "price_tick": positive_float("PriceTick"),
+            "min_limit_order_volume": positive_float("MinLimitOrderVolume"),
+            "max_limit_order_volume": positive_float("MaxLimitOrderVolume"),
+            "min_market_order_volume": positive_float("MinMarketOrderVolume"),
+            "max_market_order_volume": positive_float("MaxMarketOrderVolume"),
+        }
+        with self._connection_lock:
+            self._contract_capabilities[key] = capability
+
+    def _contract_capability(self, symbol: str) -> Dict[str, Any] | None:
+        key = symbol_key(symbol)
+        with self._connection_lock:
+            capability = self._contract_capabilities.get(key)
+            return dict(capability) if capability is not None else None
+
+    @staticmethod
+    def _volume_error(volume: Any, minimum: float, maximum: float, label: str) -> str:
+        try:
+            parsed = float(volume)
+        except (TypeError, ValueError):
+            return f"{label} volume must be an integer"
+        if not math.isfinite(parsed) or parsed <= 0 or not parsed.is_integer():
+            return f"{label} volume must be a positive integer"
+        if minimum <= 0 or maximum < minimum:
+            return f"{label} volume capability is unavailable"
+        if parsed < minimum or parsed > maximum:
+            return f"{label} volume {int(parsed)} is outside broker range {minimum:g}-{maximum:g}"
+        return ""
+
+    def _validate_contract_order(self, signal: Signal) -> str:
+        capability = self._contract_capability(signal.symbol)
+        if capability is None:
+            return f"CTP contract does not exist in the broker table: {signal.symbol}"
+
+        exchange = str(capability.get("exchange") or "").upper()
+        valid_offsets = {
+            OffsetFlag.OPEN,
+            OffsetFlag.CLOSE,
+            OffsetFlag.CLOSE_TODAY,
+            OffsetFlag.CLOSE_YESTERDAY,
+        }
+        if signal.offset not in valid_offsets:
+            return f"Unsupported CTP offset: {signal.offset}"
+        if signal.direction not in (Direction.LONG, Direction.SHORT):
+            return f"Unsupported CTP direction: {signal.direction}"
+        if signal.offset in (OffsetFlag.CLOSE_TODAY, OffsetFlag.CLOSE_YESTERDAY):
+            if exchange not in {"SHFE", "INE"}:
+                return f"{signal.offset.value} is only valid for SHFE/INE contracts"
+
+        if signal.order_type == OrderType.MARKET:
+            return self._volume_error(
+                signal.volume,
+                float(capability.get("min_market_order_volume") or 0),
+                float(capability.get("max_market_order_volume") or 0),
+                "Market order",
+            )
+
+        if signal.order_type != OrderType.LIMIT:
+            order_type = getattr(signal.order_type, "value", signal.order_type)
+            return f"Unsupported CTP order type: {order_type}"
+
+        price_tick = float(capability.get("price_tick") or 0)
+        try:
+            price = float(signal.price)
+        except (TypeError, ValueError):
+            return "Limit price must be numeric"
+        if not math.isfinite(price) or price <= 0:
+            return "Limit price must be positive"
+        if price_tick <= 0:
+            return "Broker PriceTick is unavailable"
+        tick_units = price / price_tick
+        if not math.isclose(tick_units, round(tick_units), rel_tol=0.0, abs_tol=1e-8):
+            return f"Limit price {price:g} is not aligned to PriceTick {price_tick:g}"
+        return self._volume_error(
+            signal.volume,
+            float(capability.get("min_limit_order_volume") or 0),
+            float(capability.get("max_limit_order_volume") or 0),
+            "Limit order",
+        )
 
     def cancel_order(self, order_id: str) -> bool:
         """Cancel an active order."""
@@ -571,9 +720,13 @@ class VnpyGateway(GatewayBase):
         return True
 
     def supports_market_order(self, symbol: str = "") -> bool:
-        """Fail closed until an exchange/contract capability source proves support."""
-        del symbol
-        return False
+        """Return true only when the raw CTP contract proves a market range."""
+        capability = self._contract_capability(symbol)
+        if capability is None:
+            return False
+        minimum = float(capability.get("min_market_order_volume") or 0)
+        maximum = float(capability.get("max_market_order_volume") or 0)
+        return minimum > 0 and maximum >= minimum
 
     def query_account(self) -> AccountInfo:
         return self.account
