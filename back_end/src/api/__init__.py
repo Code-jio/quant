@@ -40,6 +40,7 @@ import traceback
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 import numpy as np
@@ -55,7 +56,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from ..strategy import Direction, StrategyBase
 from ..trading import AccountInfo, TradingEngine, TradingStatus
 from ..strategy import Signal, OrderType, OffsetFlag
-from ..observability import audit_log, metrics, new_request_id, structured_json
+from ..observability import audit_log, metrics, new_request_id, runtime_log_category, structured_json
 from ..settings import (
     ctp_server_presets,
     runtime_risk_defaults,
@@ -827,6 +828,32 @@ async def _wait_for_gateway_ticks(
         await asyncio.sleep(0.1)
 
 
+def _gateway_connection_snapshot(gateway) -> Dict[str, Any]:
+    """Return independent TD/MD health while preserving legacy gateways."""
+    connected = bool(
+        gateway is not None
+        and gateway.status in (TradingStatus.CONNECTED, TradingStatus.TRADING)
+    )
+    fallback = {
+        "td_connected": connected,
+        "md_connected": connected,
+        "fully_connected": connected,
+        "reconnecting": False,
+        "reconnect_count": 0,
+        "last_disconnect_reason": "",
+        "changed_at": "",
+    }
+    snapshot = getattr(gateway, "connection_snapshot", None) if gateway is not None else None
+    if not callable(snapshot):
+        return fallback
+    try:
+        current = dict(snapshot() or {})
+    except Exception as exc:
+        logger.warning("[gateway] 读取连接健康状态失败: %s", exc)
+        return fallback
+    return {**fallback, **current}
+
+
 def _build_system_snapshot() -> dict:
     engine = trading_state.primary_engine()
     market_connected = False
@@ -836,13 +863,20 @@ def _build_system_snapshot() -> dict:
     total_pnl        = 0.0
     balance          = 0.0
     initial_capital  = 1_000_000.0
+    connection: Dict[str, Any] = {
+        "reconnecting": False,
+        "reconnect_count": 0,
+        "last_disconnect_reason": "",
+        "changed_at": "",
+    }
 
     if engine is not None:
         gw = engine.gateway
+        connection       = _gateway_connection_snapshot(gw)
         gateway_name     = gw.name
         gateway_status   = gw.status.value if isinstance(gw.status, TradingStatus) else str(gw.status)
-        td_connected     = gw.status in (TradingStatus.CONNECTED, TradingStatus.TRADING)
-        market_connected = td_connected   # CTP 单网关：行情与交易共享状态
+        td_connected     = bool(connection["td_connected"])
+        market_connected = bool(connection["md_connected"])
         try:
             account = engine.get_account()
             if not account.error_msg:
@@ -880,6 +914,10 @@ def _build_system_snapshot() -> dict:
         "md_connected":        market_connected,
         "gateway_status":      gateway_status,
         "gateway_name":        gateway_name,
+        "reconnecting":        bool(connection.get("reconnecting", False)),
+        "reconnect_count":     int(connection.get("reconnect_count", 0)),
+        "last_disconnect_reason": str(connection.get("last_disconnect_reason", "")),
+        "connection_changed_at": str(connection.get("changed_at", "")),
         "gateway_latency_ms":  gateway_latency_ms,
         "cpu_percent":         psutil.cpu_percent(interval=None),
         "memory_percent":      psutil.virtual_memory().percent,
@@ -1118,10 +1156,24 @@ def _cancel_all_active_orders() -> dict:
             if not order.is_active():
                 continue
             try:
-                if engine.gateway.cancel_order(oid):
+                if engine.cancel_order(oid):
                     cancelled += 1
+                    _record_audit(
+                        "order",
+                        "cancel",
+                        "success",
+                        resource=oid,
+                        detail={"source": "cancel_all"},
+                    )
                 else:
                     failed += 1
+                    _record_audit(
+                        "order",
+                        "cancel",
+                        "rejected",
+                        resource=oid,
+                        detail={"source": "cancel_all"},
+                    )
             except Exception:
                 failed += 1
     return {"cancelled": cancelled, "failed": failed}
@@ -1222,7 +1274,18 @@ class _LogBuffer(logging.Handler):
                 "message": record.getMessage(),
                 "request_id": getattr(record, "request_id", ""),
             }
+            level = record.levelname.upper()
+            category = runtime_log_category(record.name, level, entry["message"])
+            entry["category"] = category
             self._buf.append(entry)
+            audit_log.record(
+                "log",
+                record.name,
+                level,
+                category=category,
+                request_id=entry["request_id"],
+                detail=entry,
+            )
             if self._queue is not None:
                 try:
                     self._queue.put_nowait(entry)
@@ -1231,8 +1294,22 @@ class _LogBuffer(logging.Handler):
         except Exception:
             pass   # 绝不让日志处理器自身抛异常
 
-    def query(self, level: str = "", q: str = "", limit: int = 200) -> list:
-        entries = list(self._buf)
+    def query(self, level: str = "", q: str = "", limit: int = 200, category: str = "") -> list:
+        persisted = [
+            event.get("detail", {})
+            for event in audit_log.query(event_type="log", category=category, limit=min(max(limit * 2, 200), 1000))
+        ]
+        entries = persisted + list(self._buf)
+        deduplicated = {}
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            key = (entry.get("ts", ""), entry.get("level", ""), entry.get("name", ""), entry.get("message", ""))
+            deduplicated[key] = entry
+        entries = list(deduplicated.values())
+        entries.sort(key=lambda entry: entry.get("ts", ""))
+        if category:
+            entries = [entry for entry in entries if entry.get("category", "system") == category]
         if level and level.upper() not in ("ALL", ""):
             entries = [e for e in entries if e["level"] == level.upper()]
         if q:
@@ -1262,6 +1339,8 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
     async def lifespan(_app: FastAPI):
         global _event_loop
         _event_loop = asyncio.get_running_loop()
+        default_audit_dir = Path(__file__).resolve().parents[2] / "logs" / "compliance"
+        audit_log.configure_persistence(os.getenv("QUANT_AUDIT_LOG_DIR") or default_audit_dir)
         try:
             recovered = trial_run_state.checkpoint_store.abort_non_terminal("backend_restarted")
             if recovered is not None:
@@ -1428,6 +1507,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "gateway_status": gateway_status,
             "active_sessions": session_store.active_count(),
+            "audit_persistence": audit_log.persistence_status(),
             "websockets": {
                 "system": system_manager.count,
                 "orders": orders_manager.count,
@@ -1442,8 +1522,8 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         return PlainTextResponse(metrics.prometheus_text(), media_type="text/plain; version=0.0.4")
 
     @app.get("/audit/events", summary="交易事件审计", tags=["运维"])
-    def audit_events(event_type: str = "", limit: int = 200):
-        return {"events": audit_log.query(event_type=event_type, limit=limit)}
+    def audit_events(event_type: str = "", category: str = "", limit: int = 200):
+        return {"events": audit_log.query(event_type=event_type, category=category, limit=limit)}
 
     @app.get("/auth/servers", summary="获取预设服务器列表", tags=["认证"])
     def get_servers():
@@ -1463,12 +1543,14 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         gw_status    = TradingStatus.STOPPED.value
         gw_name      = "N/A"
         account_id   = ""
+        connection   = _gateway_connection_snapshot(None)
 
         if engine:
             gw         = engine.gateway
+            connection = _gateway_connection_snapshot(gw)
             gw_name    = gw.name
             gw_status  = gw.status.value if isinstance(gw.status, TradingStatus) else str(gw.status)
-            connected  = gw.status in (TradingStatus.CONNECTED, TradingStatus.TRADING)
+            connected  = bool(connection["fully_connected"])
             account_id = gw.account.account_id if hasattr(gw, "account") else ""
 
         return AuthStatusResponse(
@@ -1478,6 +1560,11 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             gateway_name      = gw_name,
             account_id        = account_id,
             connect_log       = trading_state.get_log(),
+            td_connected      = bool(connection["td_connected"]),
+            md_connected      = bool(connection["md_connected"]),
+            reconnecting      = bool(connection["reconnecting"]),
+            reconnect_count   = int(connection["reconnect_count"]),
+            last_disconnect_reason = str(connection["last_disconnect_reason"]),
         )
 
     @app.post(
@@ -1719,12 +1806,14 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         gateway_status   = TradingStatus.STOPPED.value
         gateway_name     = "N/A"
         account_dict     = None
+        connection       = _gateway_connection_snapshot(None)
 
         if engine:
             gw             = engine.gateway
+            connection     = _gateway_connection_snapshot(gw)
             gateway_name   = gw.name
             gateway_status = gw.status.value if isinstance(gw.status, TradingStatus) else str(gw.status)
-            market_connected = gw.status in (TradingStatus.CONNECTED, TradingStatus.TRADING)
+            market_connected = bool(connection["md_connected"])
             try:
                 account = engine.get_account()
                 if not account.error_msg:
@@ -1736,8 +1825,13 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         return SystemStatusResponse(
             timestamp        = datetime.now().isoformat(),
             market_connected = market_connected,
+            td_connected     = bool(connection["td_connected"]),
+            md_connected     = bool(connection["md_connected"]),
             gateway_status   = gateway_status,
             gateway_name     = gateway_name,
+            reconnecting     = bool(connection["reconnecting"]),
+            reconnect_count  = int(connection["reconnect_count"]),
+            last_disconnect_reason = str(connection["last_disconnect_reason"]),
             cpu_percent      = psutil.cpu_percent(interval=None),
             memory_percent   = psutil.virtual_memory().percent,
             active_strategies = active_count,
@@ -2002,6 +2096,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         engine = trading_state.primary_engine()
         if engine is None:
             raise HTTPException(status_code=503, detail="交易引擎未连接")
+        target_engine = engine
         gw = engine.gateway
         # 先在主引擎找，再去各策略引擎
         order = gw.orders.get(order_id)
@@ -2009,12 +2104,13 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             for entry in trading_state.all_entries():
                 order = entry.engine.gateway.orders.get(order_id)
                 if order:
+                    target_engine = entry.engine
                     gw = entry.engine.gateway
                     break
         if order is None:
             raise HTTPException(status_code=404, detail=f"委托单不存在: {order_id}")
         try:
-            success = gw.cancel_order(order_id)
+            success = target_engine.cancel_order(order_id)
             _record_audit(
                 "order",
                 "cancel",
@@ -2422,6 +2518,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         request: Request,
         level: str = "",
         q:     str = "",
+        category: str = "",
         limit: int = 200,
     ):
         """
@@ -2430,7 +2527,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         - q:     关键词全文搜索
         - limit: 返回条数上限（默认 200）
         """
-        entries = log_buffer.query(level=level, q=q, limit=min(limit, 500))
+        entries = log_buffer.query(level=level, q=q, category=category, limit=min(limit, 500))
         return JSONResponse({"logs": entries, "total": len(entries)})
 
     @app.websocket("/ws/logs")

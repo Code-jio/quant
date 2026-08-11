@@ -577,15 +577,29 @@ class TradingEngine:
 
     def cancel_order(self, order_id: str) -> bool:
         """Cancel a manual or external order through the real broker path."""
-        return self._cancel_gateway_order(order_id)
+        check = self.risk_manager.check_cancel_request(order_id)
+        if not check.allowed:
+            self.last_reject_reason = check.reason
+            logger.warning("风控拒绝撤单: %s", check.reason)
+            return False
+        accepted = self._cancel_gateway_order(order_id)
+        self.risk_manager.record_cancel(order_id, accepted=accepted)
+        return accepted
 
     def _cancel_strategy_order(self, order_id: str) -> bool:
         """Cancel only the bound strategy order through its selected adapter."""
+        check = self.risk_manager.check_cancel_request(order_id)
+        if not check.allowed:
+            self.last_reject_reason = check.reason
+            logger.warning("风控拒绝策略撤单: %s", check.reason)
+            return False
+        accepted = False
         try:
-            return self.strategy_execution_adapter.cancel(order_id)
+            accepted = bool(self.strategy_execution_adapter.cancel(order_id))
         except Exception as e:
             logger.error(f"撤销策略订单失败: {e}")
-            return False
+        self.risk_manager.record_cancel(order_id, accepted=accepted)
+        return accepted
 
     def _cancel_gateway_order(self, order_id: str) -> bool:
         """Request a real broker cancellation; callback confirmation is separate."""

@@ -18,6 +18,19 @@
           <el-option label="DEBUG"    value="DEBUG" />
         </el-select>
 
+        <el-select
+          v-model="categoryFilter"
+          size="small"
+          style="width: 120px"
+          @change="applyFilter"
+        >
+          <el-option label="全部分类" value="" />
+          <el-option label="交易日志" value="trade" />
+          <el-option label="系统日志" value="system" />
+          <el-option label="监控日志" value="monitor" />
+          <el-option label="错误日志" value="error" />
+        </el-select>
+
         <!-- 关键词搜索 -->
         <el-input
           v-model="keyword"
@@ -101,6 +114,7 @@
         <span class="log-ts">{{ entry.ts?.substring(11, 23) ?? '' }}</span>
         <span :class="['log-level', `lv-${entry.level}`]">{{ entry.level.padEnd(8) }}</span>
         <span class="log-name">{{ shortName(entry.name) }}</span>
+        <span class="log-category">{{ categoryLabel(entry.category) }}</span>
         <span class="log-msg">{{ entry.message }}</span>
       </div>
 
@@ -124,6 +138,7 @@ const { connected: wsConnected, logs, paused, pause, resume, clear } = useLogsWs
 
 // ── 本地过滤状态 ──────────────────────────────────────────────────────
 const levelFilter  = ref('')
+const categoryFilter = ref('')
 const keyword      = ref('')
 const autoScroll   = ref(true)
 const listRef      = ref(null)
@@ -141,6 +156,9 @@ const filteredLogs = computed(() => {
   let list = logs.value
   if (levelFilter.value) {
     list = list.filter(e => e.level === levelFilter.value)
+  }
+  if (categoryFilter.value) {
+    list = list.filter(e => (e.category || 'system') === categoryFilter.value)
   }
   if (keyword.value) {
     const kl = keyword.value.toLowerCase()
@@ -168,6 +186,15 @@ function shortName(name) {
   const parts = name.split('.')
   // 最多显示后两级：src.api → src.api，uvicorn.access → uvicorn.access
   return parts.slice(-2).join('.')
+}
+
+function categoryLabel(category) {
+  return {
+    trade: '交易',
+    system: '系统',
+    monitor: '监控',
+    error: '错误',
+  }[category] || '系统'
 }
 
 // ── 自动滚动 ──────────────────────────────────────────────────────────
@@ -328,6 +355,12 @@ onMounted(async () => {
   flex-shrink: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.log-category {
+  color: #8b949e;
+  width: 34px;
+  flex-shrink: 0;
 }
 
 .log-msg {

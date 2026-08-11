@@ -42,6 +42,11 @@ class AuthStatusResponse(BaseModel):
     gateway_name:      str
     account_id:        str
     connect_log:       List[str]
+    td_connected:      bool = False
+    md_connected:      bool = False
+    reconnecting:      bool = False
+    reconnect_count:   int = 0
+    last_disconnect_reason: str = ""
 
 
 class ActionRequest(BaseModel):
@@ -58,8 +63,13 @@ class ActionResponse(BaseModel):
 class SystemStatusResponse(BaseModel):
     timestamp:        str
     market_connected: bool
+    td_connected:     bool = False
+    md_connected:     bool = False
     gateway_status:   str
     gateway_name:     str
+    reconnecting:     bool = False
+    reconnect_count:  int = 0
+    last_disconnect_reason: str = ""
     cpu_percent:      float
     memory_percent:   float
     active_strategies: int

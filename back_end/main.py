@@ -8,6 +8,7 @@ import json
 import logging
 import argparse
 from getpass import getpass
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -17,6 +18,7 @@ from src.backtest import BacktestEngine, BacktestConfig
 from src.trading import TradingEngine, create_gateway
 from src.analysis import Analyzer
 from src.settings import ctp_defaults, runtime_risk_defaults, warn_production_risk_defaults
+from src.observability import AuditLogHandler, audit_log
 
 
 logger = logging.getLogger(__name__)
@@ -67,6 +69,11 @@ def configure_logging() -> None:
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
+    audit_dir = os.getenv("QUANT_AUDIT_LOG_DIR") or Path(__file__).resolve().parent / "logs" / "compliance"
+    audit_log.configure_persistence(audit_dir)
+    root_logger = logging.getLogger()
+    if not any(isinstance(handler, AuditLogHandler) for handler in root_logger.handlers):
+        root_logger.addHandler(AuditLogHandler(audit_log))
 
 
 def load_config(config_path: str = DEFAULT_CONFIG_PATH) -> dict:

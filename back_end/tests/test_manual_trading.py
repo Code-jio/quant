@@ -297,6 +297,7 @@ def test_cancel_all_counts_active_orders_once(monkeypatch):
     with TestClient(app) as client:
         login(client)
         allow_market_orders(client)
+        engine = trading_state.primary_engine()
         gateway.orders["A1"] = Order(
             order_id="A1",
             symbol="rb2505",
@@ -316,9 +317,52 @@ def test_cancel_all_counts_active_orders_once(monkeypatch):
             status=OrderStatus.CANCELLED,
         )
 
+        cancelled_order_ids = []
+
+        def cancel_through_engine(order_id):
+            cancelled_order_ids.append(order_id)
+            gateway.orders[order_id].status = OrderStatus.CANCELLED
+            return True
+
+        monkeypatch.setattr(engine, "cancel_order", cancel_through_engine)
+
         response = client.post("/orders/cancel-all")
 
     assert response.status_code == 200
     assert response.json()["cancelled"] == 1
     assert response.json()["failed"] == 0
-    assert gateway.cancelled_order_ids == ["A1"]
+    assert cancelled_order_ids == ["A1"]
+    assert gateway.cancelled_order_ids == []
+
+
+def test_cancel_order_uses_engine_cancel_path(monkeypatch):
+    gateway = install_gateway(monkeypatch)
+    app = create_app()
+
+    with TestClient(app) as client:
+        login(client)
+        engine = trading_state.primary_engine()
+        gateway.orders["A1"] = Order(
+            order_id="A1",
+            symbol="rb2505",
+            direction=Direction.LONG,
+            order_type=OrderType.LIMIT,
+            price=3880,
+            volume=1,
+            status=OrderStatus.SUBMITTED,
+        )
+
+        cancelled_order_ids = []
+
+        def cancel_through_engine(order_id):
+            cancelled_order_ids.append(order_id)
+            gateway.orders[order_id].status = OrderStatus.CANCELLED
+            return True
+
+        monkeypatch.setattr(engine, "cancel_order", cancel_through_engine)
+        response = client.delete("/orders/A1")
+
+    assert response.status_code == 200
+    assert response.json() == {"success": True, "order_id": "A1"}
+    assert cancelled_order_ids == ["A1"]
+    assert gateway.cancelled_order_ids == []

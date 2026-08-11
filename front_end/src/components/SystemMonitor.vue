@@ -33,6 +33,16 @@
         <span class="gw-name">{{ data.gatewayName }}</span>
       </div>
 
+      <div v-if="data.reconnecting || data.reconnectCount" class="status-item">
+        <span class="status-label">自动重连</span>
+        <el-tag :type="data.reconnecting ? 'warning' : 'success'" size="small" effect="plain">
+          {{ data.reconnecting ? '重连中' : `已恢复 ${data.reconnectCount} 次` }}
+        </el-tag>
+        <span v-if="data.lastDisconnectReason" class="disconnect-reason" :title="data.lastDisconnectReason">
+          {{ data.lastDisconnectReason }}
+        </span>
+      </div>
+
       <div class="status-item ms-auto">
         <span :class="['ws-dot', wsConnected ? 'conn-ok' : 'conn-off']"></span>
         <span class="status-label c-muted">WS {{ wsConnected ? '实时' : '已断开' }}</span>
@@ -131,6 +141,7 @@ function pushHistory(cpu, mem, send, recv) {
 
 // ── 计算属性 ─────────────────────────────────────────────────────────
 const tdStatusText = computed(() => {
+  if (data.reconnecting)    return '重连中'
   const s = data.gatewayStatus
   if (s === 'trading')    return '交易中'
   if (s === 'connected')  return '已连接'
@@ -343,6 +354,14 @@ onUnmounted(() => {
 .status-label { color: var(--text-muted, #6e7681); }
 .status-icon  { color: var(--text-muted, #6e7681); font-size: 14px; }
 .gw-name      { color: var(--text-primary, #c9d1d9); font-weight: 600; }
+.disconnect-reason {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #e3b341;
+  font-size: 11px;
+}
 
 .latency-val  { font-weight: 700; font-variant-numeric: tabular-nums; }
 .lat-unknown  { color: var(--text-muted, #6e7681); }

@@ -97,7 +97,41 @@ function apiBody(url) {
   if (path.endsWith('/trial-run/status')) return PASSED_SIMULATED
   if (path.endsWith('/trial-run/config')) return BASE_CONFIG
   if (path.endsWith('/auth/status')) return { logged_in: true, account_id: 'TEST001', gateway_connected: true, connected: true, status: 'connected' }
-  if (path.endsWith('/risk/status')) return { connected: true, risk: { max_orders_per_minute: 5, allowed_symbols: ['rb2610'], rate_limit_remaining: 3 } }
+  if (path.endsWith('/risk/status')) return {
+    connected: true,
+    gateway_status: 'trading',
+    last_reject_reason: '重复撤单请求已拒绝',
+    risk: {
+      max_orders_per_minute: 5,
+      allowed_symbols: ['rb2610'],
+      rate_limit_remaining: 3,
+      compliance: {
+        trading_day: '2026-08-11',
+        counters: {
+          orders_submitted: 12,
+          cancel_requests: 4,
+          cancels_accepted: 3,
+          duplicate_open: 1,
+          duplicate_close: 0,
+          duplicate_cancel: 2,
+        },
+        thresholds: {
+          orders_submitted: 500,
+          cancel_requests: 300,
+          duplicate_open: 1,
+          duplicate_close: 1,
+          duplicate_cancel: 1,
+        },
+        alerts: [{
+          counter: 'duplicate_cancel',
+          count: 2,
+          threshold: 1,
+          timestamp: '2026-08-11T09:30:00+08:00',
+          message: '重复撤单达到告警阈值',
+        }],
+      },
+    },
+  }
   if (path.endsWith('/trading/reconcile')) return { connected: true, account: { balance: 100000, available: 100000 }, orders: { active_count: 0, total_count: 0, active: [] }, positions: { count: 0, items: [] } }
   if (path.endsWith('/system/logs')) return { logs: [] }
   return { code: 0, data: [], total: 0 }
@@ -192,6 +226,23 @@ test('login page suppresses optional server preflight errors', async ({ page }) 
   await expect(page.getByRole('heading', { name: '量化交易系统' })).toBeVisible()
   await expect(apiErrors).toEqual([])
 })
+
+test('system page renders live compliance counters and threshold alerts', async ({ page }) => {
+  await page.route('**/*', route => {
+    const path = new URL(route.request().url()).pathname
+    if (!path.startsWith('/api/')) return route.continue()
+    return fixtureFor(route)
+  })
+
+  await page.goto('/system')
+  await expect(page.locator('.compliance-monitor')).toBeVisible()
+  await expect(page.getByText('实盘合规监控')).toBeVisible()
+  await expect(page.locator('.counter-card').filter({ hasText: '已提交委托' })).toContainText('12')
+  await expect(page.locator('.counter-card').filter({ hasText: '重复撤单' })).toContainText('2')
+  await expect(page.getByText('2 / 1')).toBeVisible()
+  await expect(page.getByText('最近一次风控拒绝：重复撤单请求已拒绝')).toBeVisible()
+})
+
 test('trial-run terminal aborted state does not redirect polling', async ({ page }) => {
   const apiErrors = []
   page.on('console', message => {

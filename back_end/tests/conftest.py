@@ -14,3 +14,7 @@ def isolate_trial_run_checkpoint_db(tmp_path, monkeypatch):
         "QUANT_TRIAL_RUN_STATE_DB",
         str(tmp_path / "trial-run-state.db"),
     )
+    monkeypatch.setenv(
+        "QUANT_AUDIT_LOG_DIR",
+        str(tmp_path / "audit-logs"),
+    )

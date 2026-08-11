@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import time
 import threading
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import wraps
@@ -17,6 +18,9 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from ..strategy import OffsetFlag, OrderType, Signal
 from .types import AccountInfo
+
+
+logger = logging.getLogger(__name__)
 
 
 def _risk_locked(method):
@@ -41,6 +45,12 @@ class RiskConfig:
     max_price_deviation: float = 0.0
     max_market_data_age_seconds: float = 0.0
     duplicate_signal_window_seconds: float = 0.0
+    order_count_alert_threshold: int = 0
+    cancel_count_alert_threshold: int = 0
+    duplicate_open_alert_threshold: int = 0
+    duplicate_close_alert_threshold: int = 0
+    duplicate_cancel_alert_threshold: int = 0
+    duplicate_cancel_window_seconds: float = 0.0
     default_contract_multiplier: float = 10.0
     contract_multipliers: Dict[str, float] = field(default_factory=dict)
     allow_market_orders: bool = True
@@ -65,6 +75,12 @@ class RiskConfig:
             max_price_deviation=max(0.0, float(raw.get("max_price_deviation", 0.0))),
             max_market_data_age_seconds=max(0.0, float(raw.get("max_market_data_age_seconds", 0.0))),
             duplicate_signal_window_seconds=max(0.0, float(raw.get("duplicate_signal_window_seconds", 0.0))),
+            order_count_alert_threshold=max(0, int(raw.get("order_count_alert_threshold", 0))),
+            cancel_count_alert_threshold=max(0, int(raw.get("cancel_count_alert_threshold", 0))),
+            duplicate_open_alert_threshold=max(0, int(raw.get("duplicate_open_alert_threshold", 0))),
+            duplicate_close_alert_threshold=max(0, int(raw.get("duplicate_close_alert_threshold", 0))),
+            duplicate_cancel_alert_threshold=max(0, int(raw.get("duplicate_cancel_alert_threshold", 0))),
+            duplicate_cancel_window_seconds=max(0.0, float(raw.get("duplicate_cancel_window_seconds", 0.0))),
             default_contract_multiplier=max(1.0, float(raw.get("default_contract_multiplier", 10.0))),
             contract_multipliers={
                 str(symbol).strip(): max(1.0, float(value))
@@ -95,6 +111,18 @@ class RiskManager:
         self.day_open_balance = 0.0
         self._order_timestamps: List[float] = []
         self._recent_signal_timestamps: Dict[str, float] = {}
+        self._recent_cancel_timestamps: Dict[str, float] = {}
+        self._compliance_counters: Dict[str, int] = {
+            "orders_submitted": 0,
+            "cancel_requests": 0,
+            "cancels_accepted": 0,
+            "duplicate_open": 0,
+            "duplicate_close": 0,
+            "duplicate_cancel": 0,
+        }
+        self._compliance_alerts: List[Dict[str, Any]] = []
+        self._alerted_compliance_counters: set[str] = set()
+        self._compliance_trading_day = datetime.now().date().isoformat()
         self.emergency_stop = False
         self.emergency_reason = ""
 
@@ -114,6 +142,7 @@ class RiskManager:
 
     @_risk_locked
     def status(self) -> Dict[str, Any]:
+        self._ensure_compliance_trading_day()
         cfg = self.config
         rate = self.order_rate_snapshot()
         return {
@@ -131,6 +160,7 @@ class RiskManager:
             "max_price_deviation": cfg.max_price_deviation,
             "max_market_data_age_seconds": cfg.max_market_data_age_seconds,
             "duplicate_signal_window_seconds": cfg.duplicate_signal_window_seconds,
+            "duplicate_cancel_window_seconds": cfg.duplicate_cancel_window_seconds,
             "allow_market_orders": cfg.allow_market_orders,
             "allowed_symbols": sorted(cfg.allowed_symbols),
             "blocked_symbols": sorted(cfg.blocked_symbols),
@@ -138,6 +168,18 @@ class RiskManager:
             "rate_limit_retry_after_seconds": rate["retry_after_seconds"],
             "rate_capacity_remaining": rate["remaining"],
             "rate_capacity_retry_after_seconds": rate["retry_after_seconds"],
+            "compliance": {
+                "trading_day": self._compliance_trading_day,
+                "counters": dict(self._compliance_counters),
+                "alerts": [dict(alert) for alert in self._compliance_alerts],
+                "thresholds": {
+                    "orders_submitted": cfg.order_count_alert_threshold,
+                    "cancel_requests": cfg.cancel_count_alert_threshold,
+                    "duplicate_open": cfg.duplicate_open_alert_threshold,
+                    "duplicate_close": cfg.duplicate_close_alert_threshold,
+                    "duplicate_cancel": cfg.duplicate_cancel_alert_threshold,
+                },
+            },
         }
 
     @_risk_locked
@@ -256,11 +298,47 @@ class RiskManager:
 
     @_risk_locked
     def record_order(self, signal: Optional[Signal] = None) -> None:
+        self._ensure_compliance_trading_day()
         now = float(self._monotonic())
         self._order_timestamps.append(now)
         self._prune_order_timestamps(now)
+        self._increment_compliance_counter("orders_submitted")
         if signal is not None:
             self._recent_signal_timestamps[self._signal_key(signal)] = now
+
+    @_risk_locked
+    def check_cancel_request(self, order_id: str) -> RiskCheckResult:
+        self._ensure_compliance_trading_day()
+        normalized_order_id = str(order_id or "").strip()
+        if not normalized_order_id:
+            return RiskCheckResult(False, "Order id is required for cancellation")
+
+        window = self.config.duplicate_cancel_window_seconds
+        if window <= 0:
+            return RiskCheckResult(True)
+
+        now = float(self._monotonic())
+        cutoff = now - window
+        self._recent_cancel_timestamps = {
+            key: ts for key, ts in self._recent_cancel_timestamps.items() if ts >= cutoff
+        }
+        last_ts = self._recent_cancel_timestamps.get(normalized_order_id)
+        if last_ts is not None and now - last_ts < window:
+            self._increment_compliance_counter("duplicate_cancel")
+            return RiskCheckResult(False, f"Duplicate cancel within {round(window, 2)}s window")
+
+        self._recent_cancel_timestamps[normalized_order_id] = now
+        return RiskCheckResult(True)
+
+    @_risk_locked
+    def record_cancel(self, order_id: str, *, accepted: bool) -> None:
+        self._ensure_compliance_trading_day()
+        normalized_order_id = str(order_id or "").strip()
+        if normalized_order_id and self.config.duplicate_cancel_window_seconds > 0:
+            self._recent_cancel_timestamps.setdefault(normalized_order_id, float(self._monotonic()))
+        self._increment_compliance_counter("cancel_requests")
+        if accepted:
+            self._increment_compliance_counter("cancels_accepted")
 
     def _check_order_rate(self, signal: Optional[Signal] = None) -> RiskCheckResult:
         required = self.required_rate_capacity(signal) if signal is not None else 1
@@ -334,18 +412,68 @@ class RiskManager:
         return RiskCheckResult(True)
 
     def _check_duplicate_signal(self, signal: Signal) -> RiskCheckResult:
+        self._ensure_compliance_trading_day()
         window = self.config.duplicate_signal_window_seconds
         if window <= 0:
             return RiskCheckResult(True)
-        now = time.monotonic()
+        now = float(self._monotonic())
         cutoff = now - window
         self._recent_signal_timestamps = {
             key: ts for key, ts in self._recent_signal_timestamps.items() if ts >= cutoff
         }
         last_ts = self._recent_signal_timestamps.get(self._signal_key(signal))
         if last_ts is not None and now - last_ts < window:
+            counter = "duplicate_open" if signal.offset == OffsetFlag.OPEN else "duplicate_close"
+            self._increment_compliance_counter(counter)
             return RiskCheckResult(False, f"Duplicate signal within {round(window, 2)}s window")
         return RiskCheckResult(True)
+
+    def _increment_compliance_counter(self, counter: str) -> None:
+        previous = self._compliance_counters[counter]
+        current = previous + 1
+        self._compliance_counters[counter] = current
+
+        threshold_by_counter = {
+            "orders_submitted": self.config.order_count_alert_threshold,
+            "cancel_requests": self.config.cancel_count_alert_threshold,
+            "duplicate_open": self.config.duplicate_open_alert_threshold,
+            "duplicate_close": self.config.duplicate_close_alert_threshold,
+            "duplicate_cancel": self.config.duplicate_cancel_alert_threshold,
+        }
+        threshold = threshold_by_counter.get(counter, 0)
+        if (
+            threshold > 0
+            and previous < threshold <= current
+            and counter not in self._alerted_compliance_counters
+        ):
+            self._alerted_compliance_counters.add(counter)
+            self._compliance_alerts.append(
+                {
+                    "counter": counter,
+                    "count": current,
+                    "threshold": threshold,
+                    "timestamp": datetime.now().isoformat(),
+                    "message": f"Compliance threshold reached: {counter}={current}, limit={threshold}",
+                }
+            )
+            logger.warning(
+                "合规阈值告警: counter=%s count=%s threshold=%s",
+                counter,
+                current,
+                threshold,
+            )
+
+    def _ensure_compliance_trading_day(self) -> None:
+        trading_day = datetime.now().date().isoformat()
+        if trading_day == self._compliance_trading_day:
+            return
+        self._compliance_trading_day = trading_day
+        for counter in self._compliance_counters:
+            self._compliance_counters[counter] = 0
+        self._compliance_alerts.clear()
+        self._alerted_compliance_counters.clear()
+        self._recent_signal_timestamps.clear()
+        self._recent_cancel_timestamps.clear()
 
     def _contract_multiplier(self, symbol: str) -> float:
         if symbol in self.config.contract_multipliers:

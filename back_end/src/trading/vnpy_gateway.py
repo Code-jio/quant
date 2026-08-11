@@ -184,6 +184,15 @@ class VnpyGateway(GatewayBase):
         self._error_event = threading.Event()
         self._connect_errors: List[str] = []
         self._connect_log_callback: Any = None
+        self._connection_lock = threading.RLock()
+        self._td_connected = False
+        self._md_connected = False
+        self._reconnecting = False
+        self._reconnect_count = 0
+        self._last_disconnect_reason = ""
+        self._connection_changed_at = datetime.now().isoformat()
+        self._restore_status = TradingStatus.CONNECTED
+        self._connection_outage = False
         self._vn_orders: Dict[str, Any] = {}
         self._order_meta: Dict[str, Tuple[str, Any]] = {}
         self.latest_ticks: Dict[str, MarketData] = {}
@@ -204,6 +213,13 @@ class VnpyGateway(GatewayBase):
     def connect(self, config: Dict[str, Any]) -> bool:
         """Connect to CTP through vn.py."""
         self.status = TradingStatus.CONNECTING
+        with self._connection_lock:
+            self._td_connected = False
+            self._md_connected = False
+            self._reconnecting = False
+            self._connection_outage = False
+            self._last_disconnect_reason = ""
+            self._connection_changed_at = datetime.now().isoformat()
         self._connected_event.clear()
         self._error_event.clear()
         self._connect_errors.clear()
@@ -275,6 +291,97 @@ class VnpyGateway(GatewayBase):
         """Return a concise summary of CTP connection errors captured during login."""
         return "；".join(self._connect_errors[-5:])
 
+    def connection_snapshot(self) -> Dict[str, Any]:
+        """Return a thread-safe snapshot of the independent CTP channels."""
+        with self._connection_lock:
+            self._refresh_channel_health_from_vnpy()
+            return {
+                "td_connected": self._td_connected,
+                "md_connected": self._md_connected,
+                "fully_connected": self._td_connected and self._md_connected,
+                "reconnecting": self._reconnecting,
+                "reconnect_count": self._reconnect_count,
+                "last_disconnect_reason": self._last_disconnect_reason,
+                "changed_at": self._connection_changed_at,
+            }
+
+    def _refresh_channel_health_from_vnpy(self) -> None:
+        """Calibrate channel health from the live vn.py API login flags."""
+        if not self._main_engine:
+            return
+        try:
+            gateway = self._main_engine.get_gateway(self._gateway_name)
+        except Exception:
+            return
+        if gateway is None:
+            return
+
+        observed: Dict[str, bool] = {}
+        for channel, api_name in (("td", "td_api"), ("md", "md_api")):
+            api = getattr(gateway, api_name, None)
+            if api is None or not hasattr(api, "login_status"):
+                continue
+            try:
+                observed[channel] = bool(api.login_status)
+            except Exception:
+                continue
+
+        lost_channels = tuple(
+            channel
+            for channel, logged_in in observed.items()
+            if not logged_in and getattr(self, f"_{channel}_connected")
+        )
+        if lost_channels:
+            labels = "/".join(channel.upper() for channel in lost_channels)
+            self._mark_channels_disconnected(
+                lost_channels,
+                f"CTP native login_status lost: {labels}",
+            )
+
+        restored = False
+        for channel, logged_in in observed.items():
+            if logged_in and not getattr(self, f"_{channel}_connected"):
+                setattr(self, f"_{channel}_connected", True)
+                restored = True
+        if restored:
+            self._connection_changed_at = datetime.now().isoformat()
+            self._restore_connection_if_ready()
+
+    def _set_channel_connected(self, channel: str) -> None:
+        attr = f"_{channel}_connected"
+        if not getattr(self, attr):
+            setattr(self, attr, True)
+            self._connection_changed_at = datetime.now().isoformat()
+        self._restore_connection_if_ready()
+
+    def _mark_channels_disconnected(self, channels: Tuple[str, ...], reason: str) -> None:
+        if self.status in (TradingStatus.CONNECTED, TradingStatus.TRADING):
+            self._restore_status = self.status
+            self.status = TradingStatus.ERROR
+        changed = False
+        for channel in channels:
+            attr = f"_{channel}_connected"
+            if getattr(self, attr):
+                setattr(self, attr, False)
+                changed = True
+        self._reconnecting = True
+        self._connection_outage = True
+        self._last_disconnect_reason = reason
+        if changed or reason:
+            self._connection_changed_at = datetime.now().isoformat()
+            logger.warning("[vn.py] connection health degraded: %s", reason)
+
+    def _restore_connection_if_ready(self) -> None:
+        if not (self._td_connected and self._md_connected):
+            return
+        if self._connection_outage:
+            self._reconnect_count += 1
+            self._connection_outage = False
+            self._reconnecting = False
+            if self.status == TradingStatus.ERROR:
+                self.status = self._restore_status
+            logger.info("[vn.py] TD and MD connection health restored")
+
     def disconnect(self) -> None:
         """Disconnect CTP and stop vn.py event engine."""
         try:
@@ -285,6 +392,12 @@ class VnpyGateway(GatewayBase):
         finally:
             self._main_engine = None
             self._event_engine = None
+            with self._connection_lock:
+                self._td_connected = False
+                self._md_connected = False
+                self._reconnecting = False
+                self._connection_outage = False
+                self._connection_changed_at = datetime.now().isoformat()
             self.status = TradingStatus.STOPPED
 
     def send_order(self, signal: Signal) -> str:
@@ -533,6 +646,18 @@ class VnpyGateway(GatewayBase):
         msg = getattr(log, "msg", str(log))
         logger.info("[vn.py] %s", msg)
         self._emit_connect_log(msg)
+        with self._connection_lock:
+            if "交易服务器登录成功" in msg:
+                self._set_channel_connected("td")
+            if "行情服务器登录成功" in msg:
+                self._set_channel_connected("md")
+
+            if "交易服务器" in msg and ("连接断开" in msg or "断开连接" in msg):
+                self._mark_channels_disconnected(("td",), msg)
+            elif "行情服务器" in msg and ("连接断开" in msg or "断开连接" in msg):
+                self._mark_channels_disconnected(("md",), msg)
+            elif "连接断开" in msg or "断开连接" in msg:
+                self._mark_channels_disconnected(("td", "md"), msg)
 
         if self.status == TradingStatus.CONNECTING:
             if "合约信息查询成功" in msg:

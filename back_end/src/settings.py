@@ -88,6 +88,12 @@ def runtime_risk_defaults() -> Dict[str, object]:
         "max_price_deviation": env_float("QUANT_RISK_MAX_PRICE_DEVIATION", 0.01),
         "max_market_data_age_seconds": env_float("QUANT_RISK_MAX_MARKET_DATA_AGE_SECONDS", 10),
         "duplicate_signal_window_seconds": env_float("QUANT_RISK_DUPLICATE_SIGNAL_WINDOW_SECONDS", 5),
+        "order_count_alert_threshold": env_int("QUANT_RISK_ORDER_COUNT_ALERT_THRESHOLD", 500),
+        "cancel_count_alert_threshold": env_int("QUANT_RISK_CANCEL_COUNT_ALERT_THRESHOLD", 300),
+        "duplicate_open_alert_threshold": env_int("QUANT_RISK_DUPLICATE_OPEN_ALERT_THRESHOLD", 1),
+        "duplicate_close_alert_threshold": env_int("QUANT_RISK_DUPLICATE_CLOSE_ALERT_THRESHOLD", 1),
+        "duplicate_cancel_alert_threshold": env_int("QUANT_RISK_DUPLICATE_CANCEL_ALERT_THRESHOLD", 1),
+        "duplicate_cancel_window_seconds": env_float("QUANT_RISK_DUPLICATE_CANCEL_WINDOW_SECONDS", 5),
         "default_contract_multiplier": env_float("QUANT_RISK_DEFAULT_CONTRACT_MULTIPLIER", 10),
         "contract_multipliers": {},
         "allow_market_orders": env_bool("QUANT_RISK_ALLOW_MARKET_ORDERS", default=False),
@@ -144,6 +150,12 @@ def warn_production_risk_defaults() -> list[str]:
         ("QUANT_RISK_MAX_MARKET_DATA_AGE_SECONDS", "max_market_data_age_seconds"),
         ("QUANT_RISK_MAX_PRICE_DEVIATION", "max_price_deviation"),
         ("QUANT_RISK_ALLOW_MARKET_ORDERS", "allow_market_orders"),
+        ("QUANT_RISK_ORDER_COUNT_ALERT_THRESHOLD", "order_count_alert_threshold"),
+        ("QUANT_RISK_CANCEL_COUNT_ALERT_THRESHOLD", "cancel_count_alert_threshold"),
+        ("QUANT_RISK_DUPLICATE_OPEN_ALERT_THRESHOLD", "duplicate_open_alert_threshold"),
+        ("QUANT_RISK_DUPLICATE_CLOSE_ALERT_THRESHOLD", "duplicate_close_alert_threshold"),
+        ("QUANT_RISK_DUPLICATE_CANCEL_ALERT_THRESHOLD", "duplicate_cancel_alert_threshold"),
+        ("QUANT_RISK_DUPLICATE_CANCEL_WINDOW_SECONDS", "duplicate_cancel_window_seconds"),
     ]
     for env_name, _param_name in checks:
         if env_name not in os.environ:

@@ -198,6 +198,81 @@ class RiskManagerTest(unittest.TestCase):
         self.assertFalse(second.allowed)
         self.assertIn("Duplicate signal", second.reason)
 
+    def test_compliance_counts_submitted_orders_and_emits_one_threshold_alert(self):
+        manager = RiskManager({"order_count_alert_threshold": 2})
+        signal = self._signal(price=100.0, order_type=OrderType.LIMIT)
+
+        manager.record_order(signal)
+        manager.record_order(signal)
+        manager.record_order(signal)
+
+        compliance = manager.status()["compliance"]
+        self.assertEqual(compliance["counters"]["orders_submitted"], 3)
+        order_alerts = [alert for alert in compliance["alerts"] if alert["counter"] == "orders_submitted"]
+        self.assertEqual(len(order_alerts), 1)
+        self.assertEqual(order_alerts[0]["threshold"], 2)
+
+    def test_duplicate_open_and_close_are_counted_separately(self):
+        manager = RiskManager({"duplicate_signal_window_seconds": 60})
+        market_data = {"last_price": 100.0, "timestamp": datetime.now()}
+        open_signal = self._signal(price=100.0, order_type=OrderType.LIMIT)
+        close_signal = self._signal(
+            price=100.0,
+            order_type=OrderType.LIMIT,
+            offset=OffsetFlag.CLOSE,
+        )
+        positions = {"rb2505": Position(symbol="rb2505", direction=Direction.NET, volume=1)}
+
+        self.assertTrue(manager.check_signal(open_signal, positions={}, market_data=market_data).allowed)
+        manager.record_order(open_signal)
+        self.assertFalse(manager.check_signal(open_signal, positions={}, market_data=market_data).allowed)
+
+        self.assertTrue(manager.check_signal(close_signal, positions=positions, market_data=market_data).allowed)
+        manager.record_order(close_signal)
+        self.assertFalse(manager.check_signal(close_signal, positions=positions, market_data=market_data).allowed)
+
+        counters = manager.status()["compliance"]["counters"]
+        self.assertEqual(counters["duplicate_open"], 1)
+        self.assertEqual(counters["duplicate_close"], 1)
+
+    def test_cancel_compliance_counts_acceptance_and_rejects_duplicate_requests(self):
+        manager = RiskManager(
+            {
+                "cancel_count_alert_threshold": 1,
+                "duplicate_cancel_alert_threshold": 1,
+                "duplicate_cancel_window_seconds": 60,
+            }
+        )
+
+        self.assertTrue(manager.check_cancel_request("C1").allowed)
+        manager.record_cancel("C1", accepted=True)
+        self.assertFalse(manager.check_cancel_request("C1").allowed)
+        self.assertFalse(manager.check_cancel_request("C1").allowed)
+
+        compliance = manager.status()["compliance"]
+        self.assertEqual(compliance["counters"]["cancel_requests"], 1)
+        self.assertEqual(compliance["counters"]["cancels_accepted"], 1)
+        self.assertEqual(compliance["counters"]["duplicate_cancel"], 2)
+        duplicate_alerts = [alert for alert in compliance["alerts"] if alert["counter"] == "duplicate_cancel"]
+        self.assertEqual(len(duplicate_alerts), 1)
+        self.assertEqual(duplicate_alerts[0]["threshold"], 1)
+
+    def test_compliance_counters_reset_when_trading_day_changes(self):
+        manager = RiskManager({"order_count_alert_threshold": 1})
+        signal = self._signal(price=100.0, order_type=OrderType.LIMIT)
+        manager._compliance_trading_day = "2000-01-01"
+        manager._compliance_counters["orders_submitted"] = 9
+        manager._compliance_alerts.append({"counter": "orders_submitted"})
+        manager._alerted_compliance_counters.add("orders_submitted")
+
+        manager.record_order(signal)
+        compliance = manager.status()["compliance"]
+
+        self.assertNotEqual(compliance["trading_day"], "2000-01-01")
+        self.assertEqual(compliance["counters"]["orders_submitted"], 1)
+        self.assertEqual(len(compliance["alerts"]), 1)
+        self.assertEqual(compliance["alerts"][0]["count"], 1)
+
     def test_rolling_rate_snapshot_reserves_the_close_slot_for_entries(self):
         class Clock:
             def __init__(self):

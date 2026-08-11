@@ -34,6 +34,9 @@ export function useSystemWs(url = buildWsUrl('/ws/system')) {
     mdConnected:       false,
     gatewayStatus:     'stopped',
     gatewayName:       'N/A',
+    reconnecting:      false,
+    reconnectCount:    0,
+    lastDisconnectReason: '',
     gatewayLatencyMs:  -1,    // -1 = 尚未收到回调
     networkSendBps:    0,     // 字节/秒
     networkRecvBps:    0,
@@ -63,6 +66,9 @@ export function useSystemWs(url = buildWsUrl('/ws/system')) {
       data.mdConnected       = msg.md_connected       ?? data.mdConnected
       data.gatewayStatus     = msg.gateway_status     ?? data.gatewayStatus
       data.gatewayName       = msg.gateway_name       ?? data.gatewayName
+      data.reconnecting      = msg.reconnecting       ?? data.reconnecting
+      data.reconnectCount    = msg.reconnect_count    ?? data.reconnectCount
+      data.lastDisconnectReason = msg.last_disconnect_reason ?? data.lastDisconnectReason
       data.gatewayLatencyMs  = msg.gateway_latency_ms ?? data.gatewayLatencyMs
       data.networkSendBps    = msg.network_send_bps   ?? data.networkSendBps
       data.networkRecvBps    = msg.network_recv_bps   ?? data.networkRecvBps

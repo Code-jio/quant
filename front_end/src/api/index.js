@@ -272,10 +272,11 @@ export const fetchPositions = (options = {}) => request('/positions', options)
 
 // ── 系统日志 ──────────────────────────────────────────────────────────────
 /** 查询系统日志；level: DEBUG/INFO/WARNING/ERROR，q: 关键词 */
-export const fetchSystemLogs = ({ level = '', q = '', limit = 200 } = {}, options = {}) => {
+export const fetchSystemLogs = ({ level = '', q = '', category = '', limit = 200 } = {}, options = {}) => {
   const params = new URLSearchParams()
   if (level) params.set('level', level)
   if (q)     params.set('q', q)
+  if (category) params.set('category', category)
   if (limit) params.set('limit', limit)
   return request(`/system/logs?${params}`, options)
 }

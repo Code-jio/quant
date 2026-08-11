@@ -602,6 +602,74 @@ class TestConnectionFlow:
         assert gw.send_order(signal) == ""
 
 
+class TestChannelConnectionHealth:
+    @staticmethod
+    def _log(gateway, message):
+        gateway._on_vnpy_log(SimpleNamespace(data=SimpleNamespace(msg=message)))
+
+    def test_td_or_md_disconnect_immediately_degrades_that_channel(self):
+        gateway = VnpyGateway()
+        gateway.status = TradingStatus.CONNECTED
+        self._log(gateway, "\u4ea4\u6613\u670d\u52a1\u5668\u767b\u5f55\u6210\u529f")
+        self._log(gateway, "\u884c\u60c5\u670d\u52a1\u5668\u767b\u5f55\u6210\u529f")
+
+        self._log(gateway, "\u4ea4\u6613\u670d\u52a1\u5668\u8fde\u63a5\u65ad\u5f00")
+        td_down = gateway.connection_snapshot()
+        assert td_down["td_connected"] is False
+        assert td_down["md_connected"] is True
+        assert td_down["fully_connected"] is False
+        assert gateway.status not in (TradingStatus.CONNECTED, TradingStatus.TRADING)
+
+        self._log(gateway, "\u884c\u60c5\u670d\u52a1\u5668\u8fde\u63a5\u65ad\u5f00")
+        md_down = gateway.connection_snapshot()
+        assert md_down["td_connected"] is False
+        assert md_down["md_connected"] is False
+        assert md_down["fully_connected"] is False
+
+    def test_both_channel_relogins_restore_health_and_increment_reconnect_count(self):
+        gateway = VnpyGateway()
+        gateway.status = TradingStatus.CONNECTED
+        self._log(gateway, "\u4ea4\u6613\u670d\u52a1\u5668\u767b\u5f55\u6210\u529f")
+        self._log(gateway, "\u884c\u60c5\u670d\u52a1\u5668\u767b\u5f55\u6210\u529f")
+        self._log(gateway, "\u4ea4\u6613\u670d\u52a1\u5668\u8fde\u63a5\u65ad\u5f00")
+        self._log(gateway, "\u884c\u60c5\u670d\u52a1\u5668\u8fde\u63a5\u65ad\u5f00")
+
+        self._log(gateway, "\u4ea4\u6613\u670d\u52a1\u5668\u767b\u5f55\u6210\u529f")
+        self._log(gateway, "\u884c\u60c5\u670d\u52a1\u5668\u767b\u5f55\u6210\u529f")
+        recovered = gateway.connection_snapshot()
+
+        assert recovered["td_connected"] is True
+        assert recovered["md_connected"] is True
+        assert recovered["fully_connected"] is True
+        assert recovered["reconnecting"] is False
+        assert recovered["reconnect_count"] == 1
+
+    def test_native_login_flags_degrade_health_when_disconnect_log_is_missing(self):
+        gateway = VnpyGateway()
+        gateway.status = TradingStatus.CONNECTED
+        self._log(gateway, "交易服务器登录成功")
+        self._log(gateway, "行情服务器登录成功")
+        native = SimpleNamespace(
+            td_api=SimpleNamespace(login_status=True),
+            md_api=SimpleNamespace(login_status=True),
+        )
+        gateway._main_engine = SimpleNamespace(get_gateway=lambda _name: native)
+
+        native.md_api.login_status = False
+        degraded = gateway.connection_snapshot()
+
+        assert degraded["td_connected"] is True
+        assert degraded["md_connected"] is False
+        assert degraded["reconnecting"] is True
+        assert gateway.status == TradingStatus.ERROR
+
+        native.md_api.login_status = True
+        restored = gateway.connection_snapshot()
+        assert restored["fully_connected"] is True
+        assert restored["reconnecting"] is False
+        assert restored["reconnect_count"] == 1
+
+
 class TestBrokerReconciliation:
     @staticmethod
     def _complete(gateway, kind, error_id=0, item_count=None, request_id=None):

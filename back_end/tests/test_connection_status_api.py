@@ -1,0 +1,35 @@
+from types import SimpleNamespace
+
+from src.api import _build_system_snapshot, trading_state
+from src.trading.types import AccountInfo, TradingStatus
+
+
+def test_system_snapshot_uses_independent_td_and_md_connection_states(monkeypatch):
+    class GatewayWithIndependentChannels:
+        name = "VNPY_CTP"
+        status = TradingStatus.CONNECTED
+
+        def connection_snapshot(self):
+            return {
+                "td_connected": True,
+                "md_connected": False,
+                "fully_connected": False,
+                "reconnecting": True,
+                "reconnect_count": 2,
+                "last_disconnect_reason": "market server disconnected",
+                "changed_at": "2026-08-11T09:30:00",
+            }
+
+    engine = SimpleNamespace(
+        gateway=GatewayWithIndependentChannels(),
+        get_account=lambda: AccountInfo(account_id="TEST", balance=100000.0, available=100000.0),
+    )
+    monkeypatch.setattr(trading_state, "primary_engine", lambda: engine)
+    monkeypatch.setattr(trading_state, "all_entries", lambda: [])
+    monkeypatch.setattr("src.api._get_network_speed", lambda: (0.0, 0.0))
+
+    snapshot = _build_system_snapshot()
+
+    assert snapshot["td_connected"] is True
+    assert snapshot["md_connected"] is False
+    assert snapshot["market_connected"] is False

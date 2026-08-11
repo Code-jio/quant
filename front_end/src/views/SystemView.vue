@@ -27,6 +27,17 @@
       <SystemMonitor />
     </section>
 
+    <section class="sys-section">
+      <div class="section-header">
+        <h2 class="section-title">
+          <el-icon><WarningFilled /></el-icon>
+          实盘合规监控
+          <span class="section-hint">委托 · 撤单 · 重复开平撤 · 阈值告警</span>
+        </h2>
+      </div>
+      <ComplianceMonitor />
+    </section>
+
     <!-- ── 日志查看器 ──────────────────────────────────────────────── -->
     <section class="sys-section">
       <div class="section-header">
@@ -44,8 +55,9 @@
 
 <script setup>
 import { useRouter } from 'vue-router'
-import { ArrowLeft, Monitor, Document } from '@element-plus/icons-vue'
+import { ArrowLeft, Monitor, Document, WarningFilled } from '@element-plus/icons-vue'
 import SystemMonitor from '@/components/SystemMonitor.vue'
+import ComplianceMonitor from '@/components/ComplianceMonitor.vue'
 import LogViewer     from '@/components/LogViewer.vue'
 
 const router = useRouter()
