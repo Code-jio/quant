@@ -909,6 +909,7 @@ class TestBrokerReconciliation:
         gateway.orders["STALE"] = stale_order
         broker_snapshot = SimpleNamespace(
             query_orders_snapshot=lambda: 0,
+            query_trades_snapshot=lambda: 0,
             query_positions_snapshot=lambda: 0,
             query_account_snapshot=lambda: 0,
         )
@@ -928,6 +929,10 @@ class TestBrokerReconciliation:
         class BrokerSnapshot:
             def query_orders_snapshot(self):
                 TestBrokerReconciliation._complete(gateway, "orders")
+                return 0
+
+            def query_trades_snapshot(self):
+                TestBrokerReconciliation._complete(gateway, "trades")
                 return 0
 
             def query_positions_snapshot(self):
@@ -957,6 +962,7 @@ class TestBrokerReconciliation:
             query_orders_snapshot=lambda: (
                 gateway._arm_reconciliation_request("orders", 1) or 0
             ),
+            query_trades_snapshot=lambda: 0,
             query_positions_snapshot=lambda: 0,
             query_account_snapshot=lambda: 0,
         )
@@ -1465,6 +1471,68 @@ def test_gateway_caches_each_live_trade_once_and_exposes_broker_trades():
     gateway._on_vnpy_trade(event)
 
     assert [trade.trade_id for trade in gateway.query_trades()] == ["T-1"]
+
+
+def test_reconciliation_ctp_api_queries_trades_and_emits_completion(monkeypatch):
+    events = []
+    requests = []
+
+    class FakeTdApi:
+        def __init__(self, gateway):
+            self.gateway = gateway
+            self.gateway_name = gateway.gateway_name
+            self.reqid = 0
+            self.brokerid = "9999"
+            self.userid = "ACC001"
+            self.contract_inited = True
+            self.sysid_orderid_map = {}
+            self.returned_trades = []
+
+        def reqQryTrade(self, request, reqid):
+            requests.append((request, reqid))
+            return 0
+
+        def onRtnTrade(self, data):
+            self.returned_trades.append(dict(data))
+
+    class FakeCtpGateway:
+        default_name = "CTP"
+
+        def __init__(self, event_engine, gateway_name):
+            self.event_engine = event_engine
+            self.gateway_name = gateway_name
+
+    fake_module = SimpleNamespace(
+        CtpGateway=FakeCtpGateway,
+        CtpTdApi=FakeTdApi,
+        symbol_contract_map={"rb2505": object()},
+    )
+    monkeypatch.setitem(sys.modules, "vnpy_ctp.gateway.ctp_gateway", fake_module)
+    adapter = VnpyGateway()
+    gateway_class = _build_reconciliation_ctp_gateway(adapter)
+    broker = gateway_class(SimpleNamespace(put=events.append), "CTP")
+
+    assert broker.query_trades_snapshot() == 0
+    request_id = requests[0][1]
+    assert requests == [({"BrokerID": "9999", "InvestorID": "ACC001"}, request_id)]
+
+    trade_data = {
+        "InstrumentID": "rb2505",
+        "OrderSysID": " SYS-1 ",
+        "OrderRef": "REF-1",
+    }
+    broker.td_api.onRspQryTrade(trade_data, {"ErrorID": 0}, request_id, False)
+    broker.td_api.onRspQryTrade({}, {"ErrorID": 0}, request_id, True)
+
+    assert broker.td_api.returned_trades == [trade_data]
+    assert broker.td_api.sysid_orderid_map[" SYS-1 "] == "recovered_REF-1"
+    assert events[-1].data == {
+        "kind": "trades",
+        "request_id": request_id,
+        "error_id": 0,
+        "error_msg": "",
+        "item_count": 1,
+    }
 
 
 def test_reconciliation_requires_trade_snapshot_and_atomically_replaces_trade_cache(monkeypatch):

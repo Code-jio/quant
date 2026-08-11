@@ -176,6 +176,28 @@ def _build_reconciliation_ctp_gateway(adapter: "VnpyGateway") -> Any:
                 self._snapshot_reqids.pop("orders", None)
                 self._emit_completion("orders", error, reqid)
 
+        def onRspQryTrade(
+            self,
+            data: Dict[str, Any],
+            error: Dict[str, Any],
+            reqid: int,
+            last: bool,
+        ) -> None:
+            is_snapshot = self._snapshot_reqids.get("trades") == reqid
+            if is_snapshot and data and data.get("InstrumentID"):
+                self._snapshot_counts["trades"] += 1
+            if data and data.get("InstrumentID") and not (error or {}).get("ErrorID"):
+                order_sys_id = str(data.get("OrderSysID", "") or "")
+                if order_sys_id and order_sys_id not in self.sysid_orderid_map:
+                    recovered_id = str(
+                        data.get("OrderRef") or order_sys_id.strip() or order_sys_id
+                    )
+                    self.sysid_orderid_map[order_sys_id] = f"recovered_{recovered_id}"
+                self.onRtnTrade(data)
+            if last and is_snapshot:
+                self._snapshot_reqids.pop("trades", None)
+                self._emit_completion("trades", error, reqid)
+
         def onRspQryInstrument(
             self,
             data: Dict[str, Any],
@@ -215,6 +237,16 @@ def _build_reconciliation_ctp_gateway(adapter: "VnpyGateway") -> Any:
             adapter._arm_reconciliation_request("orders", self.reqid)
             return int(self.reqQryOrder(request, self.reqid) or 0)
 
+        def query_trades_snapshot(self) -> int:
+            if not _ctp_contracts_ready(self, symbol_contract_map):
+                return -99
+            request = {"BrokerID": self.brokerid, "InvestorID": self.userid}
+            self.reqid += 1
+            self._snapshot_reqids["trades"] = self.reqid
+            self._snapshot_counts["trades"] = 0
+            adapter._arm_reconciliation_request("trades", self.reqid)
+            return int(self.reqQryTrade(request, self.reqid) or 0)
+
     class ReconciliationCtpGateway(CtpGateway):
         default_name = CtpGateway.default_name
 
@@ -230,6 +262,9 @@ def _build_reconciliation_ctp_gateway(adapter: "VnpyGateway") -> Any:
 
         def query_orders_snapshot(self) -> int:
             return self.td_api.query_orders_snapshot()
+
+        def query_trades_snapshot(self) -> int:
+            return self.td_api.query_trades_snapshot()
 
     ReconciliationCtpGateway.__name__ = "QuantReconciliationCtpGateway"
     adapter._reconciliation_gateway_class = ReconciliationCtpGateway
@@ -292,6 +327,7 @@ class VnpyGateway(GatewayBase):
         self._reconciliation_capture: Dict[str, Any] | None = None
         self._reconciliation_events = {
             "orders": threading.Event(),
+            "trades": threading.Event(),
             "positions": threading.Event(),
             "account": threading.Event(),
         }
@@ -984,6 +1020,9 @@ class VnpyGateway(GatewayBase):
     def query_orders(self) -> List[Order]:
         return list(self.orders.values())
 
+    def query_trades(self) -> List[Trade]:
+        return list(self.trades.values())
+
     def refresh_reconciliation(self, timeout_seconds: float = 8.0) -> Dict[str, Any]:
         """Refresh broker state and update the fail-closed order-entry gate."""
         with self._reconciliation_lock:
@@ -1017,7 +1056,7 @@ class VnpyGateway(GatewayBase):
             return result
 
     def _refresh_reconciliation_snapshot(self, timeout_seconds: float = 8.0) -> Dict[str, Any]:
-        """Actively query orders, positions and account with completion fences."""
+        """Actively query orders, trades, positions and account with completion fences."""
         started = time.monotonic()
         with self._connection_lock:
             recovery_query_allowed = bool(
@@ -1042,6 +1081,7 @@ class VnpyGateway(GatewayBase):
             broker_gateway = self._main_engine.get_gateway(self._gateway_name)
             required_methods = {
                 "orders": "query_orders_snapshot",
+                "trades": "query_trades_snapshot",
                 "positions": "query_positions_snapshot",
                 "account": "query_account_snapshot",
             }
@@ -1059,6 +1099,7 @@ class VnpyGateway(GatewayBase):
                 self._reconciliation_capture = {
                     "orders": {},
                     "vn_orders": {},
+                    "trades": {},
                     "positions": {},
                     "account": None,
                 }
@@ -1116,6 +1157,7 @@ class VnpyGateway(GatewayBase):
                     )
                 self.orders = dict(capture.get("orders") or {})
                 self._vn_orders = dict(capture.get("vn_orders") or {})
+                self.trades = dict(capture.get("trades") or {})
                 self.positions = dict(capture.get("positions") or {})
                 account = capture.get("account")
                 if account is not None:
@@ -1358,6 +1400,9 @@ class VnpyGateway(GatewayBase):
             pnl=float(getattr(data, "pnl", 0) or getattr(data, "profit", 0) or 0),
             trade_time=getattr(data, "datetime", None) or datetime.now(),
         )
+        with self._reconciliation_capture_lock:
+            if self._reconciliation_capture is not None:
+                self._reconciliation_capture["trades"][trade.trade_id] = trade
         self.on_trade(trade)
 
     def _on_vnpy_tick(self, event: Any) -> None:

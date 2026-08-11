@@ -23,6 +23,7 @@ class GatewayBase(ABC):
         self.name = name
         self.status = TradingStatus.STOPPED
         self.orders: dict[str, Order] = {}
+        self.trades: dict[str, Trade] = {}
         self.positions: dict[str, Position] = {}
         self.account = AccountInfo()
         self.last_reconciliation: dict[str, Any] = {
@@ -71,8 +72,12 @@ class GatewayBase(ABC):
     def query_orders(self) -> list[Order]:
         """Query current orders."""
 
+    def query_trades(self) -> list[Trade]:
+        """Return the broker trade cache maintained by the gateway."""
+        return list(self.trades.values())
+
     def refresh_reconciliation(self, timeout_seconds: float = 8.0) -> dict[str, Any]:
-        """Request a broker-authoritative account, position and order snapshot.
+        """Request a broker-authoritative account, position, order and trade snapshot.
 
         Gateways must override this method when they can prove query completion.
         The default is deliberately fail-closed so a cache read cannot be
@@ -98,6 +103,9 @@ class GatewayBase(ABC):
 
     def on_trade(self, trade: Trade) -> None:
         """Trade callback entrypoint."""
+        if trade.trade_id in self.trades:
+            return
+        self.trades[trade.trade_id] = trade
         if self.on_trade_callback:
             try:
                 self.on_trade_callback(trade)

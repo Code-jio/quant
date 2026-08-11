@@ -540,6 +540,43 @@ async def _require_websocket_session(ws: WebSocket) -> bool:
     return False
 
 
+def _arm_live_audit_failure(reason: str, preferred_engine: Any = None) -> None:
+    """Fail closed when the compliance trail cannot be persisted."""
+    candidates: list[Any] = []
+    if preferred_engine is not None:
+        candidates.append(preferred_engine)
+    try:
+        primary = trading_state.primary_engine()
+        if primary is not None:
+            candidates.append(primary)
+        candidates.extend(entry.engine for entry in trading_state.all_entries())
+    except Exception:
+        logger.exception("Unable to enumerate live engines after audit failure")
+
+    emergency_reason = f"Live audit persistence failed: {reason or 'unknown error'}"
+    seen: set[int] = set()
+    for engine in candidates:
+        if id(engine) in seen:
+            continue
+        seen.add(id(engine))
+        gateway = getattr(engine, "gateway", None)
+        gateway_name = str(getattr(gateway, "name", "") or "").upper()
+        is_live = bool(
+            getattr(gateway, "requires_persistent_risk_state", False)
+            or gateway_name in {"CTP", "VNPY_CTP"}
+        )
+        if not is_live:
+            continue
+        risk_manager = getattr(engine, "risk_manager", None)
+        setter = getattr(risk_manager, "set_emergency_stop", None)
+        if not callable(setter):
+            continue
+        try:
+            setter(True, emergency_reason)
+        except Exception:
+            logger.exception("Unable to arm emergency stop after audit failure")
+
+
 def _record_audit(
     event_type: str,
     action: str,
@@ -549,17 +586,33 @@ def _record_audit(
     resource: str = "",
     request: Optional[Request] = None,
     detail: Optional[Dict[str, Any]] = None,
-) -> None:
-    audit_log.record(
-        event_type,
-        action,
-        status,
-        actor=actor,
-        resource=resource,
-        request_id=_request_id(request),
-        detail=detail,
-    )
+    live_engine: Any = None,
+) -> bool:
+    try:
+        audit_log.record(
+            event_type,
+            action,
+            status,
+            actor=actor,
+            resource=resource,
+            request_id=_request_id(request),
+            detail=detail,
+        )
+    except OSError as exc:
+        logger.critical("Live audit write failed; arming emergency stop: %s", exc)
+        _arm_live_audit_failure(str(exc), live_engine)
+        return False
+
+    persistence_status = getattr(audit_log, "persistence_status", None)
+    if callable(persistence_status):
+        snapshot = persistence_status()
+        if snapshot.get("enabled") and not snapshot.get("ok"):
+            error = str(snapshot.get("error") or "unknown error")
+            logger.critical("Live audit persistence unhealthy; arming emergency stop: %s", error)
+            _arm_live_audit_failure(error, live_engine)
+            return False
     metrics.record_audit(event_type)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -576,6 +629,66 @@ def _iso_text(value) -> str:
     if hasattr(value, "isoformat"):
         return value.isoformat()
     return str(value or "")
+
+
+def _order_audit_detail(order: Any, trading_day: str) -> dict[str, Any]:
+    direction = getattr(order, "direction", "")
+    status = getattr(order, "status", "")
+    order_type = getattr(order, "order_type", "")
+    offset = getattr(order, "offset", "")
+    return {
+        "order_id": str(getattr(order, "order_id", "") or ""),
+        "symbol": str(getattr(order, "symbol", "") or ""),
+        "status": str(getattr(status, "value", status) or ""),
+        "direction": str(getattr(direction, "value", direction) or ""),
+        "order_type": str(getattr(order_type, "value", order_type) or ""),
+        "offset": str(getattr(offset, "value", offset) or ""),
+        "price": float(getattr(order, "price", 0.0) or 0.0),
+        "volume": int(getattr(order, "volume", 0) or 0),
+        "traded_volume": int(getattr(order, "traded_volume", 0) or 0),
+        "create_time": _iso_text(getattr(order, "create_time", None)),
+        "update_time": _iso_text(getattr(order, "update_time", None)),
+        "error_msg": str(getattr(order, "error_msg", "") or ""),
+        "trading_day": str(trading_day or ""),
+    }
+
+
+def _trade_audit_detail(trade: Any, gateway: Any) -> dict[str, Any]:
+    direction = getattr(trade, "direction", "")
+    order = getattr(gateway, "orders", {}).get(getattr(trade, "order_id", ""))
+    order_type = getattr(order, "order_type", "")
+    offset = getattr(order, "offset", "")
+    return {
+        "trade_id": str(getattr(trade, "trade_id", "") or ""),
+        "order_id": str(getattr(trade, "order_id", "") or ""),
+        "symbol": str(getattr(trade, "symbol", "") or ""),
+        "direction": str(getattr(direction, "value", direction) or ""),
+        "order_type": str(getattr(order_type, "value", order_type) or ""),
+        "offset": str(getattr(offset, "value", offset) or ""),
+        "price": float(getattr(trade, "price", 0.0) or 0.0),
+        "volume": int(getattr(trade, "volume", 0) or 0),
+        "commission": float(getattr(trade, "commission", 0.0) or 0.0),
+        "pnl": float(getattr(trade, "pnl", 0.0) or 0.0),
+        "trade_time": _iso_text(getattr(trade, "trade_time", None)),
+        "error_msg": str(getattr(trade, "error_msg", "") or ""),
+        "trading_day": str(getattr(gateway, "trading_day", "") or ""),
+    }
+
+
+def _signal_audit_detail(signal: Any, trading_day: str) -> dict[str, Any]:
+    direction = getattr(signal, "direction", "")
+    order_type = getattr(signal, "order_type", "")
+    offset = getattr(signal, "offset", "")
+    return {
+        "symbol": str(getattr(signal, "symbol", "") or ""),
+        "direction": str(getattr(direction, "value", direction) or ""),
+        "order_type": str(getattr(order_type, "value", order_type) or ""),
+        "offset": str(getattr(offset, "value", offset) or ""),
+        "price": float(getattr(signal, "price", 0.0) or 0.0),
+        "volume": int(getattr(signal, "volume", 0) or 0),
+        "signal_time": _iso_text(getattr(signal, "datetime", None)),
+        "trading_day": str(trading_day or ""),
+    }
 
 
 def _order_to_dict(order) -> dict:
@@ -650,12 +763,31 @@ def _install_hook_on_engine(engine: TradingEngine):
     if getattr(gw, "_quant_api_hooks_installed", False):
         return
 
+    def _audit_order_preflight(signal: Any) -> bool:
+        return _record_audit(
+            "order",
+            "gateway_order_preflight",
+            "requested",
+            resource=getattr(signal, "symbol", ""),
+            detail=_signal_audit_detail(signal, getattr(gw, "trading_day", "")),
+            live_engine=engine,
+        )
+
+    engine.pre_order_audit_callback = _audit_order_preflight
+
     # ── 订单钩子 ────────────────────────────────────────────────────────────
     _orig_order = gw.on_order_callback
 
     def _order_chained(order):
         trading_state._last_gw_callback_ts = time.monotonic()
-        _record_audit("order", "gateway_order_update", "received", resource=getattr(order, "order_id", ""))
+        _record_audit(
+            "order",
+            "gateway_order_update",
+            "received",
+            resource=getattr(order, "order_id", ""),
+            detail=_order_audit_detail(order, getattr(gw, "trading_day", "")),
+            live_engine=engine,
+        )
         if _orig_order:
             _orig_order(order)
         loop = _event_loop
@@ -669,7 +801,14 @@ def _install_hook_on_engine(engine: TradingEngine):
 
     def _trade_chained(trade):
         trading_state._last_gw_callback_ts = time.monotonic()
-        _record_audit("trade", "gateway_trade_update", "received", resource=getattr(trade, "trade_id", ""))
+        _record_audit(
+            "trade",
+            "gateway_trade_update",
+            "received",
+            resource=getattr(trade, "trade_id", ""),
+            detail=_trade_audit_detail(trade, gw),
+            live_engine=engine,
+        )
         if _orig_trade:
             _orig_trade(trade)
         loop = _event_loop
@@ -678,6 +817,45 @@ def _install_hook_on_engine(engine: TradingEngine):
 
     gw.on_trade_callback = _trade_chained
     setattr(gw, "_quant_api_hooks_installed", True)
+
+    reconciliation = getattr(gw, "last_reconciliation", {})
+    if (
+        isinstance(reconciliation, dict)
+        and reconciliation.get("ok") is True
+        and reconciliation.get("fresh") is True
+    ):
+        orders = getattr(gw, "orders", {})
+        trades = getattr(gw, "trades", {})
+        for order in orders.values() if isinstance(orders, dict) else ():
+            _record_audit(
+                "order",
+                "broker_order_restored",
+                "restored",
+                resource=getattr(order, "order_id", ""),
+                detail=_order_audit_detail(order, getattr(gw, "trading_day", "")),
+                live_engine=engine,
+            )
+        for trade in trades.values() if isinstance(trades, dict) else ():
+            _record_audit(
+                "trade",
+                "broker_trade_restored",
+                "restored",
+                resource=getattr(trade, "trade_id", ""),
+                detail=_trade_audit_detail(trade, gw),
+                live_engine=engine,
+            )
+        _record_audit(
+            "connection",
+            "broker_snapshot_restored",
+            "restored",
+            detail={
+                "trading_day": str(getattr(gw, "trading_day", "") or ""),
+                "order_count": len(orders) if isinstance(orders, dict) else 0,
+                "trade_count": len(trades) if isinstance(trades, dict) else 0,
+                "reconciliation": dict(reconciliation),
+            },
+            live_engine=engine,
+        )
     logger.info(f"[API] 订单/成交广播钩子已安装: 网关={gw.name}")
 
 # ---------------------------------------------------------------------------
@@ -1124,9 +1302,18 @@ def _collect_all_orders() -> list:
 
 
 def _collect_all_trades() -> list:
-    """从各策略的成交记录收集，去重并按时间倒序。"""
+    """Collect broker-authoritative and strategy trade records without duplicates."""
     seen:   set  = set()
     result: list = []
+    primary = trading_state.primary_engine()
+    gateway = getattr(primary, "gateway", None) if primary else None
+    query_trades = getattr(gateway, "query_trades", None)
+    broker_trades = query_trades() if callable(query_trades) else getattr(gateway, "trades", {}).values()
+    for trade in broker_trades:
+        trade_id = getattr(trade, "trade_id", None)
+        if trade_id and trade_id not in seen:
+            seen.add(trade_id)
+            result.append(_trade_to_dict(trade))
     for entry in trading_state.all_entries():
         for t in getattr(entry.strategy, "trades", []):
             tid = getattr(t, "trade_id", None)
@@ -2148,6 +2335,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         account = engine.get_account()
         positions_snapshot = _build_positions_snapshot()
         orders = _collect_all_orders()
+        trades = _collect_all_trades()
         active_orders = [order for order in orders if order.get("status") in {"submitting", "submitted", "partfilled"}]
         return {
             "timestamp": datetime.now().isoformat(),
@@ -2161,6 +2349,10 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
                 "active_count": len(active_orders),
                 "total_count": len(orders),
                 "active": active_orders[:100],
+            },
+            "trades": {
+                "count": len(trades),
+                "items": trades[:200],
             },
             "positions": {
                 "count": len(positions_snapshot.get("positions", [])),

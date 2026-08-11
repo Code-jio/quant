@@ -301,6 +301,7 @@ def test_trading_reconcile_reports_account_orders_and_positions(monkeypatch):
     assert body["reconciliation"]["ok"] is True
     assert body["reconciliation"]["fresh"] is True
     assert "orders" in body
+    assert "trades" in body
     assert "positions" in body
 
 

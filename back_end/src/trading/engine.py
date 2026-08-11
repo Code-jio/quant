@@ -98,6 +98,7 @@ class TradingEngine:
         self._trial_hold_deadline_monotonic: Optional[float] = None
 
         self.last_reject_reason = ""
+        self.pre_order_audit_callback = None
         self.cancel_confirmation_timeout_seconds = 5.0
         self._error_count = 0
         self._max_errors = 10
@@ -642,6 +643,24 @@ class TradingEngine:
                 return ""
             self._signal_submission_in_flight = True
             try:
+                if callable(self.pre_order_audit_callback):
+                    try:
+                        audit_ready = self.pre_order_audit_callback(signal)
+                    except Exception as exc:
+                        reason = f"Live audit preflight failed: {exc}"
+                        self.risk_manager.set_emergency_stop(True, reason)
+                        self.last_reject_reason = reason
+                        logger.error(reason)
+                        return ""
+                    if audit_ready is False:
+                        reason = str(
+                            getattr(self.risk_manager, "emergency_reason", "")
+                            or "Live audit persistence is unavailable"
+                        )
+                        self.last_reject_reason = reason
+                        logger.error("Live order blocked by audit preflight: %s", reason)
+                        return ""
+
                 if self.status not in (TradingStatus.TRADING, TradingStatus.CONNECTED):
                     # 也检查网关状态，允许网关已连接但引擎未正式 start 的场景（手动交易）
                     if self.gateway.status not in (TradingStatus.CONNECTED, TradingStatus.TRADING):

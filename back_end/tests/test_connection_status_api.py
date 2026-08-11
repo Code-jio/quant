@@ -212,15 +212,18 @@ def test_live_gateway_audit_persists_complete_order_and_trade_facts(tmp_path, mo
         on_trade_callback=None,
     )
     _install_hook_on_engine(SimpleNamespace(gateway=gateway))
+    event_time = datetime(2026, 8, 12, 9, 30, 0)
     order = Order(
         order_id="OID-1", symbol="rb2505", direction=Direction.LONG,
         order_type=OrderType.LIMIT, price=3880.0, volume=2,
         status=OrderStatus.REJECTED, error_msg="ErrorID=31 insufficient funds",
+        create_time=event_time, update_time=event_time,
     )
     trade = Trade(
         trade_id="T-1", order_id="OID-1", symbol="rb2505", direction=Direction.LONG,
-        price=3880.0, volume=2, commission=1.2, pnl=3.4, trade_time=datetime.now(),
+        price=3880.0, volume=2, commission=1.2, pnl=3.4, trade_time=event_time,
     )
+    gateway.orders = {order.order_id: order}
 
     gateway.on_order_callback(order)
     gateway.on_trade_callback(trade)
@@ -230,18 +233,70 @@ def test_live_gateway_audit_persists_complete_order_and_trade_facts(tmp_path, mo
     details = {event["event_type"]: event["detail"] for event in events}
     assert details["order"] == {
         "order_id": "OID-1", "symbol": "rb2505", "status": "rejected",
-        "direction": "long", "price": 3880.0, "volume": 2,
+        "direction": "long", "order_type": "limit", "offset": "open",
+        "price": 3880.0, "volume": 2, "traded_volume": 0,
+        "create_time": event_time.isoformat(), "update_time": event_time.isoformat(),
         "error_msg": "ErrorID=31 insufficient funds", "trading_day": "2026-08-12",
     }
     assert details["trade"] == {
         "trade_id": "T-1", "order_id": "OID-1", "symbol": "rb2505",
-        "direction": "long", "price": 3880.0, "volume": 2,
+        "direction": "long", "order_type": "limit", "offset": "open",
+        "price": 3880.0, "volume": 2, "commission": 1.2, "pnl": 3.4,
+        "trade_time": event_time.isoformat(),
         "error_msg": "", "trading_day": "2026-08-12",
     }
 
 
-def test_live_audit_persistence_failure_emergency_stops_future_order_submission(monkeypatch):
-    """A live audit write failure is fail-closed: callbacks arm the existing risk gate."""
+def test_installing_live_hooks_audits_broker_snapshot_recovered_before_api_start(
+    tmp_path,
+    monkeypatch,
+):
+    """Initial broker reconciliation predates API hooks and must be audited explicitly."""
+    import src.api as api_module
+
+    event_time = datetime(2026, 8, 12, 9, 30, 0)
+    order = Order(
+        order_id="OID-R", symbol="rb2505", direction=Direction.LONG,
+        order_type=OrderType.LIMIT, price=3880.0, volume=1,
+        status=OrderStatus.FILLED, traded_volume=1,
+        create_time=event_time, update_time=event_time,
+    )
+    trade = Trade(
+        trade_id="T-R", order_id="OID-R", symbol="rb2505",
+        direction=Direction.LONG, price=3880.0, volume=1,
+        trade_time=event_time,
+    )
+    gateway = SimpleNamespace(
+        name="VNPY_CTP",
+        trading_day="2026-08-12",
+        orders={order.order_id: order},
+        trades={trade.trade_id: trade},
+        last_reconciliation={"ok": True, "fresh": True, "failure_code": ""},
+        on_order_callback=None,
+        on_trade_callback=None,
+    )
+    log = AuditEventLog(persistence_dir=tmp_path)
+    monkeypatch.setattr(api_module, "audit_log", log)
+
+    _install_hook_on_engine(SimpleNamespace(gateway=gateway))
+
+    restored = AuditEventLog(persistence_dir=tmp_path).query(limit=10)
+    assert {(event["event_type"], event["action"]) for event in restored} == {
+        ("order", "broker_order_restored"),
+        ("trade", "broker_trade_restored"),
+        ("connection", "broker_snapshot_restored"),
+    }
+    summary = next(event for event in restored if event["event_type"] == "connection")
+    assert summary["detail"] == {
+        "trading_day": "2026-08-12",
+        "order_count": 1,
+        "trade_count": 1,
+        "reconciliation": {"ok": True, "fresh": True, "failure_code": ""},
+    }
+
+
+def test_live_audit_persistence_failure_blocks_the_same_order_before_submission(monkeypatch):
+    """The live order preflight must fail closed before reaching the broker gateway."""
     import src.api as api_module
 
     class RecordingGateway(GatewayBase):
@@ -281,15 +336,11 @@ def test_live_audit_persistence_failure_emergency_stops_future_order_submission(
     engine = TradingEngine(gateway)
     monkeypatch.setattr(api_module, "audit_log", FailingAuditLog())
     _install_hook_on_engine(engine)
-    gateway.on_order(Order(
-        order_id="OID-AUDIT", symbol="rb2505", direction=Direction.LONG,
-        order_type=OrderType.LIMIT, price=3880.0, volume=1, status=OrderStatus.SUBMITTED,
-    ))
 
-    assert engine.risk_manager.emergency_stop is True
-    assert "audit" in engine.risk_manager.emergency_reason.lower()
     assert engine.send_signal(Signal(
         symbol="rb2505", datetime=datetime.now(), direction=Direction.LONG, price=3880.0, volume=1,
         order_type=OrderType.LIMIT,
     )) == ""
     assert gateway.sent == []
+    assert engine.risk_manager.emergency_stop is True
+    assert "audit" in engine.risk_manager.emergency_reason.lower()
