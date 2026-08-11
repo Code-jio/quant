@@ -11,13 +11,17 @@ from __future__ import annotations
 import time
 import threading
 import logging
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import wraps
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional
 
 from ..strategy import OffsetFlag, OrderType, Signal
 from .types import AccountInfo
+
+if TYPE_CHECKING:
+    from .risk_state_store import LiveRiskStateStore, LiveRiskWriterLease
 
 
 logger = logging.getLogger(__name__)
@@ -125,6 +129,13 @@ class RiskManager:
         self._compliance_trading_day = datetime.now().date().isoformat()
         self.emergency_stop = False
         self.emergency_reason = ""
+        self._state_store: Optional[LiveRiskStateStore] = None
+        self._state_writer_lease: Optional[LiveRiskWriterLease] = None
+        self._state_scope = ""
+        self._state_path_key = ""
+        self._bound_trading_day = ""
+        self._wall_clock = time.time
+        self._persistence_error = ""
 
     @_risk_locked
     def configure(self, config: Optional[Mapping[str, Any]]) -> None:
@@ -132,13 +143,112 @@ class RiskManager:
         self.config = RiskConfig.from_mapping(raw)
 
     @_risk_locked
+    def bind_persistent_state(
+        self,
+        store: "LiveRiskStateStore",
+        *,
+        scope: str,
+        trading_day: str,
+        day_open_balance: Optional[float] = None,
+    ) -> None:
+        """Bind this manager to one anonymous live account and broker day."""
+        normalized_scope = str(scope or "").strip()
+        normalized_day = str(trading_day or "").strip()
+        if not normalized_scope:
+            raise RuntimeError("risk state scope is required")
+        if not normalized_day:
+            raise RuntimeError("risk state trading day is required")
+
+        state_path_key = str(store.path.resolve())
+        if self._state_writer_lease is not None and (
+            normalized_scope != self._state_scope or state_path_key != self._state_path_key
+        ):
+            raise RuntimeError("active live risk writer cannot change account scope or state path")
+
+        acquired_lease = None
+        if self._state_writer_lease is None:
+            acquired_lease = store.acquire_writer_lease(normalized_scope)
+
+        try:
+            record = store.load(normalized_scope)
+            self._state_store = store
+            self._state_scope = normalized_scope
+            self._state_path_key = state_path_key
+            self._bound_trading_day = normalized_day
+            if acquired_lease is not None:
+                self._state_writer_lease = acquired_lease
+
+            if record and str(record.get("trading_day") or "") == normalized_day:
+                state = record.get("state")
+                if not isinstance(state, dict):
+                    raise RuntimeError("risk state payload is invalid")
+                try:
+                    self._restore_persistent_state(state, normalized_day)
+                except RuntimeError:
+                    raise
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise RuntimeError(f"risk state payload is invalid: {exc}") from exc
+                self._persistence_error = ""
+                return
+
+            preserved_stop = self.emergency_stop
+            preserved_reason = self.emergency_reason
+            if record:
+                previous = record.get("state")
+                if not isinstance(previous, dict):
+                    raise RuntimeError("risk state payload is invalid")
+                preserved_stop = bool(previous.get("emergency_stop", preserved_stop))
+                preserved_reason = str(previous.get("emergency_reason", preserved_reason) or "")
+
+            self._reset_intraday_state(normalized_day)
+            if day_open_balance is not None:
+                self.day_open_balance = max(0.0, float(day_open_balance or 0.0))
+            self.emergency_stop = preserved_stop
+            self.emergency_reason = preserved_reason
+            self._persist_state(raise_on_error=True)
+        except Exception:
+            if acquired_lease is not None:
+                acquired_lease.release()
+                self._state_writer_lease = None
+                self._state_store = None
+                self._state_scope = ""
+                self._state_path_key = ""
+                self._bound_trading_day = ""
+            raise
+
+    @_risk_locked
+    def fail_closed_for_persistence(self, reason: str) -> None:
+        """Disable submissions after live risk state cannot be trusted."""
+        self._state_store = None
+        if self._state_writer_lease is None:
+            self._state_scope = ""
+            self._state_path_key = ""
+            self._bound_trading_day = ""
+        self._persistence_error = str(reason or "Live risk state is unavailable")
+        self.emergency_stop = True
+        self.emergency_reason = self._persistence_error
+
+    @_risk_locked
+    def close_persistent_state(self) -> None:
+        lease = self._state_writer_lease
+        self._state_writer_lease = None
+        self._state_store = None
+        self._state_scope = ""
+        self._state_path_key = ""
+        self._bound_trading_day = ""
+        if lease is not None:
+            lease.release()
+
+    @_risk_locked
     def set_day_open_balance(self, balance: float) -> None:
         self.day_open_balance = max(0.0, float(balance or 0.0))
+        self._persist_state()
 
     @_risk_locked
     def set_emergency_stop(self, enabled: bool, reason: str = "") -> None:
         self.emergency_stop = bool(enabled)
         self.emergency_reason = str(reason or "").strip()
+        self._persist_state()
 
     @_risk_locked
     def status(self) -> Dict[str, Any]:
@@ -149,6 +259,7 @@ class RiskManager:
             "enabled": cfg.enabled,
             "emergency_stop": self.emergency_stop,
             "emergency_reason": self.emergency_reason,
+            "persistence_error": self._persistence_error,
             "day_open_balance": self.day_open_balance,
             "max_order_volume": cfg.max_order_volume,
             "max_position_volume": cfg.max_position_volume,
@@ -305,6 +416,7 @@ class RiskManager:
         self._increment_compliance_counter("orders_submitted")
         if signal is not None:
             self._recent_signal_timestamps[self._signal_key(signal)] = now
+        self._persist_state()
 
     @_risk_locked
     def check_cancel_request(self, order_id: str) -> RiskCheckResult:
@@ -328,6 +440,7 @@ class RiskManager:
             return RiskCheckResult(False, f"Duplicate cancel within {round(window, 2)}s window")
 
         self._recent_cancel_timestamps[normalized_order_id] = now
+        self._persist_state()
         return RiskCheckResult(True)
 
     @_risk_locked
@@ -339,6 +452,7 @@ class RiskManager:
         self._increment_compliance_counter("cancel_requests")
         if accepted:
             self._increment_compliance_counter("cancels_accepted")
+        self._persist_state()
 
     def _check_order_rate(self, signal: Optional[Signal] = None) -> RiskCheckResult:
         required = self.required_rate_capacity(signal) if signal is not None else 1
@@ -462,18 +576,116 @@ class RiskManager:
                 current,
                 threshold,
             )
+        self._persist_state()
 
     def _ensure_compliance_trading_day(self) -> None:
-        trading_day = datetime.now().date().isoformat()
+        trading_day = self._bound_trading_day or datetime.now().date().isoformat()
         if trading_day == self._compliance_trading_day:
             return
-        self._compliance_trading_day = trading_day
+        self._reset_intraday_state(trading_day)
+        self._persist_state()
+
+    def _reset_intraday_state(self, trading_day: str) -> None:
+        self._compliance_trading_day = str(trading_day)
+        self._order_timestamps.clear()
         for counter in self._compliance_counters:
             self._compliance_counters[counter] = 0
         self._compliance_alerts.clear()
         self._alerted_compliance_counters.clear()
         self._recent_signal_timestamps.clear()
         self._recent_cancel_timestamps.clear()
+
+    def _restore_persistent_state(self, state: Mapping[str, Any], trading_day: str) -> None:
+        self._reset_intraday_state(trading_day)
+        self.day_open_balance = max(0.0, float(state.get("day_open_balance", 0.0) or 0.0))
+        self.emergency_stop = bool(state.get("emergency_stop", False))
+        self.emergency_reason = str(state.get("emergency_reason", "") or "")
+
+        counters = state.get("compliance_counters") or {}
+        if not isinstance(counters, Mapping):
+            raise RuntimeError("risk state compliance counters are invalid")
+        for counter in self._compliance_counters:
+            self._compliance_counters[counter] = max(0, int(counters.get(counter, 0) or 0))
+
+        alerts = state.get("compliance_alerts") or []
+        if not isinstance(alerts, list):
+            raise RuntimeError("risk state compliance alerts are invalid")
+        self._compliance_alerts = [dict(item) for item in alerts if isinstance(item, Mapping)]
+        alerted = state.get("alerted_compliance_counters") or []
+        self._alerted_compliance_counters = {
+            str(item) for item in alerted if str(item) in self._compliance_counters
+        }
+
+        now_monotonic = float(self._monotonic())
+        now_wall = float(self._wall_clock())
+
+        def restore_timestamp(value: Any) -> float | None:
+            try:
+                epoch = float(value)
+            except (TypeError, ValueError):
+                return None
+            if not math.isfinite(epoch) or epoch <= 0:
+                return None
+            age = max(0.0, now_wall - epoch)
+            return now_monotonic - age
+
+        for value in state.get("order_timestamps", []) or []:
+            restored = restore_timestamp(value)
+            if restored is not None and now_monotonic - restored < 60.0:
+                self._order_timestamps.append(restored)
+
+        signal_window = self.config.duplicate_signal_window_seconds
+        for key, value in dict(state.get("recent_signal_timestamps") or {}).items():
+            restored = restore_timestamp(value)
+            if restored is not None and signal_window > 0 and now_monotonic - restored < signal_window:
+                self._recent_signal_timestamps[str(key)] = restored
+
+        cancel_window = self.config.duplicate_cancel_window_seconds
+        for key, value in dict(state.get("recent_cancel_timestamps") or {}).items():
+            restored = restore_timestamp(value)
+            if restored is not None and cancel_window > 0 and now_monotonic - restored < cancel_window:
+                self._recent_cancel_timestamps[str(key)] = restored
+
+    def _persistent_state(self) -> Dict[str, Any]:
+        now_monotonic = float(self._monotonic())
+        now_wall = float(self._wall_clock())
+
+        def to_epoch(timestamp: float) -> float:
+            return now_wall - max(0.0, now_monotonic - float(timestamp))
+
+        return {
+            "day_open_balance": self.day_open_balance,
+            "emergency_stop": self.emergency_stop,
+            "emergency_reason": self.emergency_reason,
+            "order_timestamps": [to_epoch(ts) for ts in self._order_timestamps],
+            "recent_signal_timestamps": {
+                key: to_epoch(ts) for key, ts in self._recent_signal_timestamps.items()
+            },
+            "recent_cancel_timestamps": {
+                key: to_epoch(ts) for key, ts in self._recent_cancel_timestamps.items()
+            },
+            "compliance_counters": dict(self._compliance_counters),
+            "compliance_alerts": [dict(alert) for alert in self._compliance_alerts],
+            "alerted_compliance_counters": sorted(self._alerted_compliance_counters),
+        }
+
+    def _persist_state(self, *, raise_on_error: bool = False) -> None:
+        if self._state_store is None or not self._state_scope or not self._bound_trading_day:
+            return
+        try:
+            self._state_store.save(
+                self._state_scope,
+                self._bound_trading_day,
+                self._persistent_state(),
+            )
+            self._persistence_error = ""
+        except RuntimeError as exc:
+            self._persistence_error = f"Live risk state persistence failed: {exc}"
+            self.emergency_stop = True
+            self.emergency_reason = self._persistence_error
+            logger.error("实盘风控状态落盘失败，已触发急停: %s", exc)
+            if raise_on_error:
+                raise RuntimeError(self._persistence_error) from exc
 
     def _contract_multiplier(self, symbol: str) -> float:
         if symbol in self.config.contract_multipliers:

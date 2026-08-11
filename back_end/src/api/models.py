@@ -65,6 +65,10 @@ class SystemStatusResponse(BaseModel):
     market_connected: bool
     td_connected:     bool = False
     md_connected:     bool = False
+    contracts_ready:  bool = False
+    reconciliation_ready: bool = False
+    trading_day:      str = ""
+    order_entry_ready: bool = False
     gateway_status:   str
     gateway_name:     str
     reconnecting:     bool = False

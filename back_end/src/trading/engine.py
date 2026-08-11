@@ -4,10 +4,12 @@
 
 import logging
 import copy
+import hashlib
 import threading
 import time
 import traceback
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Dict, Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -24,6 +26,7 @@ from .gateway import GatewayBase, create_gateway
 from .errors import TradingError
 from .order_manager import OrderManager, PreOrder
 from .risk import RiskManager
+from .risk_state_store import LiveRiskStateStore
 from .bar_aggregator import BarAggregator
 from .symbols import symbol_key, symbols_match
 from .trial_run_execution import TrialRunExecutionState, TrialRunOutcome
@@ -69,6 +72,9 @@ class TradingEngine:
         self.gateway.on_trade_callback = self._on_trade
         self.gateway.on_tick_callback = self._on_tick
         self.gateway.on_error_callback = self._on_gateway_error
+        self.gateway.on_account_callback = self._on_gateway_account
+        if hasattr(self.gateway, "on_trading_day_callback"):
+            self.gateway.on_trading_day_callback = self._on_gateway_trading_day
 
         self.order_manager.on_order_callback = self._on_order
         self.order_manager.on_trade_callback = self._on_trade
@@ -76,6 +82,9 @@ class TradingEngine:
         self.order_manager.on_timer_callback = self.on_timer
 
         self.risk_manager = RiskManager(monotonic_clock=self._monotonic)
+        self._live_risk_state_store: Optional[LiveRiskStateStore] = None
+        self._live_risk_scope = ""
+        self._live_risk_trading_day = ""
         self.bar_aggregator: Optional[BarAggregator] = None  # set in start()
         self._bar_interval: int = 1
         self._emit_first_tick_bar = False
@@ -406,8 +415,93 @@ class TradingEngine:
         """Configure pre-order risk controls."""
         config = config or {}
         self.risk_manager.configure(config)
-        if config.get("initial_capital"):
+        if getattr(self.gateway, "requires_persistent_risk_state", False):
+            if self._live_risk_state_store is None or config.get("broker_id"):
+                self._configure_live_risk_state(config)
+        elif config.get("initial_capital"):
             self.risk_manager.set_day_open_balance(float(config.get("initial_capital") or 0.0))
+
+    def _configure_live_risk_state(self, config: Dict[str, Any]) -> None:
+        account_id = str(getattr(self.gateway.account, "account_id", "") or "").strip()
+        broker_id = str(config.get("broker_id") or "").strip()
+        trading_day = str(getattr(self.gateway, "trading_day", "") or "").strip()
+        if not account_id or not broker_id or not trading_day:
+            missing = ", ".join(
+                label
+                for label, value in (
+                    ("account_id", account_id),
+                    ("broker_id", broker_id),
+                    ("trading_day", trading_day),
+                )
+                if not value
+            )
+            self.risk_manager.fail_closed_for_persistence(
+                f"Live risk state identity is incomplete: {missing}"
+            )
+            return
+
+        state_path = config.get("live_risk_state_path")
+        path = (
+            Path(str(state_path))
+            if state_path
+            else Path(__file__).resolve().parents[3]
+            / "data"
+            / "historical"
+            / "live_risk_state.json"
+        )
+        scope_material = f"{broker_id}\0{account_id}".encode("utf-8")
+        scope = f"live:{hashlib.sha256(scope_material).hexdigest()}"
+        store = LiveRiskStateStore(path)
+        initial_balance = float(getattr(self.gateway.account, "balance", 0.0) or 0.0)
+        try:
+            self.risk_manager.bind_persistent_state(
+                store,
+                scope=scope,
+                trading_day=trading_day,
+                day_open_balance=initial_balance,
+            )
+        except RuntimeError as exc:
+            logger.error("实盘风控状态绑定失败: %s", exc)
+            self.risk_manager.fail_closed_for_persistence(
+                f"Live risk state persistence failed: {exc}"
+            )
+            return
+        self._live_risk_state_store = store
+        self._live_risk_scope = scope
+        self._live_risk_trading_day = trading_day
+
+    def _on_gateway_trading_day(self, trading_day: str) -> None:
+        normalized_day = str(trading_day or "").strip()
+        if (
+            not normalized_day
+            or self._live_risk_state_store is None
+            or not self._live_risk_scope
+            or normalized_day == self._live_risk_trading_day
+        ):
+            return
+        try:
+            self.risk_manager.bind_persistent_state(
+                self._live_risk_state_store,
+                scope=self._live_risk_scope,
+                trading_day=normalized_day,
+                day_open_balance=0.0,
+            )
+        except RuntimeError as exc:
+            logger.error("实盘交易日风控状态切换失败: %s", exc)
+            self.risk_manager.fail_closed_for_persistence(
+                f"Live risk state trading-day switch failed: {exc}"
+            )
+            return
+        self._live_risk_trading_day = normalized_day
+
+    def _on_gateway_account(self, account: AccountInfo) -> None:
+        if (
+            self._live_risk_state_store is not None
+            and self._live_risk_trading_day
+            and self.risk_manager.day_open_balance <= 0
+            and float(getattr(account, "balance", 0.0) or 0.0) > 0
+        ):
+            self.risk_manager.set_day_open_balance(float(account.balance))
 
     def start(self, config: Optional[Dict[str, Any]] = None) -> bool:
         """启动交易引擎"""
@@ -417,7 +511,6 @@ class TradingEngine:
                 return False
 
             config = config or {}
-            self.configure_risk(config)
             self._bar_interval = max(1, int(config.get("bar_interval_minutes", 1)))
             self._emit_first_tick_bar = bool(config.get("emit_first_tick_bar", False))
             self._first_tick_bar_symbols.clear()
@@ -437,6 +530,8 @@ class TradingEngine:
                 if not self.gateway.connect(config):
                     self.status = TradingStatus.ERROR
                     return False
+
+            self.configure_risk(config)
 
             if self.strategy:
                 try:
@@ -517,6 +612,7 @@ class TradingEngine:
                     self.bar_aggregator.flush(sym)
 
             self.gateway.disconnect()
+            self.risk_manager.close_persistent_state()
             self.status = TradingStatus.STOPPED
             logger.info("交易引擎已停止")
             return True

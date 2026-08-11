@@ -11,6 +11,10 @@ back_end/config/config.local.json
 
 # ── 后端数据文件 ─────────────────────────────────────────────
 back_end/data/historical/*.db
+data/historical/live_risk_state.json
+data/historical/.live_risk_state.json.lock
+data/historical/.live_risk_state.json.*.tmp
+data/historical/.live_risk_state.json.*.writer.lock
 back_end/data/factors/
 back_end/data/cache/
 back_end/data/runtime/

@@ -51,6 +51,17 @@ def _build_reconciliation_ctp_gateway(adapter: "VnpyGateway") -> Any:
             self._snapshot_reqids: Dict[str, int] = {}
             self._snapshot_counts: Dict[str, int] = {}
 
+        def onRspUserLogin(
+            self,
+            data: Dict[str, Any],
+            error: Dict[str, Any],
+            reqid: int,
+            last: bool,
+        ) -> None:
+            if not int((error or {}).get("ErrorID", 0) or 0):
+                adapter._set_trading_day(str((data or {}).get("TradingDay", "") or ""))
+            super().onRspUserLogin(data, error, reqid, last)
+
         def _emit_completion(
             self,
             kind: str,
@@ -190,6 +201,7 @@ class VnpyGateway(GatewayBase):
 
     def __init__(self) -> None:
         super().__init__("VNPY_CTP")
+        self.requires_persistent_risk_state = True
         self._gateway_name = "CTP"
         self._event_engine: Any = None
         self._main_engine: Any = None
@@ -214,6 +226,8 @@ class VnpyGateway(GatewayBase):
         self._contract_capabilities: Dict[str, Dict[str, Any]] = {}
         self._contract_capability_request_id: int | None = None
         self.last_reject_reason = ""
+        self.trading_day = ""
+        self.on_trading_day_callback: Any = None
         self._vn_orders: Dict[str, Any] = {}
         self._order_meta: Dict[str, Tuple[str, Any]] = {}
         self.latest_ticks: Dict[str, MarketData] = {}
@@ -244,6 +258,7 @@ class VnpyGateway(GatewayBase):
             self._connection_generation += 1
             self._contract_capabilities.clear()
             self._contract_capability_request_id = None
+            self.trading_day = ""
             self._last_disconnect_reason = ""
             self._connection_changed_at = datetime.now().isoformat()
         self._connected_event.clear()
@@ -314,11 +329,22 @@ class VnpyGateway(GatewayBase):
                 )
                 if reconciliation.get("ok") is True and reconciliation.get("fresh") is True:
                     with self._connection_lock:
-                        if self._reconciliation_ready:
-                            return True
-                failure_code = str(
-                    reconciliation.get("failure_code") or "broker_snapshot_unavailable"
-                )
+                        reconciliation_ready = self._reconciliation_ready
+                        trading_day = self.trading_day
+                    if reconciliation_ready and trading_day:
+                        return True
+                    if reconciliation_ready:
+                        failure_code = "broker_trading_day_unavailable"
+                    else:
+                        failure_code = str(
+                            reconciliation.get("failure_code")
+                            or "broker_snapshot_unavailable"
+                        )
+                else:
+                    failure_code = str(
+                        reconciliation.get("failure_code")
+                        or "broker_snapshot_unavailable"
+                    )
                 self._remember_connect_error(f"券商权威对账失败: {failure_code}")
                 self.status = TradingStatus.ERROR
                 return False
@@ -344,6 +370,7 @@ class VnpyGateway(GatewayBase):
                 "fully_connected": channels_ready,
                 "contracts_ready": self._contracts_ready,
                 "reconciliation_ready": self._reconciliation_ready,
+                "trading_day": self.trading_day,
                 "order_entry_ready": (
                     channels_ready
                     and self._contracts_ready
@@ -411,6 +438,29 @@ class VnpyGateway(GatewayBase):
             self._contracts_ready = True
             self._connection_changed_at = datetime.now().isoformat()
         self._restore_connection_if_ready()
+
+    def _set_trading_day(self, trading_day: str) -> None:
+        raw = str(trading_day or "").strip()
+        compact = raw.replace("-", "")
+        if len(compact) != 8 or not compact.isdigit():
+            return
+        try:
+            normalized = datetime.strptime(compact, "%Y%m%d").date().isoformat()
+        except ValueError:
+            return
+
+        callback = None
+        with self._connection_lock:
+            if normalized == self.trading_day:
+                return
+            self.trading_day = normalized
+            self._connection_changed_at = datetime.now().isoformat()
+            callback = self.on_trading_day_callback
+        if callback:
+            try:
+                callback(normalized)
+            except Exception:
+                logger.exception("[vn.py] trading day callback failed")
 
     def _mark_channels_disconnected(self, channels: Tuple[str, ...], reason: str) -> None:
         if self.status in (TradingStatus.CONNECTED, TradingStatus.TRADING):
@@ -526,6 +576,7 @@ class VnpyGateway(GatewayBase):
                 self._reconciliation_worker = None
                 self._contract_capabilities.clear()
                 self._contract_capability_request_id = None
+                self.trading_day = ""
                 self._connected_event.clear()
                 self._connection_changed_at = datetime.now().isoformat()
             self.status = TradingStatus.STOPPED

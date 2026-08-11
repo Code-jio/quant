@@ -116,6 +116,7 @@ def test_bound_live_risk_state_restores_same_scope_and_broker_trading_day(tmp_pa
     first.record_order(_signal())
     assert first.check_cancel_request("ORDER-1").allowed
     first.record_cancel("ORDER-1", accepted=True)
+    first.close_persistent_state()
 
     restored = _manager(clock)
     restored.bind_persistent_state(store, scope="anonymous", trading_day="2026-08-12")
@@ -232,22 +233,22 @@ def test_unbound_risk_manager_keeps_existing_in_memory_behavior():
     assert manager.check_signal(_signal(), positions={}, market_data={"last_price": 100.0}).allowed is False
 
 
-def test_runtime_persistence_failure_halts_future_orders_without_masking_recorded_order():
-    class FailingAfterBindStore:
-        def __init__(self):
-            self.saves = 0
+def test_runtime_persistence_failure_halts_future_orders_without_masking_recorded_order(tmp_path):
+    store = _store(tmp_path)
+    original_save = store.save
+    saves = 0
 
-        def load(self, _scope):
-            return None
+    def fail_after_bind(scope, trading_day, state):
+        nonlocal saves
+        saves += 1
+        if saves > 1:
+            raise RuntimeError("risk state disk unavailable")
+        original_save(scope, trading_day, state)
 
-        def save(self, _scope, _trading_day, _state):
-            self.saves += 1
-            if self.saves > 1:
-                raise RuntimeError("risk state disk unavailable")
-
+    store.save = fail_after_bind
     manager = _manager(FixedClock())
     manager.bind_persistent_state(
-        FailingAfterBindStore(),
+        store,
         scope="anonymous",
         trading_day="2026-08-12",
     )
@@ -280,6 +281,7 @@ def test_live_engine_binds_anonymous_persistent_state_and_restores_it_after_rest
     persisted = state_path.read_text(encoding="utf-8")
     assert "LIVE-ACCOUNT-SECRET" not in persisted
     assert '"9999"' not in persisted
+    engine.risk_manager.close_persistent_state()
 
     restarted_gateway = VnpyGateway()
     restarted_gateway.trading_day = "2026-08-12"
