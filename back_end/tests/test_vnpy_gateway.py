@@ -1341,3 +1341,15 @@ class TestLiveContractOrderCapabilityGate:
 
         assert gateway.send_order(self._signal(price=100.00000000001, volume=2)) == "ORDER-1"
         assert len(sent) == 1
+
+
+def test_ctp_trading_day_is_normalized_emitted_once_and_exposed_in_connection_snapshot():
+    gateway = VnpyGateway()
+    observed = []
+    gateway.on_trading_day_callback = observed.append
+
+    gateway._set_trading_day("20260812")
+    gateway._set_trading_day("2026-08-12")
+
+    assert observed == ["2026-08-12"]
+    assert gateway.connection_snapshot()["trading_day"] == "2026-08-12"
