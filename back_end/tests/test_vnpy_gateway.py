@@ -1374,3 +1374,28 @@ def test_ctp_trading_day_is_normalized_emitted_once_and_exposed_in_connection_sn
 
     assert observed == ["2026-08-12"]
     assert gateway.connection_snapshot()["trading_day"] == "2026-08-12"
+
+
+def test_cancel_request_is_pending_until_a_broker_cancelled_order_callback_arrives():
+    gateway = VnpyGateway()
+    gateway._main_engine = SimpleNamespace(cancel_order=lambda *_args: None)
+    gateway._vn_orders["OID-1"] = SimpleNamespace(create_cancel_request=lambda: object())
+
+    assert gateway.cancel_order("OID-1") is True
+    pending = gateway.wait_cancel_confirmation("OID-1", timeout=0)
+
+    assert pending == {"requested": True, "confirmed": False, "pending": True, "failed": False}
+
+
+def test_rejected_ctp_order_callback_preserves_broker_error_for_ui_and_engine():
+    constants = _install_mock_vnpy_sys()
+    gateway = VnpyGateway()
+    gateway._on_vnpy_order(SimpleNamespace(data=SimpleNamespace(
+        vt_orderid="OID-REJECTED", symbol="rb2505", direction=constants.Direction.LONG,
+        type=constants.OrderType.LIMIT, price=100.0, volume=1, traded=0,
+        status=constants.Status.REJECTED, offset=constants.Offset.OPEN, datetime=datetime.now(),
+        error_id=31, error_msg="CTP rejected: insufficient funds",
+    )))
+
+    assert gateway.orders["OID-REJECTED"].error_msg == "CTP rejected: insufficient funds"
+    assert gateway.last_reject_reason == "CTP rejected: insufficient funds"

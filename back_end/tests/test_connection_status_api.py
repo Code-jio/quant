@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from src.api import _build_system_snapshot, app, trading_state
 from src.api.security import SESSION_COOKIE_NAME, session_store
+from src.strategy import Direction, Order, OrderStatus, OrderType
 from src.trading.types import AccountInfo, TradingStatus
 
 
@@ -106,3 +107,27 @@ def test_system_status_rest_exposes_live_order_entry_gates(monkeypatch):
     assert payload["reconciliation_ready"] is True
     assert payload["trading_day"] == "2026-08-12"
     assert payload["order_entry_ready"] is True
+
+
+def test_cancel_order_rest_does_not_report_success_when_only_the_request_was_sent(monkeypatch):
+    pending_order = Order(
+        order_id="OID-1", symbol="rb2505", direction=Direction.LONG,
+        order_type=OrderType.LIMIT, price=100.0, volume=1, status=OrderStatus.SUBMITTED,
+    )
+    gateway = SimpleNamespace(orders={"OID-1": pending_order})
+    engine = SimpleNamespace(gateway=gateway, cancel_order=lambda _order_id: True)
+    monkeypatch.setattr(trading_state, "primary_engine", lambda: engine)
+    monkeypatch.setattr(trading_state, "all_entries", lambda: [])
+    token = session_store.create()
+    try:
+        with TestClient(app) as client:
+            client.cookies.set(SESSION_COOKIE_NAME, token)
+            response = client.delete("/orders/OID-1")
+    finally:
+        session_store.revoke(token)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["pending"] is True
+    assert payload["confirmed"] is False

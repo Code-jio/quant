@@ -765,6 +765,24 @@ def test_engine_surfaces_gateway_local_reject_reason_when_submission_returns_emp
     assert engine.last_reject_reason == gateway.last_reject_reason
 
 
+def test_rejected_broker_order_surfaces_broker_error_as_engine_reject_reason():
+    engine = TradingEngine(RecordingGateway())
+    rejected = Order(
+        order_id="OID-REJECTED",
+        symbol="rb2505",
+        direction=Direction.LONG,
+        order_type=OrderType.LIMIT,
+        price=100.0,
+        volume=1,
+        status=OrderStatus.REJECTED,
+        error_msg="CTP ErrorID=31: insufficient funds",
+    )
+
+    engine._on_order(rejected)
+
+    assert engine.last_reject_reason == "CTP ErrorID=31: insufficient funds"
+
+
 def test_standalone_order_manager_pre_order_fails_closed_without_submission_callback():
     gateway = RecordingGateway()
     manager = OrderManager(gateway)
