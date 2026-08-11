@@ -583,7 +583,13 @@ class TestCallbacks:
 
 class TestConnectionFlow:
     @staticmethod
-    def _install_synchronous_connect_runtime(monkeypatch, gateway, refresh_result, reconciliation_ready):
+    def _install_synchronous_connect_runtime(
+        monkeypatch,
+        gateway,
+        refresh_result,
+        reconciliation_ready,
+        trading_day="2026-08-12",
+    ):
         """Replace vn.py with a synchronous three-channel-ready runtime."""
         class EventEngine:
             def register(self, *_args):
@@ -600,6 +606,7 @@ class TestConnectionFlow:
                 gateway._td_connected = True
                 gateway._md_connected = True
                 gateway._contracts_ready = True
+                gateway.trading_day = trading_day
                 gateway._connected_event.set()
 
         monkeypatch.setitem(sys.modules, "vnpy.event", SimpleNamespace(EventEngine=EventEngine))
@@ -680,6 +687,20 @@ class TestConnectionFlow:
         assert gateway.connect(self._live_connect_config()) is True
         assert refresh_calls == [0.1]
         assert gateway.status == TradingStatus.CONNECTED
+
+    def test_connect_rejects_fresh_reconciliation_when_broker_trading_day_is_missing(self, monkeypatch):
+        gateway = VnpyGateway()
+        refresh_calls = self._install_synchronous_connect_runtime(
+            monkeypatch,
+            gateway,
+            {"ok": True, "fresh": True, "failure_code": ""},
+            reconciliation_ready=True,
+            trading_day="",
+        )
+
+        assert gateway.connect(self._live_connect_config()) is False
+        assert refresh_calls == [0.1]
+        assert gateway.status == TradingStatus.ERROR
 
 
 class TestChannelConnectionHealth:
