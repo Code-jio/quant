@@ -1217,15 +1217,15 @@ class TestLiveContractOrderCapabilityGate:
 
     @staticmethod
     def _record(gateway, symbol="rb2505", exchange="SHFE", **limits):
-        raw_contract = SimpleNamespace(
-            InstrumentID=symbol,
-            ExchangeID=exchange,
-            PriceTick=limits.get("price_tick", 0.2),
-            MinLimitOrderVolume=limits.get("min_limit", 1),
-            MaxLimitOrderVolume=limits.get("max_limit", 3),
-            MinMarketOrderVolume=limits.get("min_market", 0),
-            MaxMarketOrderVolume=limits.get("max_market", 0),
-        )
+        raw_contract = {
+            "InstrumentID": symbol,
+            "ExchangeID": exchange,
+            "PriceTick": limits.get("price_tick", 0.2),
+            "MinLimitOrderVolume": limits.get("min_limit", 1),
+            "MaxLimitOrderVolume": limits.get("max_limit", 3),
+            "MinMarketOrderVolume": limits.get("min_market", 0),
+            "MaxMarketOrderVolume": limits.get("max_market", 0),
+        }
         gateway._record_contract_capability(raw_contract)
 
     @staticmethod
@@ -1312,6 +1312,19 @@ class TestLiveContractOrderCapabilityGate:
         gateway._main_engine = SimpleNamespace(send_order=lambda *args: sent.append(args) or "UNEXPECTED")
 
         assert gateway.send_order(self._signal("m2501.DCE", offset=OffsetFlag.CLOSE_TODAY)) == ""
+        assert sent == []
+        assert gateway.last_reject_reason
+
+    def test_unknown_offset_is_rejected_instead_of_falling_back_to_open(self, monkeypatch):
+        _install_mock_vnpy_constants(monkeypatch)
+        sent = []
+        gateway = self._ready_gateway()
+        self._record(gateway)
+        gateway._main_engine = SimpleNamespace(send_order=lambda *args: sent.append(args) or "UNEXPECTED")
+        signal = self._signal()
+        signal.offset = "invalid-offset"
+
+        assert gateway.send_order(signal) == ""
         assert sent == []
         assert gateway.last_reject_reason
 
