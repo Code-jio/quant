@@ -6,7 +6,10 @@ from importlib import import_module
 import pytest
 
 from src.strategy import Direction, OffsetFlag, OrderType, Signal
+from src.trading.engine import TradingEngine
 from src.trading.risk import RiskManager
+from src.trading.types import AccountInfo
+from src.trading.vnpy_gateway import VnpyGateway
 
 
 class FixedClock:
@@ -119,3 +122,61 @@ def test_unbound_risk_manager_keeps_existing_in_memory_behavior():
 
     assert manager.status()["compliance"]["counters"]["orders_submitted"] == 1
     assert manager.check_signal(_signal(), positions={}, market_data={"last_price": 100.0}).allowed is False
+
+
+def test_live_engine_binds_anonymous_persistent_state_and_restores_it_after_restart(tmp_path):
+    state_path = tmp_path / "live-risk-state.json"
+    config = {
+        "broker_id": "9999",
+        "initial_capital": 1_000_000,
+        "live_risk_state_path": str(state_path),
+    }
+    gateway = VnpyGateway()
+    gateway.trading_day = "2026-08-12"
+    gateway.account = AccountInfo(account_id="LIVE-ACCOUNT-SECRET", balance=1_000_000)
+    engine = TradingEngine(gateway)
+
+    engine.configure_risk(config)
+    engine.risk_manager.set_emergency_stop(True, "operator halt")
+    engine.risk_manager.record_order(_signal())
+
+    assert state_path.exists()
+    persisted = state_path.read_text(encoding="utf-8")
+    assert "LIVE-ACCOUNT-SECRET" not in persisted
+    assert '"9999"' not in persisted
+
+    restarted_gateway = VnpyGateway()
+    restarted_gateway.trading_day = "2026-08-12"
+    restarted_gateway.account = AccountInfo(account_id="LIVE-ACCOUNT-SECRET", balance=1_000_000)
+    restarted = TradingEngine(restarted_gateway)
+    restarted.configure_risk(config)
+    restored = restarted.risk_manager.status()
+
+    assert restored["emergency_stop"] is True
+    assert restored["emergency_reason"] == "operator halt"
+    assert restored["compliance"]["counters"]["orders_submitted"] == 1
+
+
+def test_gateway_trading_day_callback_rebinds_engine_risk_and_waits_for_new_day_account_balance(tmp_path):
+    gateway = VnpyGateway()
+    gateway.trading_day = "2026-08-12"
+    gateway.account = AccountInfo(account_id="LIVE-ACCOUNT-SECRET", balance=1_000_000)
+    engine = TradingEngine(gateway)
+    engine.configure_risk({
+        "broker_id": "9999",
+        "initial_capital": 1_000_000,
+        "live_risk_state_path": str(tmp_path / "live-risk-state.json"),
+    })
+    engine.risk_manager.set_emergency_stop(True, "operator halt")
+    engine.risk_manager.record_order(_signal())
+
+    gateway._set_trading_day("20260813")
+    new_day = engine.risk_manager.status()
+
+    assert new_day["compliance"]["trading_day"] == "2026-08-13"
+    assert new_day["compliance"]["counters"]["orders_submitted"] == 0
+    assert new_day["emergency_stop"] is True
+    assert new_day["day_open_balance"] == 0
+
+    gateway.on_account(AccountInfo(account_id="LIVE-ACCOUNT-SECRET", balance=1_200_000))
+    assert engine.risk_manager.status()["day_open_balance"] == 1_200_000
