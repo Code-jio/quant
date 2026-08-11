@@ -154,6 +154,20 @@ def test_corrupt_live_risk_state_fails_closed_with_explicit_error(tmp_path):
         manager.bind_persistent_state(store, scope="anonymous", trading_day="2026-08-12")
 
 
+def test_malformed_live_risk_payload_fails_closed_with_explicit_error(tmp_path):
+    state_path = tmp_path / "live-risk-state.json"
+    state_path.write_text(
+        '{"version":1,"scopes":{"anonymous":{"trading_day":"2026-08-12",'
+        '"state":{"day_open_balance":"not-a-number"}}}}',
+        encoding="utf-8",
+    )
+    manager = _manager(FixedClock())
+    store = _store(tmp_path)
+
+    with pytest.raises(RuntimeError, match="risk state"):
+        manager.bind_persistent_state(store, scope="anonymous", trading_day="2026-08-12")
+
+
 def test_unbound_risk_manager_keeps_existing_in_memory_behavior():
     manager = _manager(FixedClock())
     manager.record_order(_signal())
