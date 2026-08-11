@@ -187,6 +187,7 @@ class VnpyGateway(GatewayBase):
         self._connection_lock = threading.RLock()
         self._td_connected = False
         self._md_connected = False
+        self._contracts_ready = False
         self._reconnecting = False
         self._reconnect_count = 0
         self._last_disconnect_reason = ""
@@ -216,6 +217,7 @@ class VnpyGateway(GatewayBase):
         with self._connection_lock:
             self._td_connected = False
             self._md_connected = False
+            self._contracts_ready = False
             self._reconnecting = False
             self._connection_outage = False
             self._last_disconnect_reason = ""
@@ -295,10 +297,18 @@ class VnpyGateway(GatewayBase):
         """Return a thread-safe snapshot of the independent CTP channels."""
         with self._connection_lock:
             self._refresh_channel_health_from_vnpy()
+            channels_ready = self._td_connected and self._md_connected
             return {
                 "td_connected": self._td_connected,
                 "md_connected": self._md_connected,
-                "fully_connected": self._td_connected and self._md_connected,
+                "fully_connected": channels_ready,
+                "contracts_ready": self._contracts_ready,
+                "order_entry_ready": (
+                    channels_ready
+                    and self._contracts_ready
+                    and not self._reconnecting
+                    and self.status in (TradingStatus.CONNECTED, TradingStatus.TRADING)
+                ),
                 "reconnecting": self._reconnecting,
                 "reconnect_count": self._reconnect_count,
                 "last_disconnect_reason": self._last_disconnect_reason,
@@ -354,6 +364,12 @@ class VnpyGateway(GatewayBase):
             self._connection_changed_at = datetime.now().isoformat()
         self._restore_connection_if_ready()
 
+    def _set_contracts_ready(self) -> None:
+        if not self._contracts_ready:
+            self._contracts_ready = True
+            self._connection_changed_at = datetime.now().isoformat()
+        self._restore_connection_if_ready()
+
     def _mark_channels_disconnected(self, channels: Tuple[str, ...], reason: str) -> None:
         if self.status in (TradingStatus.CONNECTED, TradingStatus.TRADING):
             self._restore_status = self.status
@@ -364,23 +380,30 @@ class VnpyGateway(GatewayBase):
             if getattr(self, attr):
                 setattr(self, attr, False)
                 changed = True
+        if "td" in channels and self._contracts_ready:
+            self._contracts_ready = False
+            changed = True
+        self._connected_event.clear()
+        new_outage = not self._connection_outage
         self._reconnecting = True
         self._connection_outage = True
-        self._last_disconnect_reason = reason
-        if changed or reason:
+        if changed or new_outage:
+            self._last_disconnect_reason = reason
             self._connection_changed_at = datetime.now().isoformat()
             logger.warning("[vn.py] connection health degraded: %s", reason)
 
     def _restore_connection_if_ready(self) -> None:
-        if not (self._td_connected and self._md_connected):
+        if not (self._td_connected and self._md_connected and self._contracts_ready):
             return
+        if self.status == TradingStatus.CONNECTING:
+            self._connected_event.set()
         if self._connection_outage:
             self._reconnect_count += 1
             self._connection_outage = False
             self._reconnecting = False
             if self.status == TradingStatus.ERROR:
                 self.status = self._restore_status
-            logger.info("[vn.py] TD and MD connection health restored")
+            logger.info("[vn.py] TD, MD and contract readiness restored")
 
     def disconnect(self) -> None:
         """Disconnect CTP and stop vn.py event engine."""
@@ -395,8 +418,10 @@ class VnpyGateway(GatewayBase):
             with self._connection_lock:
                 self._td_connected = False
                 self._md_connected = False
+                self._contracts_ready = False
                 self._reconnecting = False
                 self._connection_outage = False
+                self._connected_event.clear()
                 self._connection_changed_at = datetime.now().isoformat()
             self.status = TradingStatus.STOPPED
 
@@ -406,6 +431,17 @@ class VnpyGateway(GatewayBase):
             logger.warning("vn.py CTP 未连接，无法发送订单")
             return ""
         if not self._main_engine:
+            return ""
+        with self._connection_lock:
+            self._refresh_channel_health_from_vnpy()
+            order_entry_ready = (
+                self._td_connected
+                and self._md_connected
+                and self._contracts_ready
+                and not self._reconnecting
+            )
+        if not order_entry_ready:
+            logger.warning("[vn.py] order rejected locally: CTP order entry is not ready")
             return ""
 
         from vnpy.trader.object import OrderRequest
@@ -659,10 +695,11 @@ class VnpyGateway(GatewayBase):
             elif "连接断开" in msg or "断开连接" in msg:
                 self._mark_channels_disconnected(("td", "md"), msg)
 
-        if self.status == TradingStatus.CONNECTING:
             if "合约信息查询成功" in msg:
-                self._connected_event.set()
-            elif self._is_connect_error(msg):
+                self._set_contracts_ready()
+
+        if self.status == TradingStatus.CONNECTING:
+            if self._is_connect_error(msg):
                 self._remember_connect_error(msg)
                 self._error_event.set()
 
