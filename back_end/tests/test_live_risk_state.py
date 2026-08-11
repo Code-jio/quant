@@ -208,3 +208,24 @@ def test_gateway_trading_day_callback_rebinds_engine_risk_and_waits_for_new_day_
 
     gateway.on_account(AccountInfo(account_id="LIVE-ACCOUNT-SECRET", balance=1_200_000))
     assert engine.risk_manager.status()["day_open_balance"] == 1_200_000
+
+
+def test_runtime_risk_config_update_keeps_existing_live_persistence_binding(tmp_path):
+    gateway = VnpyGateway()
+    gateway.trading_day = "2026-08-12"
+    gateway.account = AccountInfo(account_id="LIVE-ACCOUNT-SECRET", balance=1_000_000)
+    engine = TradingEngine(gateway)
+    engine.configure_risk({
+        "broker_id": "9999",
+        "initial_capital": 1_000_000,
+        "live_risk_state_path": str(tmp_path / "live-risk-state.json"),
+    })
+    engine.risk_manager.record_order(_signal())
+
+    engine.configure_risk({"risk": {"max_order_volume": 3}})
+    status = engine.risk_manager.status()
+
+    assert status["max_order_volume"] == 3
+    assert status["emergency_stop"] is False
+    assert status["persistence_error"] == ""
+    assert status["compliance"]["counters"]["orders_submitted"] == 1
