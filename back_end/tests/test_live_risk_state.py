@@ -7,8 +7,9 @@ import pytest
 
 from src.strategy import Direction, OffsetFlag, OrderType, Signal
 from src.trading.engine import TradingEngine
+from src.trading.gateway import GatewayBase
 from src.trading.risk import RiskManager
-from src.trading.types import AccountInfo
+from src.trading.types import AccountInfo, TradingStatus
 from src.trading.vnpy_gateway import VnpyGateway
 
 
@@ -18,6 +19,43 @@ class FixedClock:
 
     def __call__(self):
         return self.value
+
+
+class ConnectingLiveGateway(GatewayBase):
+    """Live gateway fake that discovers broker identity only during connect."""
+
+    requires_persistent_risk_state = True
+
+    def __init__(self):
+        super().__init__("VNPY_CTP")
+        self.trading_day = ""
+        self.on_trading_day_callback = None
+
+    def connect(self, _config):
+        self.status = TradingStatus.CONNECTED
+        self.trading_day = "2026-08-12"
+        if self.on_trading_day_callback:
+            self.on_trading_day_callback(self.trading_day)
+        self.on_account(AccountInfo(account_id="LIVE-ACCOUNT-SECRET", balance=50_000))
+        return True
+
+    def disconnect(self):
+        self.status = TradingStatus.STOPPED
+
+    def send_order(self, _signal):
+        return ""
+
+    def cancel_order(self, _order_id):
+        return False
+
+    def query_account(self):
+        return self.account
+
+    def query_positions(self):
+        return []
+
+    def query_orders(self):
+        return []
 
 
 def _signal():
@@ -183,6 +221,39 @@ def test_live_engine_binds_anonymous_persistent_state_and_restores_it_after_rest
     assert restored["emergency_stop"] is True
     assert restored["emergency_reason"] == "operator halt"
     assert restored["compliance"]["counters"]["orders_submitted"] == 1
+
+
+def test_live_engine_start_connects_before_binding_persistent_risk_state(tmp_path):
+    gateway = ConnectingLiveGateway()
+    engine = TradingEngine(gateway)
+    state_path = tmp_path / "live-risk-state.json"
+
+    try:
+        assert engine.start({
+            "broker_id": "9999",
+            "initial_capital": 1_000_000,
+            "live_risk_state_path": str(state_path),
+        }) is True
+        assert state_path.exists()
+        assert engine.risk_manager.status()["emergency_stop"] is False
+        assert engine.risk_manager.status()["day_open_balance"] == 50_000
+    finally:
+        engine.stop()
+
+
+def test_first_live_risk_binding_uses_broker_balance_not_static_initial_capital(tmp_path):
+    gateway = VnpyGateway()
+    gateway.trading_day = "2026-08-12"
+    gateway.account = AccountInfo(account_id="LIVE-ACCOUNT-SECRET", balance=50_000)
+    engine = TradingEngine(gateway)
+
+    engine.configure_risk({
+        "broker_id": "9999",
+        "initial_capital": 1_000_000,
+        "live_risk_state_path": str(tmp_path / "live-risk-state.json"),
+    })
+
+    assert engine.risk_manager.status()["day_open_balance"] == 50_000
 
 
 def test_gateway_trading_day_callback_rebinds_engine_risk_and_waits_for_new_day_account_balance(tmp_path):
