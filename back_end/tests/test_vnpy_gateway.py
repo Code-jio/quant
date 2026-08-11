@@ -429,13 +429,13 @@ class TestSplitSymbol:
 # ── Callback handler tests ────────────────────────────────────────────────────
 
 class TestCallbacks:
-    def test_on_vnpy_log_sets_connected_on_success(self):
+    def test_contract_success_log_alone_does_not_mark_order_entry_ready(self):
         gw = VnpyGateway()
         gw.status = TradingStatus.CONNECTING
         gw._connected_event.clear()
         event = SimpleNamespace(data=SimpleNamespace(msg="合约信息查询成功"))
         gw._on_vnpy_log(event)
-        assert gw._connected_event.is_set()
+        assert not gw._connected_event.is_set()
 
     def test_settlement_confirmation_does_not_precede_contract_readiness(self):
         gw = VnpyGateway()
@@ -626,21 +626,32 @@ class TestChannelConnectionHealth:
         assert md_down["md_connected"] is False
         assert md_down["fully_connected"] is False
 
-    def test_both_channel_relogins_restore_health_and_increment_reconnect_count(self):
+    def test_relogin_waits_for_fresh_contracts_before_restoring_health_and_counts_one_outage(self):
         gateway = VnpyGateway()
         gateway.status = TradingStatus.CONNECTED
-        self._log(gateway, "\u4ea4\u6613\u670d\u52a1\u5668\u767b\u5f55\u6210\u529f")
-        self._log(gateway, "\u884c\u60c5\u670d\u52a1\u5668\u767b\u5f55\u6210\u529f")
-        self._log(gateway, "\u4ea4\u6613\u670d\u52a1\u5668\u8fde\u63a5\u65ad\u5f00")
-        self._log(gateway, "\u884c\u60c5\u670d\u52a1\u5668\u8fde\u63a5\u65ad\u5f00")
+        self._log(gateway, "交易服务器登录成功")
+        self._log(gateway, "行情服务器登录成功")
+        self._log(gateway, "合约信息查询成功")
+        self._log(gateway, "交易服务器连接断开")
+        self._log(gateway, "行情服务器连接断开")
 
-        self._log(gateway, "\u4ea4\u6613\u670d\u52a1\u5668\u767b\u5f55\u6210\u529f")
-        self._log(gateway, "\u884c\u60c5\u670d\u52a1\u5668\u767b\u5f55\u6210\u529f")
+        self._log(gateway, "交易服务器登录成功")
+        self._log(gateway, "行情服务器登录成功")
+        waiting = gateway.connection_snapshot()
+
+        assert waiting["td_connected"] is True
+        assert waiting["md_connected"] is True
+        assert waiting["fully_connected"] is True
+        assert waiting["contracts_ready"] is False
+        assert waiting["order_entry_ready"] is False
+        assert waiting["reconnecting"] is True
+        assert gateway.status == TradingStatus.ERROR
+        assert waiting["reconnect_count"] == 0
+
+        self._log(gateway, "合约信息查询成功")
         recovered = gateway.connection_snapshot()
-
-        assert recovered["td_connected"] is True
-        assert recovered["md_connected"] is True
-        assert recovered["fully_connected"] is True
+        assert recovered["contracts_ready"] is True
+        assert recovered["order_entry_ready"] is True
         assert recovered["reconnecting"] is False
         assert recovered["reconnect_count"] == 1
 
@@ -666,8 +677,9 @@ class TestChannelConnectionHealth:
         native.md_api.login_status = True
         restored = gateway.connection_snapshot()
         assert restored["fully_connected"] is True
-        assert restored["reconnecting"] is False
-        assert restored["reconnect_count"] == 1
+        assert restored["reconnecting"] is True
+        assert restored["reconnect_count"] == 0
+        assert gateway.status == TradingStatus.ERROR
 
 
 class TestBrokerReconciliation:
@@ -877,3 +889,65 @@ class TestBrokerReconciliation:
 
         assert retry_result["ok"] is True
         assert retry_result["failure_code"] == ""
+
+
+class TestOrderEntryReadinessContract:
+    @staticmethod
+    def _log(gateway, message):
+        gateway._on_vnpy_log(SimpleNamespace(data=SimpleNamespace(msg=message)))
+
+    def test_connect_event_requires_td_md_and_contracts_in_any_log_order(self):
+        gateway = VnpyGateway()
+        gateway.status = TradingStatus.CONNECTING
+
+        self._log(gateway, "行情服务器登录成功")
+        self._log(gateway, "合约信息查询成功")
+        assert not gateway._connected_event.is_set()
+
+        self._log(gateway, "交易服务器登录成功")
+        assert gateway._connected_event.is_set()
+
+    def test_snapshot_separates_full_channel_connection_from_order_entry_readiness(self):
+        gateway = VnpyGateway()
+        gateway.status = TradingStatus.CONNECTED
+        self._log(gateway, "交易服务器登录成功")
+        self._log(gateway, "行情服务器登录成功")
+
+        channels_only = gateway.connection_snapshot()
+        assert channels_only["fully_connected"] is True
+        assert channels_only["contracts_ready"] is False
+        assert channels_only["order_entry_ready"] is False
+
+        self._log(gateway, "合约信息查询成功")
+        ready = gateway.connection_snapshot()
+        assert ready["contracts_ready"] is True
+        assert ready["order_entry_ready"] is True
+
+    def test_duplicate_td_disconnect_is_a_single_outage_cycle(self):
+        gateway = VnpyGateway()
+        gateway.status = TradingStatus.CONNECTED
+        self._log(gateway, "交易服务器登录成功")
+        self._log(gateway, "行情服务器登录成功")
+        self._log(gateway, "合约信息查询成功")
+        self._log(gateway, "交易服务器连接断开")
+        self._log(gateway, "交易服务器连接断开")
+        self._log(gateway, "交易服务器登录成功")
+        self._log(gateway, "合约信息查询成功")
+
+        assert gateway.connection_snapshot()["reconnect_count"] == 1
+
+    def test_send_order_does_not_reach_main_engine_without_order_entry_readiness(self, monkeypatch):
+        _install_mock_vnpy_constants(monkeypatch)
+        sent = []
+        gateway = VnpyGateway()
+        gateway.status = TradingStatus.CONNECTED
+        gateway._main_engine = SimpleNamespace(
+            send_order=lambda *args: sent.append(args) or "UNEXPECTED"
+        )
+        signal = Signal(
+            symbol="rb2505", datetime=datetime.now(), direction=Direction.LONG,
+            price=3880, volume=1,
+        )
+
+        assert gateway.send_order(signal) == ""
+        assert sent == []
