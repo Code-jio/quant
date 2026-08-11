@@ -228,7 +228,12 @@ async function handleCancelAll() {
   cancellingAll.value = true
   try {
     const res = await cancelAllOrders()
-    ElMessage.success(`已撤销 ${res.cancelled} 笔委托，失败 ${res.failed || 0} 笔`)
+    const message = `券商确认 ${res.confirmed || 0} 笔，待确认 ${res.pending || 0} 笔，失败 ${res.failed || 0} 笔`
+    if ((res.pending || 0) > 0 || (res.failed || 0) > 0) {
+      ElMessage.warning(message)
+    } else {
+      ElMessage.success(message)
+    }
   } catch (err) {
     ElMessage.error(`撤单失败: ${err.message}`)
   } finally {

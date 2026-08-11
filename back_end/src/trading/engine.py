@@ -98,6 +98,7 @@ class TradingEngine:
         self._trial_hold_deadline_monotonic: Optional[float] = None
 
         self.last_reject_reason = ""
+        self.cancel_confirmation_timeout_seconds = 5.0
         self._error_count = 0
         self._max_errors = 10
         self.exception_handler = ExceptionHandler()
@@ -414,6 +415,11 @@ class TradingEngine:
     def configure_risk(self, config: Optional[Dict[str, Any]] = None):
         """Configure pre-order risk controls."""
         config = config or {}
+        if "cancel_confirmation_timeout" in config:
+            self.cancel_confirmation_timeout_seconds = max(
+                0.0,
+                float(config.get("cancel_confirmation_timeout") or 0.0),
+            )
         self.risk_manager.configure(config)
         if getattr(self.gateway, "requires_persistent_risk_state", False):
             if self._live_risk_state_store is None or config.get("broker_id"):
@@ -687,6 +693,33 @@ class TradingEngine:
         accepted = self._cancel_gateway_order(order_id)
         self.risk_manager.record_cancel(order_id, accepted=accepted)
         return accepted
+
+    def wait_cancel_confirmation(
+        self,
+        order_id: str,
+        timeout: float = 5.0,
+    ) -> Dict[str, Any]:
+        """Return success only after the broker reports the order as cancelled."""
+        waiter = getattr(self.gateway, "wait_cancel_confirmation", None)
+        if callable(waiter):
+            return dict(waiter(order_id, timeout=timeout))
+
+        order = self.gateway.orders.get(order_id)
+        status = str(
+            getattr(getattr(order, "status", None), "value", getattr(order, "status", ""))
+            or ""
+        ).lower()
+        if status == "cancelled":
+            return {"requested": True, "confirmed": True, "pending": False, "failed": False}
+        if status in {"filled", "rejected"}:
+            return {
+                "requested": True,
+                "confirmed": False,
+                "pending": False,
+                "failed": True,
+                "error_msg": str(getattr(order, "error_msg", "") or status),
+            }
+        return {"requested": True, "confirmed": False, "pending": True, "failed": False}
 
     def _cancel_strategy_order(self, order_id: str) -> bool:
         """Cancel only the bound strategy order through its selected adapter."""
@@ -1389,6 +1422,11 @@ class TradingEngine:
         status_value = str(
             getattr(getattr(order, "status", None), "value", getattr(order, "status", "")) or ""
         ).strip().lower()
+        broker_error = str(getattr(order, "error_msg", "") or "").strip()
+        if broker_error:
+            self.last_reject_reason = broker_error
+        elif status_value == "rejected":
+            self.last_reject_reason = "Broker rejected the order"
         with self._trial_submission_lock:
             execution = self.trial_run_execution
             strategy = self.strategy

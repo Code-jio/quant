@@ -62,6 +62,55 @@ def _build_reconciliation_ctp_gateway(adapter: "VnpyGateway") -> Any:
                 adapter._set_trading_day(str((data or {}).get("TradingDay", "") or ""))
             super().onRspUserLogin(data, error, reqid, last)
 
+        def _with_session_identity(self, data: Dict[str, Any]) -> Dict[str, Any]:
+            payload = dict(data or {})
+            payload.setdefault("FrontID", getattr(self, "frontid", 0))
+            payload.setdefault("SessionID", getattr(self, "sessionid", 0))
+            return payload
+
+        def onRspOrderInsert(
+            self,
+            data: Dict[str, Any],
+            error: Dict[str, Any],
+            reqid: int,
+            last: bool,
+        ) -> None:
+            payload = self._with_session_identity(data)
+            if int((error or {}).get("ErrorID", 0) or 0):
+                adapter._record_order_submission_error(payload, error)
+            super().onRspOrderInsert(data, error, reqid, last)
+
+        def onErrRtnOrderInsert(
+            self,
+            data: Dict[str, Any],
+            error: Dict[str, Any],
+        ) -> None:
+            self.onRspOrderInsert(data, error, 0, True)
+
+        def onRspOrderAction(
+            self,
+            data: Dict[str, Any],
+            error: Dict[str, Any],
+            reqid: int,
+            last: bool,
+        ) -> None:
+            payload = self._with_session_identity(data)
+            if int((error or {}).get("ErrorID", 0) or 0):
+                adapter._record_cancel_error(payload, error)
+            super().onRspOrderAction(data, error, reqid, last)
+
+        def onErrRtnOrderAction(
+            self,
+            data: Dict[str, Any],
+            error: Dict[str, Any],
+        ) -> None:
+            payload = self._with_session_identity(data)
+            if int((error or {}).get("ErrorID", 0) or 0):
+                adapter._record_cancel_error(payload, error)
+            write_error = getattr(self.gateway, "write_error", None)
+            if callable(write_error):
+                write_error("交易撤单失败", error)
+
         def _emit_completion(
             self,
             kind: str,
@@ -226,6 +275,10 @@ class VnpyGateway(GatewayBase):
         self._contract_capabilities: Dict[str, Dict[str, Any]] = {}
         self._contract_capability_request_id: int | None = None
         self.last_reject_reason = ""
+        self._cancel_condition = threading.Condition(threading.RLock())
+        self._cancel_requests: Dict[str, float] = {}
+        self._cancel_errors: Dict[str, str] = {}
+        self._broker_order_errors: Dict[str, str] = {}
         self.trading_day = ""
         self.on_trading_day_callback: Any = None
         self._vn_orders: Dict[str, Any] = {}
@@ -579,6 +632,16 @@ class VnpyGateway(GatewayBase):
                 self.trading_day = ""
                 self._connected_event.clear()
                 self._connection_changed_at = datetime.now().isoformat()
+            with self._cancel_condition:
+                for order_id in self._cancel_requests:
+                    order = self.orders.get(order_id)
+                    if order is None or order.is_active():
+                        self._cancel_errors.setdefault(
+                            order_id,
+                            "CTP disconnected before cancel confirmation",
+                        )
+                self._broker_order_errors.clear()
+                self._cancel_condition.notify_all()
             self.status = TradingStatus.STOPPED
 
     def send_order(self, signal: Signal) -> str:
@@ -748,7 +811,7 @@ class VnpyGateway(GatewayBase):
         )
 
     def cancel_order(self, order_id: str) -> bool:
-        """Cancel an active order."""
+        """Send a cancel request; broker confirmation is reported separately."""
         if not self._main_engine:
             return False
 
@@ -767,8 +830,141 @@ class VnpyGateway(GatewayBase):
                 symbol, exchange = self._split_symbol(order.symbol)
             req = CancelRequest(orderid=raw_order_id, symbol=symbol, exchange=exchange)
 
-        self._main_engine.cancel_order(req, self._gateway_name)
+        with self._cancel_condition:
+            self._cancel_requests[order_id] = time.monotonic()
+            self._cancel_errors.pop(order_id, None)
+            if len(self._cancel_requests) > 10_000:
+                oldest = sorted(self._cancel_requests, key=self._cancel_requests.get)[:1_000]
+                for stale_order_id in oldest:
+                    self._cancel_requests.pop(stale_order_id, None)
+                    self._cancel_errors.pop(stale_order_id, None)
+
+        try:
+            self._main_engine.cancel_order(req, self._gateway_name)
+        except Exception as exc:
+            message = f"CTP cancel request failed: {exc}"
+            with self._cancel_condition:
+                self._cancel_errors[order_id] = message
+                self._cancel_condition.notify_all()
+            self.last_reject_reason = message
+            logger.error("[vn.py] %s", message)
+            return False
         return True
+
+    @staticmethod
+    def _ctp_order_error_keys(data: Dict[str, Any]) -> set[str]:
+        payload = data or {}
+        order_ref = str(payload.get("OrderRef", "") or "").strip()
+        front_id = str(payload.get("FrontID", "") or "").strip()
+        session_id = str(payload.get("SessionID", "") or "").strip()
+        keys = {order_ref} if order_ref else set()
+        if order_ref and front_id and session_id:
+            raw_order_id = f"{front_id}_{session_id}_{order_ref}"
+            keys.update({raw_order_id, f"CTP.{raw_order_id}"})
+        return keys
+
+    @staticmethod
+    def _format_ctp_error(action: str, error: Dict[str, Any]) -> str:
+        error_id = int((error or {}).get("ErrorID", 0) or 0)
+        error_msg = str((error or {}).get("ErrorMsg", "") or "").strip()
+        label = "order" if action == "order" else "cancel"
+        if error_msg:
+            return f"CTP {label} rejected (ErrorID={error_id}): {error_msg}"
+        return f"CTP {label} rejected (ErrorID={error_id})"
+
+    def _record_order_submission_error(
+        self,
+        data: Dict[str, Any],
+        error: Dict[str, Any],
+    ) -> None:
+        message = self._format_ctp_error("order", error)
+        for key in self._ctp_order_error_keys(data):
+            self._broker_order_errors[key] = message
+        self.last_reject_reason = message
+        logger.error("[vn.py] %s", message)
+
+    def _record_cancel_error(
+        self,
+        data: Dict[str, Any],
+        error: Dict[str, Any],
+    ) -> None:
+        message = self._format_ctp_error("cancel", error)
+        keys = self._ctp_order_error_keys(data)
+        order_id = ""
+        with self._cancel_condition:
+            for candidate in self._cancel_requests:
+                raw_candidate = candidate.split(".", 1)[1] if "." in candidate else candidate
+                order_ref = raw_candidate.rsplit("_", 1)[-1]
+                if candidate in keys or raw_candidate in keys or order_ref in keys:
+                    order_id = candidate
+                    break
+            if not order_id and len(self._cancel_requests) == 1:
+                order_id = next(iter(self._cancel_requests))
+            if order_id:
+                self._cancel_errors[order_id] = message
+            self._cancel_condition.notify_all()
+
+        self.last_reject_reason = message
+        order = self.orders.get(order_id) if order_id else None
+        if order is not None:
+            order.error_msg = message
+            order.update_time = datetime.now()
+            self.on_order(order)
+        logger.error("[vn.py] %s", message)
+
+    def wait_cancel_confirmation(self, order_id: str, timeout: float = 5.0) -> Dict[str, Any]:
+        """Wait until a broker callback proves the cancel outcome."""
+        deadline = time.monotonic() + max(0.0, float(timeout or 0.0))
+        with self._cancel_condition:
+            while True:
+                requested = order_id in self._cancel_requests
+                error_msg = str(self._cancel_errors.get(order_id, "") or "")
+                if error_msg:
+                    return {
+                        "requested": requested,
+                        "confirmed": False,
+                        "pending": False,
+                        "failed": True,
+                        "error_msg": error_msg,
+                    }
+
+                order = self.orders.get(order_id)
+                status = str(
+                    getattr(getattr(order, "status", None), "value", getattr(order, "status", ""))
+                    or ""
+                ).lower()
+                if status == OrderStatus.CANCELLED.value:
+                    return {
+                        "requested": requested,
+                        "confirmed": True,
+                        "pending": False,
+                        "failed": False,
+                    }
+                if status in {OrderStatus.FILLED.value, OrderStatus.REJECTED.value}:
+                    message = str(getattr(order, "error_msg", "") or "")
+                    if not message:
+                        message = (
+                            "Order filled before cancel confirmation"
+                            if status == OrderStatus.FILLED.value
+                            else "Broker rejected the order"
+                        )
+                    return {
+                        "requested": requested,
+                        "confirmed": False,
+                        "pending": False,
+                        "failed": True,
+                        "error_msg": message,
+                    }
+
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return {
+                        "requested": requested,
+                        "confirmed": False,
+                        "pending": True,
+                        "failed": False,
+                    }
+                self._cancel_condition.wait(timeout=remaining)
 
     def supports_market_order(self, symbol: str = "") -> bool:
         """Return true only when the raw CTP contract proves a market range."""
@@ -1094,6 +1290,35 @@ class VnpyGateway(GatewayBase):
     def _on_vnpy_order(self, event: Any) -> None:
         data = event.data
         vt_orderid = getattr(data, "vt_orderid", "")
+        status = self._from_vnpy_status(getattr(data, "status", None))
+        error_id = int(getattr(data, "error_id", 0) or 0)
+        error_msg = str(
+            getattr(data, "error_msg", "")
+            or getattr(data, "status_msg", "")
+            or ""
+        ).strip()
+        if not error_msg:
+            raw_order_id = vt_orderid.split(".", 1)[1] if "." in vt_orderid else vt_orderid
+            order_ref = raw_order_id.rsplit("_", 1)[-1]
+            with self._cancel_condition:
+                cancel_error = str(self._cancel_errors.get(vt_orderid, "") or "")
+            error_msg = str(
+                cancel_error
+                or self._broker_order_errors.get(vt_orderid)
+                or self._broker_order_errors.get(raw_order_id)
+                or self._broker_order_errors.get(order_ref)
+                or ""
+            )
+        if status == OrderStatus.REJECTED and not error_msg:
+            error_msg = (
+                f"CTP order rejected (ErrorID={error_id})"
+                if error_id
+                else "CTP order rejected"
+            )
+        if status == OrderStatus.CANCELLED:
+            error_msg = ""
+            with self._cancel_condition:
+                self._cancel_errors.pop(vt_orderid, None)
         order = Order(
             order_id=vt_orderid,
             symbol=getattr(data, "symbol", ""),
@@ -1102,11 +1327,14 @@ class VnpyGateway(GatewayBase):
             price=float(getattr(data, "price", 0) or 0),
             volume=int(getattr(data, "volume", 0) or 0),
             traded_volume=int(getattr(data, "traded", 0) or 0),
-            status=self._from_vnpy_status(getattr(data, "status", None)),
+            status=status,
             offset=self._from_vnpy_offset(getattr(data, "offset", None)),
             create_time=getattr(data, "datetime", None) or datetime.now(),
             update_time=datetime.now(),
+            error_msg=error_msg,
         )
+        if status == OrderStatus.REJECTED:
+            self.last_reject_reason = error_msg
         self._vn_orders[vt_orderid] = data
         self.orders[vt_orderid] = order
         with self._reconciliation_capture_lock:
@@ -1114,6 +1342,8 @@ class VnpyGateway(GatewayBase):
                 self._reconciliation_capture["orders"][vt_orderid] = order
                 self._reconciliation_capture["vn_orders"][vt_orderid] = data
         self.on_order(order)
+        with self._cancel_condition:
+            self._cancel_condition.notify_all()
 
     def _on_vnpy_trade(self, event: Any) -> None:
         data = event.data

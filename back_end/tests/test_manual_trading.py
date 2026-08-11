@@ -363,6 +363,13 @@ def test_cancel_order_uses_engine_cancel_path(monkeypatch):
         response = client.delete("/orders/A1")
 
     assert response.status_code == 200
-    assert response.json() == {"success": True, "order_id": "A1"}
+    assert response.json() == {
+        "success": True,
+        "order_id": "A1",
+        "requested": True,
+        "confirmed": True,
+        "pending": False,
+        "failed": False,
+    }
     assert cancelled_order_ids == ["A1"]
     assert gateway.cancelled_order_ids == []

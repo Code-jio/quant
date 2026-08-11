@@ -88,8 +88,14 @@ async function handleCancel(order) {
 
   cancelLoading.value[order.order_id] = true
   try {
-    await cancelOrder(order.order_id)
-    ElMessage.success('撤单请求已提交，等待交易所确认')
+    const result = await cancelOrder(order.order_id)
+    if (result.confirmed) {
+      ElMessage.success('券商已确认撤单')
+    } else if (result.pending) {
+      ElMessage.warning('撤单请求已发送，尚未收到券商确认')
+    } else {
+      ElMessage.error(`撤单失败：${result.error_msg || '券商未确认撤单'}`)
+    }
   } catch (err) {
     ElMessage.error(`撤单失败：${err.message}`)
   } finally {

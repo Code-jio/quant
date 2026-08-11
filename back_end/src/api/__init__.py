@@ -1152,9 +1152,35 @@ def _unique_engines() -> list:
     return engines
 
 
-def _cancel_all_active_orders() -> dict:
-    cancelled = 0
+def _wait_cancel_confirmation(engine: Any, order_id: str, timeout: float) -> dict:
+    waiter = getattr(engine, "wait_cancel_confirmation", None)
+    if callable(waiter):
+        return dict(waiter(order_id, timeout=timeout))
+
+    order = getattr(getattr(engine, "gateway", None), "orders", {}).get(order_id)
+    status = str(
+        getattr(getattr(order, "status", None), "value", getattr(order, "status", ""))
+        or ""
+    ).lower()
+    if status == "cancelled":
+        return {"requested": True, "confirmed": True, "pending": False, "failed": False}
+    if status in {"filled", "rejected"}:
+        return {
+            "requested": True,
+            "confirmed": False,
+            "pending": False,
+            "failed": True,
+            "error_msg": str(getattr(order, "error_msg", "") or status),
+        }
+    return {"requested": True, "confirmed": False, "pending": True, "failed": False}
+
+
+def _cancel_all_active_orders(timeout_seconds: float = 5.0) -> dict:
+    requested: list[tuple[Any, str]] = []
+    confirmed = 0
+    pending = 0
     failed = 0
+    outcomes: list[dict] = []
     seen: set[str] = set()
     for engine in _unique_engines():
         for oid, order in list(engine.gateway.orders.items()):
@@ -1165,26 +1191,64 @@ def _cancel_all_active_orders() -> dict:
                 continue
             try:
                 if engine.cancel_order(oid):
-                    cancelled += 1
+                    requested.append((engine, oid))
                     _record_audit(
                         "order",
-                        "cancel",
-                        "success",
+                        "cancel_request",
+                        "accepted",
                         resource=oid,
                         detail={"source": "cancel_all"},
                     )
                 else:
                     failed += 1
+                    outcomes.append({"order_id": oid, "status": "failed"})
                     _record_audit(
                         "order",
-                        "cancel",
+                        "cancel_request",
                         "rejected",
                         resource=oid,
                         detail={"source": "cancel_all"},
                     )
-            except Exception:
+            except Exception as exc:
                 failed += 1
-    return {"cancelled": cancelled, "failed": failed}
+                outcomes.append({"order_id": oid, "status": "failed", "error_msg": str(exc)})
+
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds or 0.0))
+    for engine, oid in requested:
+        outcome = _wait_cancel_confirmation(
+            engine,
+            oid,
+            max(0.0, deadline - time.monotonic()),
+        )
+        if outcome.get("confirmed") is True:
+            confirmed += 1
+            status = "confirmed"
+            audit_result = "success"
+        elif outcome.get("pending") is True:
+            pending += 1
+            status = "pending"
+            audit_result = "pending"
+        else:
+            failed += 1
+            status = "failed"
+            audit_result = "rejected"
+        detail = {
+            "source": "cancel_all",
+            "broker_confirmed": bool(outcome.get("confirmed")),
+        }
+        if outcome.get("error_msg"):
+            detail["error_msg"] = str(outcome["error_msg"])
+        _record_audit("order", "cancel", audit_result, resource=oid, detail=detail)
+        outcomes.append({"order_id": oid, "status": status, **outcome})
+
+    return {
+        "requested": len(requested),
+        "confirmed": confirmed,
+        "cancelled": confirmed,
+        "pending": pending,
+        "failed": failed,
+        "outcomes": outcomes,
+    }
 
 
 def _build_positions_snapshot() -> dict:
@@ -2136,15 +2200,54 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         if order is None:
             raise HTTPException(status_code=404, detail=f"委托单不存在: {order_id}")
         try:
-            success = target_engine.cancel_order(order_id)
+            requested = bool(target_engine.cancel_order(order_id))
+            if not requested:
+                reason = str(getattr(target_engine, "last_reject_reason", "") or "")
+                _record_audit(
+                    "order",
+                    "cancel_request",
+                    "rejected",
+                    resource=order_id,
+                    request=request,
+                    detail={"error_msg": reason} if reason else None,
+                )
+                return {
+                    "success": False,
+                    "requested": False,
+                    "confirmed": False,
+                    "pending": False,
+                    "failed": True,
+                    "order_id": order_id,
+                    "error_msg": reason,
+                }
+
             _record_audit(
                 "order",
-                "cancel",
-                "success" if success else "rejected",
+                "cancel_request",
+                "accepted",
                 resource=order_id,
                 request=request,
             )
-            return {"success": bool(success), "order_id": order_id}
+            timeout = float(getattr(target_engine, "cancel_confirmation_timeout_seconds", 5.0))
+            outcome = _wait_cancel_confirmation(target_engine, order_id, timeout)
+            confirmed = outcome.get("confirmed") is True
+            pending = outcome.get("pending") is True
+            _record_audit(
+                "order",
+                "cancel",
+                "success" if confirmed else ("pending" if pending else "rejected"),
+                resource=order_id,
+                request=request,
+                detail={
+                    "broker_confirmed": confirmed,
+                    "error_msg": str(outcome.get("error_msg", "") or ""),
+                },
+            )
+            return {
+                "success": confirmed,
+                "order_id": order_id,
+                **outcome,
+            }
         except Exception as exc:
             _record_audit("order", "cancel", "error", resource=order_id, request=request, detail={"error": str(exc)})
             raise HTTPException(status_code=500, detail=f"撤单失败: {exc}")
@@ -2244,13 +2347,11 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         if engine is None:
             raise HTTPException(status_code=503, detail="交易引擎未连接")
 
-        cancelled = 0
-        failed = 0
         result = _cancel_all_active_orders()
-        cancelled = result["cancelled"]
-        failed = result["failed"]
-
-        return {"success": True, "cancelled": cancelled, "failed": failed}
+        return {
+            "success": result["failed"] == 0 and result["pending"] == 0,
+            **result,
+        }
 
     @app.post("/positions/{symbol}/close", summary="快捷平仓", tags=["手动交易"])
     @_limiter.limit("20/minute")

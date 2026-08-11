@@ -13,6 +13,7 @@ from src.trading.types import MarketData, TradingStatus
 from src.trading.vnpy_gateway import (
     PRODUCT_EXCHANGE,
     VnpyGateway,
+    _build_reconciliation_ctp_gateway,
     _ctp_contracts_ready,
     _extract_product,
 )
@@ -1387,6 +1388,36 @@ def test_cancel_request_is_pending_until_a_broker_cancelled_order_callback_arriv
     assert pending == {"requested": True, "confirmed": False, "pending": True, "failed": False}
 
 
+def test_cancel_confirmation_requires_cancelled_callback_and_rejects_late_fill():
+    constants = _install_mock_vnpy_sys()
+    gateway = VnpyGateway()
+    gateway._main_engine = SimpleNamespace(cancel_order=lambda *_args: None)
+    for order_id, broker_status in (
+        ("OID-CANCELLED", constants.Status.CANCELLED),
+        ("OID-FILLED", constants.Status.ALLTRADED),
+    ):
+        gateway._vn_orders[order_id] = SimpleNamespace(create_cancel_request=lambda: object())
+        assert gateway.cancel_order(order_id) is True
+        gateway._on_vnpy_order(SimpleNamespace(data=SimpleNamespace(
+            vt_orderid=order_id, symbol="rb2505", direction=constants.Direction.LONG,
+            type=constants.OrderType.LIMIT, price=100.0, volume=1, traded=1,
+            status=broker_status, offset=constants.Offset.OPEN, datetime=datetime.now(),
+        )))
+
+    confirmed = gateway.wait_cancel_confirmation("OID-CANCELLED", timeout=0)
+    late_fill = gateway.wait_cancel_confirmation("OID-FILLED", timeout=0)
+
+    assert confirmed == {
+        "requested": True,
+        "confirmed": True,
+        "pending": False,
+        "failed": False,
+    }
+    assert late_fill["confirmed"] is False
+    assert late_fill["failed"] is True
+    assert "filled" in late_fill["error_msg"].lower()
+
+
 def test_rejected_ctp_order_callback_preserves_broker_error_for_ui_and_engine():
     constants = _install_mock_vnpy_sys()
     gateway = VnpyGateway()
@@ -1399,3 +1430,104 @@ def test_rejected_ctp_order_callback_preserves_broker_error_for_ui_and_engine():
 
     assert gateway.orders["OID-REJECTED"].error_msg == "CTP rejected: insufficient funds"
     assert gateway.last_reject_reason == "CTP rejected: insufficient funds"
+
+
+def test_ctp_order_error_mapping_preserves_error_id_and_original_message():
+    constants = _install_mock_vnpy_sys()
+    gateway = VnpyGateway()
+    gateway._record_order_submission_error(
+        {"FrontID": 1, "SessionID": 2, "OrderRef": "3"},
+        {"ErrorID": 31, "ErrorMsg": "insufficient funds"},
+    )
+
+    gateway._on_vnpy_order(SimpleNamespace(data=SimpleNamespace(
+        vt_orderid="CTP.1_2_3", symbol="rb2505", direction=constants.Direction.LONG,
+        type=constants.OrderType.LIMIT, price=100.0, volume=1, traded=0,
+        status=constants.Status.REJECTED, offset=constants.Offset.OPEN, datetime=datetime.now(),
+    )))
+
+    error_msg = gateway.orders["CTP.1_2_3"].error_msg
+    assert "ErrorID=31" in error_msg
+    assert "insufficient funds" in error_msg
+
+
+def test_ctp_cancel_error_fails_confirmation_and_keeps_original_order_active():
+    gateway = VnpyGateway()
+    order_id = "CTP.1_2_3"
+    gateway._main_engine = SimpleNamespace(cancel_order=lambda *_args: None)
+    gateway._vn_orders[order_id] = SimpleNamespace(create_cancel_request=lambda: object())
+    gateway.orders[order_id] = Order(
+        order_id=order_id,
+        symbol="rb2505",
+        direction=Direction.LONG,
+        order_type=OrderType.LIMIT,
+        price=100.0,
+        volume=1,
+        status=OrderStatus.SUBMITTED,
+    )
+
+    assert gateway.cancel_order(order_id) is True
+    gateway._record_cancel_error(
+        {"FrontID": 1, "SessionID": 2, "OrderRef": "3"},
+        {"ErrorID": 26, "ErrorMsg": "order already filled"},
+    )
+    outcome = gateway.wait_cancel_confirmation(order_id, timeout=0)
+
+    assert outcome["failed"] is True
+    assert outcome["confirmed"] is False
+    assert "ErrorID=26" in outcome["error_msg"]
+    assert "order already filled" in outcome["error_msg"]
+    assert gateway.orders[order_id].status == OrderStatus.SUBMITTED
+    assert gateway.orders[order_id].error_msg == outcome["error_msg"]
+
+
+def test_reconciliation_td_api_forwards_rsp_and_err_rtn_broker_errors(monkeypatch):
+    class FakeTdApi:
+        def __init__(self, gateway):
+            self.gateway = gateway
+            self.frontid = 1
+            self.sessionid = 2
+
+        def onRspOrderInsert(self, *_args):
+            return None
+
+        def onRspOrderAction(self, *_args):
+            return None
+
+    class FakeCtpGateway:
+        default_name = "CTP"
+
+        def __init__(self, event_engine, gateway_name):
+            self.event_engine = event_engine
+            self.gateway_name = gateway_name
+
+    fake_module = SimpleNamespace(
+        CtpGateway=FakeCtpGateway,
+        CtpTdApi=FakeTdApi,
+        symbol_contract_map={},
+    )
+    monkeypatch.setitem(sys.modules, "vnpy_ctp.gateway.ctp_gateway", fake_module)
+    gateway = VnpyGateway()
+    gateway._cancel_requests["CTP.1_2_3"] = 1.0
+    gateway.orders["CTP.1_2_3"] = Order(
+        order_id="CTP.1_2_3", symbol="rb2505", direction=Direction.LONG,
+        order_type=OrderType.LIMIT, price=100.0, volume=1, status=OrderStatus.SUBMITTED,
+    )
+    gateway_class = _build_reconciliation_ctp_gateway(gateway)
+    td_api = gateway_class(SimpleNamespace(), "CTP").td_api
+
+    td_api.onRspOrderAction(
+        {"OrderRef": "3"},
+        {"ErrorID": 26, "ErrorMsg": "cancel rejected by exchange"},
+        1,
+        True,
+    )
+    assert "cancel rejected by exchange" in gateway.wait_cancel_confirmation(
+        "CTP.1_2_3", timeout=0,
+    )["error_msg"]
+
+    td_api.onErrRtnOrderInsert(
+        {"OrderRef": "4"},
+        {"ErrorID": 31, "ErrorMsg": "insufficient funds"},
+    )
+    assert "insufficient funds" in gateway._broker_order_errors["CTP.1_2_4"]
