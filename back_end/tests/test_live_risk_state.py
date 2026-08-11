@@ -124,6 +124,34 @@ def test_unbound_risk_manager_keeps_existing_in_memory_behavior():
     assert manager.check_signal(_signal(), positions={}, market_data={"last_price": 100.0}).allowed is False
 
 
+def test_runtime_persistence_failure_halts_future_orders_without_masking_recorded_order():
+    class FailingAfterBindStore:
+        def __init__(self):
+            self.saves = 0
+
+        def load(self, _scope):
+            return None
+
+        def save(self, _scope, _trading_day, _state):
+            self.saves += 1
+            if self.saves > 1:
+                raise RuntimeError("risk state disk unavailable")
+
+    manager = _manager(FixedClock())
+    manager.bind_persistent_state(
+        FailingAfterBindStore(),
+        scope="anonymous",
+        trading_day="2026-08-12",
+    )
+
+    manager.record_order(_signal())
+    status = manager.status()
+
+    assert status["compliance"]["counters"]["orders_submitted"] == 1
+    assert status["emergency_stop"] is True
+    assert "persistence" in status["emergency_reason"].lower()
+
+
 def test_live_engine_binds_anonymous_persistent_state_and_restores_it_after_restart(tmp_path):
     state_path = tmp_path / "live-risk-state.json"
     config = {
