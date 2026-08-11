@@ -2,6 +2,8 @@
 
 from datetime import datetime
 from importlib import import_module
+from multiprocessing import get_context
+from queue import Empty
 
 import pytest
 
@@ -56,6 +58,18 @@ class ConnectingLiveGateway(GatewayBase):
 
     def query_orders(self):
         return []
+
+
+def _save_risk_state_in_child_process(path, started, result):
+    module = import_module("src.trading.risk_state_store")
+    store = module.LiveRiskStateStore(path)
+    started.set()
+    try:
+        store.save("child", "2026-08-12", {"orders": 1})
+    except Exception as exc:  # pragma: no cover - asserted through the process queue
+        result.put(("error", type(exc).__name__, str(exc)))
+    else:
+        result.put(("ok",))
 
 
 def _signal():
@@ -116,6 +130,48 @@ def test_bound_live_risk_state_restores_same_scope_and_broker_trading_day(tmp_pa
     restored.set_emergency_stop(False)
     assert restored.check_signal(_signal(), positions={}, market_data={"last_price": 100.0}).allowed is False
     assert restored.check_cancel_request("ORDER-1").allowed is False
+
+
+def test_live_risk_store_serializes_writers_across_processes(tmp_path):
+    state_path = tmp_path / "live-risk-state.json"
+    store = _store(tmp_path)
+    store.save("parent", "2026-08-12", {"orders": 1})
+    context = get_context("spawn")
+    started = context.Event()
+    result = context.Queue()
+
+    with store._exclusive_file_lock():
+        child = context.Process(
+            target=_save_risk_state_in_child_process,
+            args=(state_path, started, result),
+        )
+        child.start()
+        assert started.wait(timeout=10)
+        with pytest.raises(Empty):
+            result.get(timeout=0.2)
+
+    assert result.get(timeout=10) == ("ok",)
+    child.join(timeout=10)
+    assert child.exitcode == 0
+    assert store.load("parent")["state"]["orders"] == 1
+    assert store.load("child")["state"]["orders"] == 1
+
+
+def test_live_risk_scope_rejects_a_second_active_writer(tmp_path):
+    first = _manager(FixedClock())
+    second = _manager(FixedClock())
+    first.bind_persistent_state(
+        _store(tmp_path),
+        scope="anonymous",
+        trading_day="2026-08-12",
+    )
+
+    with pytest.raises(RuntimeError, match="active live risk writer"):
+        second.bind_persistent_state(
+            _store(tmp_path),
+            scope="anonymous",
+            trading_day="2026-08-12",
+        )
 
 
 def test_new_broker_trading_day_resets_intraday_state_but_keeps_manual_halt(tmp_path):
