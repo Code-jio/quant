@@ -341,6 +341,9 @@ const LOGIN_TIMEOUT = 35_000
 
 function ctpHandshakeHint(detail) {
   const text = String(detail || '')
+  if (/用户不活跃|不合法的登录|重复的登录|CTP:用户/.test(text)) {
+    return 'CTP 返回用户不活跃：请确认账号已开通对应柜台的交易/仿真权限、当前处于可交易时段，或联系券商确认账户状态。'
+  }
   if (/shake hand|decode err|4040|行情接口报错/.test(text)) {
     return 'CTP 前置握手失败：请确认前置地址、AppID/AuthCode 与柜台环境匹配，或切换其他前置线路；仿真/测试柜台的认证码通常与实盘不同。'
   }
