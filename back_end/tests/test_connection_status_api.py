@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from src.api import _build_system_snapshot, app, trading_state
+from src.api import _build_system_snapshot, _cancel_all_active_orders, app, trading_state
 from src.api.security import SESSION_COOKIE_NAME, session_store
 from src.strategy import Direction, Order, OrderStatus, OrderType
 from src.trading.types import AccountInfo, TradingStatus
@@ -131,3 +131,45 @@ def test_cancel_order_rest_does_not_report_success_when_only_the_request_was_sen
     assert payload["success"] is False
     assert payload["pending"] is True
     assert payload["confirmed"] is False
+
+
+def test_cancel_all_uses_one_deadline_and_reports_only_broker_confirmed_as_cancelled(monkeypatch):
+    orders = {
+        order_id: Order(
+            order_id=order_id, symbol="rb2505", direction=Direction.LONG,
+            order_type=OrderType.LIMIT, price=100.0, volume=1, status=OrderStatus.SUBMITTED,
+        )
+        for order_id in ("OID-1", "OID-2")
+    }
+    timeouts = []
+
+    class CancelEngine:
+        gateway = SimpleNamespace(orders=orders)
+
+        @staticmethod
+        def cancel_order(_order_id):
+            return True
+
+        @staticmethod
+        def wait_cancel_confirmation(order_id, *, timeout):
+            timeouts.append(timeout)
+            return {
+                "requested": True,
+                "confirmed": order_id == "OID-1",
+                "pending": order_id == "OID-2",
+                "failed": False,
+            }
+
+    ticks = iter((100.0, 101.0, 102.0))
+    monkeypatch.setattr("src.api.time.monotonic", lambda: next(ticks))
+    monkeypatch.setattr(trading_state, "primary_engine", lambda: CancelEngine())
+    monkeypatch.setattr(trading_state, "all_entries", lambda: [])
+
+    result = _cancel_all_active_orders(timeout_seconds=5.0)
+
+    assert result["requested"] == 2
+    assert result["confirmed"] == 1
+    assert result["cancelled"] == 1
+    assert result["pending"] == 1
+    assert result["failed"] == 0
+    assert timeouts == [4.0, 3.0]
