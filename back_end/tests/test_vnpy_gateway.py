@@ -1200,3 +1200,131 @@ class TestLiveBrokerReconciliationGate:
         assert restored["reconnecting"] is False
         assert gateway.status == TradingStatus.CONNECTED
         assert restored["reconnect_count"] == 1
+
+
+class TestLiveContractOrderCapabilityGate:
+    """Raw CTP contract limits must be enforced before an order reaches vn.py."""
+
+    @staticmethod
+    def _ready_gateway():
+        gateway = VnpyGateway()
+        gateway.status = TradingStatus.CONNECTED
+        gateway._td_connected = True
+        gateway._md_connected = True
+        gateway._contracts_ready = True
+        gateway._reconciliation_ready = True
+        return gateway
+
+    @staticmethod
+    def _record(gateway, symbol="rb2505", exchange="SHFE", **limits):
+        raw_contract = SimpleNamespace(
+            InstrumentID=symbol,
+            ExchangeID=exchange,
+            PriceTick=limits.get("price_tick", 0.2),
+            MinLimitOrderVolume=limits.get("min_limit", 1),
+            MaxLimitOrderVolume=limits.get("max_limit", 3),
+            MinMarketOrderVolume=limits.get("min_market", 0),
+            MaxMarketOrderVolume=limits.get("max_market", 0),
+        )
+        gateway._record_contract_capability(raw_contract)
+
+    @staticmethod
+    def _signal(symbol="rb2505.SHFE", *, price=100.0, volume=1, order_type=OrderType.LIMIT, offset=OffsetFlag.OPEN):
+        return Signal(
+            symbol=symbol,
+            datetime=datetime.now(),
+            direction=Direction.LONG,
+            price=price,
+            volume=volume,
+            order_type=order_type,
+            offset=offset,
+        )
+
+    def test_records_exchange_aware_ctp_contract_limits_and_clears_them_on_td_disconnect(self):
+        gateway = self._ready_gateway()
+        self._record(gateway, price_tick=0.2, min_limit=1, max_limit=3, min_market=1, max_market=2)
+
+        capability = gateway._contract_capabilities["rb2505.SHFE"]
+        assert capability["price_tick"] == 0.2
+        assert capability["min_limit_order_volume"] == 1
+        assert capability["max_limit_order_volume"] == 3
+        assert capability["min_market_order_volume"] == 1
+        assert capability["max_market_order_volume"] == 2
+
+        gateway._on_vnpy_log(SimpleNamespace(data=SimpleNamespace(msg="交易服务器连接断开")))
+        assert gateway._contract_capabilities == {}
+
+    def test_missing_contract_is_rejected_before_main_engine_submission(self, monkeypatch):
+        _install_mock_vnpy_constants(monkeypatch)
+        sent = []
+        gateway = self._ready_gateway()
+        gateway._main_engine = SimpleNamespace(send_order=lambda *args: sent.append(args) or "UNEXPECTED")
+
+        assert gateway.send_order(self._signal()) == ""
+        assert sent == []
+        assert gateway.last_reject_reason
+
+    @pytest.mark.parametrize(
+        ("price", "volume"),
+        [
+            (100.1, 1),
+            (100.0, 0),
+            (100.0, 4),
+        ],
+    )
+    def test_limit_order_requires_exact_tick_and_limit_volume_range(self, monkeypatch, price, volume):
+        _install_mock_vnpy_constants(monkeypatch)
+        sent = []
+        gateway = self._ready_gateway()
+        self._record(gateway)
+        gateway._main_engine = SimpleNamespace(send_order=lambda *args: sent.append(args) or "UNEXPECTED")
+
+        assert gateway.send_order(self._signal(price=price, volume=volume)) == ""
+        assert sent == []
+        assert gateway.last_reject_reason
+
+    def test_market_order_requires_explicit_market_volume_capability(self, monkeypatch):
+        _install_mock_vnpy_constants(monkeypatch)
+        sent = []
+        gateway = self._ready_gateway()
+        self._record(gateway, min_market=0, max_market=0)
+        gateway._main_engine = SimpleNamespace(send_order=lambda *args: sent.append(args) or "UNEXPECTED")
+
+        assert gateway.send_order(self._signal(order_type=OrderType.MARKET)) == ""
+        assert sent == []
+        assert gateway.last_reject_reason
+
+    def test_market_order_with_explicit_supported_market_range_is_sent(self, monkeypatch):
+        _install_mock_vnpy_constants(monkeypatch)
+        sent = []
+        gateway = self._ready_gateway()
+        self._record(gateway, min_market=1, max_market=2)
+        gateway._main_engine = SimpleNamespace(send_order=lambda *args: sent.append(args) or "MARKET-1")
+
+        assert gateway.send_order(self._signal(order_type=OrderType.MARKET, volume=2)) == "MARKET-1"
+        assert len(sent) == 1
+
+    def test_close_today_and_close_yesterday_are_local_only_for_shfe_and_ine(self, monkeypatch):
+        _install_mock_vnpy_constants(monkeypatch)
+        sent = []
+        gateway = self._ready_gateway()
+        self._record(gateway, symbol="m2501", exchange="DCE")
+        gateway._main_engine = SimpleNamespace(send_order=lambda *args: sent.append(args) or "UNEXPECTED")
+
+        assert gateway.send_order(self._signal("m2501.DCE", offset=OffsetFlag.CLOSE_TODAY)) == ""
+        assert sent == []
+        assert gateway.last_reject_reason
+
+        assert gateway.send_order(self._signal("m2501.DCE", offset=OffsetFlag.CLOSE_YESTERDAY)) == ""
+        assert sent == []
+        assert gateway.last_reject_reason
+
+    def test_legal_limit_order_with_tick_tolerance_is_constructed_and_sent(self, monkeypatch):
+        _install_mock_vnpy_constants(monkeypatch)
+        sent = []
+        gateway = self._ready_gateway()
+        self._record(gateway)
+        gateway._main_engine = SimpleNamespace(send_order=lambda *args: sent.append(args) or "ORDER-1")
+
+        assert gateway.send_order(self._signal(price=100.00000000001, volume=2)) == "ORDER-1"
+        assert len(sent) == 1

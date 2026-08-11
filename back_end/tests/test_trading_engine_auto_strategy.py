@@ -1,6 +1,7 @@
 import threading
 import time
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -9,7 +10,7 @@ from src.strategy.strategies.verify import VerifyStrategy
 from src.trading import TradingEngine
 from src.trading.execution_adapter import TrialRunSimulationLedger
 from src.trading.order_manager import OrderManager, PreOrder, PreOrderType
-from src.trading.types import MarketData
+from src.trading.types import MarketData, TradingStatus
 from src.trading.trial_run_execution import (
     TrialRunExecutionError,
     TrialRunExecutionState,
@@ -65,6 +66,19 @@ class RejectedSignalStrategy(StrategyBase):
 
     def mark_signal_rejected(self, reason: str = ""):
         self.reject_reason = reason
+
+
+class LocallyRejectingLiveGateway(RecordingGateway):
+    """A live gateway that refuses before broker submission with a precise reason."""
+
+    def __init__(self):
+        super().__init__()
+        self.status = TradingStatus.CONNECTED
+        self.last_reject_reason = "contract price is not aligned to PriceTick"
+
+    def send_order(self, signal):
+        del signal
+        return ""
 
 
 class SynchronousFillGateway(RecordingGateway):
@@ -731,6 +745,24 @@ def test_triggered_pre_order_uses_the_engine_risk_gate():
     assert gateway.sent_signals == []
     assert pre_order.related_order_id == ""
     assert "volume" in engine.last_reject_reason.lower()
+
+
+def test_engine_surfaces_gateway_local_reject_reason_when_submission_returns_empty():
+    gateway = LocallyRejectingLiveGateway()
+    engine = TradingEngine(gateway)
+    engine.status = TradingStatus.CONNECTED
+    engine.risk_manager.check_signal = lambda *args, **kwargs: SimpleNamespace(allowed=True, reason="")
+    signal = Signal(
+        symbol="rb2505.SHFE",
+        datetime=datetime.now(),
+        direction=Direction.LONG,
+        price=100.1,
+        volume=1,
+        order_type=OrderType.LIMIT,
+    )
+
+    assert engine._send_gateway_signal(signal) == ""
+    assert engine.last_reject_reason == gateway.last_reject_reason
 
 
 def test_standalone_order_manager_pre_order_fails_closed_without_submission_callback():
