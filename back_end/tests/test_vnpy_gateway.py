@@ -626,7 +626,7 @@ class TestChannelConnectionHealth:
         assert md_down["md_connected"] is False
         assert md_down["fully_connected"] is False
 
-    def test_relogin_waits_for_fresh_contracts_before_restoring_health_and_counts_one_outage(self):
+    def test_relogin_waits_for_fresh_contracts_and_reconciliation_before_restoring_health(self):
         gateway = VnpyGateway()
         gateway.status = TradingStatus.CONNECTED
         self._log(gateway, "交易服务器登录成功")
@@ -651,9 +651,11 @@ class TestChannelConnectionHealth:
         self._log(gateway, "合约信息查询成功")
         recovered = gateway.connection_snapshot()
         assert recovered["contracts_ready"] is True
-        assert recovered["order_entry_ready"] is True
-        assert recovered["reconnecting"] is False
-        assert recovered["reconnect_count"] == 1
+        assert recovered["reconciliation_ready"] is False
+        assert recovered["order_entry_ready"] is False
+        assert recovered["reconnecting"] is True
+        assert recovered["reconnect_count"] == 0
+        assert gateway.status == TradingStatus.ERROR
 
     def test_native_login_flags_degrade_health_when_disconnect_log_is_missing(self):
         gateway = VnpyGateway()
@@ -921,9 +923,10 @@ class TestOrderEntryReadinessContract:
         self._log(gateway, "合约信息查询成功")
         ready = gateway.connection_snapshot()
         assert ready["contracts_ready"] is True
-        assert ready["order_entry_ready"] is True
+        assert ready["reconciliation_ready"] is False
+        assert ready["order_entry_ready"] is False
 
-    def test_duplicate_td_disconnect_is_a_single_outage_cycle(self):
+    def test_duplicate_td_disconnect_remains_one_blocked_outage_until_reconciliation(self):
         gateway = VnpyGateway()
         gateway.status = TradingStatus.CONNECTED
         self._log(gateway, "交易服务器登录成功")
@@ -934,7 +937,9 @@ class TestOrderEntryReadinessContract:
         self._log(gateway, "交易服务器登录成功")
         self._log(gateway, "合约信息查询成功")
 
-        assert gateway.connection_snapshot()["reconnect_count"] == 1
+        snapshot = gateway.connection_snapshot()
+        assert snapshot["reconnecting"] is True
+        assert snapshot["reconnect_count"] == 0
 
     def test_send_order_does_not_reach_main_engine_without_order_entry_readiness(self, monkeypatch):
         _install_mock_vnpy_constants(monkeypatch)
