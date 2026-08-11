@@ -37,6 +37,10 @@ export function useSystemWs(url = buildWsUrl('/ws/system')) {
     reconnecting:      false,
     reconnectCount:    0,
     lastDisconnectReason: '',
+    contractsReady:    false,
+    reconciliationReady: false,
+    tradingDay:        '',
+    orderEntryReady:   false,
     gatewayLatencyMs:  -1,    // -1 = 尚未收到回调
     networkSendBps:    0,     // 字节/秒
     networkRecvBps:    0,
@@ -69,6 +73,10 @@ export function useSystemWs(url = buildWsUrl('/ws/system')) {
       data.reconnecting      = msg.reconnecting       ?? data.reconnecting
       data.reconnectCount    = msg.reconnect_count    ?? data.reconnectCount
       data.lastDisconnectReason = msg.last_disconnect_reason ?? data.lastDisconnectReason
+      data.contractsReady    = msg.contracts_ready    ?? data.contractsReady
+      data.reconciliationReady = msg.reconciliation_ready ?? data.reconciliationReady
+      data.tradingDay        = msg.trading_day        ?? data.tradingDay
+      data.orderEntryReady   = msg.order_entry_ready  ?? data.orderEntryReady
       data.gatewayLatencyMs  = msg.gateway_latency_ms ?? data.gatewayLatencyMs
       data.networkSendBps    = msg.network_send_bps   ?? data.networkSendBps
       data.networkRecvBps    = msg.network_recv_bps   ?? data.networkRecvBps

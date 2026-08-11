@@ -22,6 +22,28 @@
       </div>
 
       <div class="status-item">
+        <span class="status-label">合约就绪</span>
+        <el-tag :type="data.contractsReady ? 'success' : 'danger'" size="small" effect="plain">
+          {{ data.contractsReady ? '已加载' : '未就绪' }}
+        </el-tag>
+      </div>
+
+      <div class="status-item">
+        <span class="status-label">券商对账</span>
+        <el-tag :type="data.reconciliationReady ? 'success' : 'danger'" size="small" effect="plain">
+          {{ data.reconciliationReady ? '已完成' : '未就绪' }}
+        </el-tag>
+      </div>
+
+      <div class="status-item">
+        <span class="status-label">允许报单</span>
+        <el-tag :type="data.orderEntryReady ? 'success' : 'danger'" size="small" effect="dark">
+          {{ data.orderEntryReady ? '是' : '否' }}
+        </el-tag>
+        <span v-if="data.tradingDay" class="status-label c-muted">交易日 {{ data.tradingDay }}</span>
+      </div>
+
+      <div class="status-item">
         <el-icon class="status-icon"><Timer /></el-icon>
         <span class="status-label">网关延迟</span>
         <span :class="['latency-val', latencyClass]">{{ latencyText }}</span>

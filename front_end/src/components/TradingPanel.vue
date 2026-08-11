@@ -102,8 +102,27 @@ const orderValidation = computed(() => {
   return { valid: true, message: '订单参数有效' }
 })
 
-const canSubmit = computed(() => orderValidation.value.valid && !submitting.value)
 const emergencyActive = computed(() => Boolean(riskState.value?.risk?.emergency_stop))
+const orderEntryReady = computed(() => reconcileState.value?.order_entry_ready === true)
+const orderEntryBlockReason = computed(() => {
+  if (!riskState.value) return '风控状态不可用，禁止报单'
+  if (emergencyActive.value) {
+    const reason = riskState.value?.risk?.emergency_reason
+    return `交易急停中${reason ? `：${reason}` : ''}`
+  }
+  if (!reconcileState.value) return '券商对账状态不可用，禁止报单'
+  if (!orderEntryReady.value) {
+    const reason = reconcileState.value?.failure_code || reconcileState.value?.message
+    return `券商对账未就绪${reason ? `：${reason}` : ''}`
+  }
+  return ''
+})
+const canSubmit = computed(() => (
+  orderValidation.value.valid
+  && !submitting.value
+  && orderEntryReady.value
+  && !emergencyActive.value
+))
 const riskSummary = computed(() => {
   const risk = riskState.value?.risk
   if (!risk) return '风控未连接'
@@ -183,6 +202,10 @@ function validateOrder(showMessage = true) {
 // ── 提交下单 ─────────────────────────────────────────────────────────────────
 async function handleSubmit() {
   if (!validateOrder()) return
+  if (!canSubmit.value) {
+    ElMessage.warning(orderEntryBlockReason.value || '当前禁止报单')
+    return
+  }
   normalizeOrderForm()
 
   const preview = orderPreview.value
@@ -295,6 +318,10 @@ async function handleResumeTrading() {
 
 // ── 快捷平仓 ─────────────────────────────────────────────────────────────────
 async function handleClosePosition(pos) {
+  if (!orderEntryReady.value || emergencyActive.value) {
+    ElMessage.warning(orderEntryBlockReason.value || '当前禁止报单')
+    return
+  }
   const available = availableVolume(pos)
   if (available <= 0) {
     ElMessage.warning(`${pos.symbol} 当前无可平数量`)
@@ -403,6 +430,13 @@ onUnmounted(() => {
         </span>
         <span v-if="reconcileState" class="c-muted">
           活跃委托 {{ reconcileState.orders?.active_count ?? 0 }}
+        </span>
+        <span
+          class="validation-pill order-entry-pill"
+          :class="orderEntryReady && !emergencyActive ? 'pill-ok' : 'pill-danger'"
+        >
+          <span v-if="orderEntryReady && !emergencyActive">允许报单</span>
+          <span v-else>{{ orderEntryBlockReason }}</span>
         </span>
         <el-button
           v-if="!emergencyActive"
@@ -562,7 +596,7 @@ onUnmounted(() => {
           <el-button
             :type="form.direction === 'long' ? 'success' : 'danger'"
             :loading="submitting"
-            :disabled="!canSubmit"
+            :disabled="!canSubmit || !orderEntryReady || emergencyActive"
             @click="handleSubmit"
             class="submit-btn"
           >
@@ -636,7 +670,7 @@ onUnmounted(() => {
               type="danger"
               size="small"
               plain
-              :disabled="availableVolume(pos) <= 0"
+              :disabled="availableVolume(pos) <= 0 || !orderEntryReady || emergencyActive"
               :loading="closingKey === positionKey(pos)"
               @click="handleClosePosition(pos)"
             >

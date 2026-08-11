@@ -89,7 +89,6 @@ from .trial_run import (
     finalize_trial_run_for_disconnect,
     register_trial_run_routes,
     trial_run_logout_guard,
-    trial_run_manual_open_enabled,
     trial_run_state,
 )
 
@@ -2468,8 +2467,6 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             order_type_name, order_type = _normalize_choice(body.order_type, _MANUAL_ORDER_TYPE_MAP, "订单类型")
             volume = _positive_volume(body.volume)
             price = _manual_order_price(order_type, body.price)
-            if offset_name == "open" and not trial_run_manual_open_enabled():
-                raise HTTPException(status_code=400, detail="试运行模式禁止手动开仓")
         except HTTPException as exc:
             _record_audit(
                 "order",

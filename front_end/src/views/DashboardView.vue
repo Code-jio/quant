@@ -12,20 +12,9 @@ import { fetchStrategies, logout } from '@/api/index.js'
 const router    = useRouter()
 const authStore = useAuthStore()
 
-// ── Mock 数据（后端不可用时展示）─────────────────────────────────────────
-const MOCK_STRATEGIES = [
-  { strategy_id: 'ma_cross_01', name: 'MA双均线',   status: 'running', symbol: 'rb2505',
-    pnl: 3250.00,  positions: [{ symbol: 'rb2505', direction: 'long', volume: 10, cost_price: 3520, pnl: 3250 }],
-    trade_count: 18, error_count: 0 },
-  { strategy_id: 'rsi_01',      name: 'RSI均值回归', status: 'stopped', symbol: 'IF2505',
-    pnl: -850.00,  positions: [], trade_count: 6,  error_count: 1 },
-  { strategy_id: 'breakout_01', name: '突破策略',    status: 'error',   symbol: 'au2506',
-    pnl: 0,        positions: [], trade_count: 0,  error_count: 3 },
-]
-
 const strategies        = ref([])
 const loadingStrategies = ref(false)
-const isMockMode        = ref(false)
+const liveDataError      = ref('')
 const lastRefreshTime   = ref('')
 const loggingOut        = ref(false)
 
@@ -36,15 +25,13 @@ async function loadStrategies() {
     const next = await fetchStrategies()
     if (Array.isArray(next)) {
       strategies.value = next
-      isMockMode.value = false
+      liveDataError.value = ''
     }
   } catch (err) {
     if (err.message?.includes('401')) return
-    if (strategies.value.length === 0) {
-      ElMessage.warning('无法连接后端服务，当前显示模拟数据')
-      strategies.value = MOCK_STRATEGIES
-      isMockMode.value = true
-    }
+    strategies.value = []
+    liveDataError.value = '实盘数据不可用，已禁止展示模拟数据。请检查交易服务连接后再操作。'
+    ElMessage.error(liveDataError.value)
   } finally {
     loadingStrategies.value = false
     lastRefreshTime.value   = new Date().toLocaleTimeString('zh-CN', { hour12: false })
@@ -145,12 +132,12 @@ async function handleLogout() {
       </div>
     </header>
 
-    <!-- ── Mock 提示 ──────────────────────────────────────────────────── -->
+    <!-- ── 实盘数据故障提示 ───────────────────────────────────────────── -->
     <el-alert
-      v-if="isMockMode"
-      title="当前使用模拟数据（后端未连接）"
-      description="无法连接 API，展示内置 Mock 数据。后端就绪后点击「刷新」切换为真实数据。"
-      type="warning"
+      v-if="liveDataError"
+      title="实盘数据不可用"
+      :description="liveDataError"
+      type="error"
       show-icon
       :closable="false"
       style="border-radius: 0; border-left: none; border-right: none"

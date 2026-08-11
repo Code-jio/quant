@@ -143,8 +143,8 @@ def test_manual_market_order_forces_zero_price_and_strips_symbol(monkeypatch):
     assert orders[0]["create_time"]
 
 
-def test_trial_run_blocks_manual_open_orders(monkeypatch, tmp_path):
-    config_path = _write_trial_config(_config_path(tmp_path, "manual-block"), enabled=True)
+def test_live_manual_open_is_not_controlled_by_trial_run_config(monkeypatch, tmp_path):
+    config_path = _write_trial_config(_config_path(tmp_path, "manual-open"), enabled=True)
     monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
     gateway = install_gateway(monkeypatch)
     app = create_app()
@@ -163,18 +163,10 @@ def test_trial_run_blocks_manual_open_orders(monkeypatch, tmp_path):
                 "order_type": "market",
             },
         )
-        audit = client.get("/audit/events?event_type=order")
 
-    assert response.status_code == 400
-    assert response.json()["detail"] == "试运行模式禁止手动开仓"
-    assert gateway.sent_signals == []
-    events = audit.json()["events"]
-    assert any(
-        event["action"] == "manual_order"
-        and event["status"] == "rejected"
-        and event["detail"].get("reason") == "试运行模式禁止手动开仓"
-        for event in events
-    )
+    assert response.status_code == 200
+    assert len(gateway.sent_signals) == 1
+    assert gateway.sent_signals[0].offset == OffsetFlag.OPEN
 
 
 def test_quick_close_short_position_uses_buy_direction_and_requested_offset(monkeypatch):

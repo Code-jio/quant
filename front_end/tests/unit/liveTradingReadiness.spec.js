@@ -72,4 +72,13 @@ describe('live order-entry readiness UI contracts', () => {
     expect(source).toContain('data.reconciliationReady')
     expect(source).toContain('data.orderEntryReady')
   })
+
+  it('never substitutes mock strategies when live dashboard data is unavailable', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/views/DashboardView.vue'), 'utf8')
+
+    expect(source).not.toContain('MOCK_STRATEGIES')
+    expect(source).not.toContain('当前显示模拟数据')
+    expect(source).toContain('实盘数据不可用')
+    expect(source).toContain('strategies.value = []')
+  })
 })
