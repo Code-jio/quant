@@ -1,10 +1,21 @@
+from datetime import datetime
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from src.api import _build_system_snapshot, _cancel_all_active_orders, _collect_all_trades, app, trading_state
+from src.api import (
+    _build_system_snapshot,
+    _cancel_all_active_orders,
+    _collect_all_trades,
+    _install_hook_on_engine,
+    app,
+    trading_state,
+)
 from src.api.security import SESSION_COOKIE_NAME, session_store
-from src.strategy import Direction, Order, OrderStatus, OrderType
+from src.observability import AuditEventLog
+from src.strategy import Direction, Order, OrderStatus, OrderType, Signal, Trade
+from src.trading.engine import TradingEngine
+from src.trading.gateway import GatewayBase
 from src.trading.types import AccountInfo, TradingStatus
 
 
@@ -186,3 +197,99 @@ def test_trade_collection_includes_primary_live_gateway_without_any_strategy(mon
     monkeypatch.setattr(trading_state, "all_entries", lambda: [])
 
     assert [trade["trade_id"] for trade in _collect_all_trades()] == ["T-LIVE-1"]
+
+
+def test_live_gateway_audit_persists_complete_order_and_trade_facts(tmp_path, monkeypatch):
+    """Broker callbacks must leave restart-readable facts for live order review."""
+    import src.api as api_module
+
+    log = AuditEventLog(persistence_dir=tmp_path)
+    monkeypatch.setattr(api_module, "audit_log", log)
+    gateway = SimpleNamespace(
+        name="VNPY_CTP",
+        trading_day="2026-08-12",
+        on_order_callback=None,
+        on_trade_callback=None,
+    )
+    _install_hook_on_engine(SimpleNamespace(gateway=gateway))
+    order = Order(
+        order_id="OID-1", symbol="rb2505", direction=Direction.LONG,
+        order_type=OrderType.LIMIT, price=3880.0, volume=2,
+        status=OrderStatus.REJECTED, error_msg="ErrorID=31 insufficient funds",
+    )
+    trade = Trade(
+        trade_id="T-1", order_id="OID-1", symbol="rb2505", direction=Direction.LONG,
+        price=3880.0, volume=2, commission=1.2, pnl=3.4, trade_time=datetime.now(),
+    )
+
+    gateway.on_order_callback(order)
+    gateway.on_trade_callback(trade)
+
+    restored = AuditEventLog(persistence_dir=tmp_path)
+    events = restored.query(limit=10)
+    details = {event["event_type"]: event["detail"] for event in events}
+    assert details["order"] == {
+        "order_id": "OID-1", "symbol": "rb2505", "status": "rejected",
+        "direction": "long", "price": 3880.0, "volume": 2,
+        "error_msg": "ErrorID=31 insufficient funds", "trading_day": "2026-08-12",
+    }
+    assert details["trade"] == {
+        "trade_id": "T-1", "order_id": "OID-1", "symbol": "rb2505",
+        "direction": "long", "price": 3880.0, "volume": 2,
+        "error_msg": "", "trading_day": "2026-08-12",
+    }
+
+
+def test_live_audit_persistence_failure_emergency_stops_future_order_submission(monkeypatch):
+    """A live audit write failure is fail-closed: callbacks arm the existing risk gate."""
+    import src.api as api_module
+
+    class RecordingGateway(GatewayBase):
+        def __init__(self):
+            super().__init__("VNPY_CTP")
+            self.status = TradingStatus.CONNECTED
+            self.sent = []
+
+        def connect(self, _config):
+            return True
+
+        def disconnect(self):
+            return None
+
+        def send_order(self, signal):
+            self.sent.append(signal)
+            return "OID-SENT"
+
+        def cancel_order(self, _order_id):
+            return True
+
+        def query_account(self):
+            return self.account
+
+        def query_positions(self):
+            return []
+
+        def query_orders(self):
+            return []
+
+    class FailingAuditLog:
+        @staticmethod
+        def record(*_args, **_kwargs):
+            raise OSError("audit disk full")
+
+    gateway = RecordingGateway()
+    engine = TradingEngine(gateway)
+    monkeypatch.setattr(api_module, "audit_log", FailingAuditLog())
+    _install_hook_on_engine(engine)
+    gateway.on_order(Order(
+        order_id="OID-AUDIT", symbol="rb2505", direction=Direction.LONG,
+        order_type=OrderType.LIMIT, price=3880.0, volume=1, status=OrderStatus.SUBMITTED,
+    ))
+
+    assert engine.risk_manager.emergency_stop is True
+    assert "audit" in engine.risk_manager.emergency_reason.lower()
+    assert engine.send_signal(Signal(
+        symbol="rb2505", datetime=datetime.now(), direction=Direction.LONG, price=3880.0, volume=1,
+        order_type=OrderType.LIMIT,
+    )) == ""
+    assert gateway.sent == []

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.strategy import Direction, OffsetFlag, Order, OrderStatus, OrderType, Position, Signal
+from src.strategy import Direction, OffsetFlag, Order, OrderStatus, OrderType, Position, Signal, Trade
 from src.trading.types import AccountInfo
 from src.trading.types import MarketData, TradingStatus
 from src.trading.vnpy_gateway import (
@@ -872,6 +872,10 @@ class TestBrokerReconciliation:
                 TestBrokerReconciliation._complete(gateway, "account")
                 return 0
 
+            def query_trades_snapshot(self):
+                TestBrokerReconciliation._complete(gateway, "trades")
+                return 0
+
         broker_snapshot = BrokerSnapshot()
         gateway._main_engine = SimpleNamespace(get_gateway=lambda name: broker_snapshot)
 
@@ -994,6 +998,10 @@ class TestBrokerReconciliation:
                 )
                 return 0
 
+            def query_trades_snapshot(self):
+                TestBrokerReconciliation._complete(gateway, "trades")
+                return 0
+
         gateway._main_engine = SimpleNamespace(get_gateway=lambda name: RetrySnapshot())
         retry_result = gateway.refresh_reconciliation(timeout_seconds=0.5)
 
@@ -1110,6 +1118,10 @@ class TestLiveBrokerReconciliationGate:
                 TestBrokerReconciliation._complete(gateway, "account")
                 return 0
 
+            def query_trades_snapshot(self):
+                TestBrokerReconciliation._complete(gateway, "trades")
+                return 0
+
         gateway._main_engine = SimpleNamespace(get_gateway=lambda _name: BrokerSnapshot())
         result = gateway.refresh_reconciliation(timeout_seconds=0.5)
         snapshot = gateway.connection_snapshot()
@@ -1164,6 +1176,10 @@ class TestLiveBrokerReconciliationGate:
                 TestBrokerReconciliation._complete(gateway, "account")
                 return 0
 
+            def query_trades_snapshot(self):
+                TestBrokerReconciliation._complete(gateway, "trades")
+                return 0
+
         gateway._main_engine = SimpleNamespace(get_gateway=lambda _name: BrokerSnapshot())
 
         result = gateway.refresh_reconciliation(timeout_seconds=0.5)
@@ -1209,6 +1225,10 @@ class TestLiveBrokerReconciliationGate:
                     accountid="ACC001", balance=500000, available=480000, frozen=20000,
                 )))
                 TestBrokerReconciliation._complete(gateway, "account")
+                return 0
+
+            def query_trades_snapshot(self):
+                TestBrokerReconciliation._complete(gateway, "trades")
                 return 0
 
         gateway._main_engine = SimpleNamespace(get_gateway=lambda _name: BrokerSnapshot())
@@ -1445,6 +1465,96 @@ def test_gateway_caches_each_live_trade_once_and_exposes_broker_trades():
     gateway._on_vnpy_trade(event)
 
     assert [trade.trade_id for trade in gateway.query_trades()] == ["T-1"]
+
+
+def test_reconciliation_requires_trade_snapshot_and_atomically_replaces_trade_cache(monkeypatch):
+    """A successful live gate must include broker trades, not only three caches."""
+    constants = _install_mock_vnpy_constants(monkeypatch)
+    gateway = VnpyGateway()
+    gateway.status = TradingStatus.CONNECTED
+    gateway._td_connected = True
+    gateway._md_connected = True
+    gateway._contracts_ready = True
+    gateway.trades["STALE"] = Trade(
+        trade_id="STALE", order_id="OLD", symbol="rb2505", direction=Direction.LONG,
+        price=1.0, volume=1,
+    )
+
+    class BrokerSnapshot:
+        def query_orders_snapshot(self):
+            TestBrokerReconciliation._complete(gateway, "orders")
+            return 0
+
+        def query_positions_snapshot(self):
+            TestBrokerReconciliation._complete(gateway, "positions")
+            return 0
+
+        def query_account_snapshot(self):
+            gateway._on_vnpy_account(SimpleNamespace(data=SimpleNamespace(
+                accountid="ACC001", balance=500000, available=480000, frozen=20000,
+            )))
+            TestBrokerReconciliation._complete(gateway, "account")
+            return 0
+
+        def query_trades_snapshot(self):
+            trade_event = SimpleNamespace(data=SimpleNamespace(
+                vt_tradeid="FRESH-T", vt_orderid="FRESH-O", symbol="rb2505",
+                direction=constants.Direction.LONG, price=3880.0, volume=1,
+                commission=1.0, pnl=0.0, datetime=datetime.now(),
+            ))
+            gateway._on_vnpy_trade(trade_event)
+            gateway._on_vnpy_trade(trade_event)
+            TestBrokerReconciliation._complete(gateway, "trades")
+            return 0
+
+    gateway._main_engine = SimpleNamespace(get_gateway=lambda _name: BrokerSnapshot())
+
+    result = gateway.refresh_reconciliation(timeout_seconds=0.5)
+
+    assert result["ok"] is True
+    assert result["fresh"] is True
+    assert gateway.connection_snapshot()["reconciliation_ready"] is True
+    assert gateway.connection_snapshot()["order_entry_ready"] is True
+    assert [trade.trade_id for trade in gateway.query_trades()] == ["FRESH-T"]
+
+
+def test_reconciliation_blocks_order_entry_when_trade_snapshot_times_out():
+    """A missing trade-query completion fence may never unlock real order entry."""
+    gateway = VnpyGateway()
+    gateway.status = TradingStatus.CONNECTED
+    gateway._td_connected = True
+    gateway._md_connected = True
+    gateway._contracts_ready = True
+
+    class TradeSnapshotTimeout:
+        def query_orders_snapshot(self):
+            TestBrokerReconciliation._complete(gateway, "orders")
+            return 0
+
+        def query_positions_snapshot(self):
+            TestBrokerReconciliation._complete(gateway, "positions")
+            return 0
+
+        def query_account_snapshot(self):
+            gateway._on_vnpy_account(SimpleNamespace(data=SimpleNamespace(
+                accountid="ACC001", balance=500000, available=480000, frozen=20000,
+            )))
+            TestBrokerReconciliation._complete(gateway, "account")
+            return 0
+
+        def query_trades_snapshot(self):
+            return 0
+
+    gateway._main_engine = SimpleNamespace(get_gateway=lambda _name: TradeSnapshotTimeout())
+
+    result = gateway.refresh_reconciliation(timeout_seconds=0.01)
+    snapshot = gateway.connection_snapshot()
+
+    assert result["ok"] is False
+    assert result["fresh"] is False
+    assert result["failure_code"] == "broker_snapshot_timeout"
+    assert snapshot["reconciliation_ready"] is False
+    assert snapshot["order_entry_ready"] is False
 
 
 def test_ctp_order_error_mapping_preserves_error_id_and_original_message():
