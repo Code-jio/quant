@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
-from src.api import _build_system_snapshot, _cancel_all_active_orders, app, trading_state
+from src.api import _build_system_snapshot, _cancel_all_active_orders, _collect_all_trades, app, trading_state
 from src.api.security import SESSION_COOKIE_NAME, session_store
 from src.strategy import Direction, Order, OrderStatus, OrderType
 from src.trading.types import AccountInfo, TradingStatus
@@ -173,3 +173,16 @@ def test_cancel_all_uses_one_deadline_and_reports_only_broker_confirmed_as_cance
     assert result["pending"] == 1
     assert result["failed"] == 0
     assert timeouts == [4.0, 3.0]
+
+
+def test_trade_collection_includes_primary_live_gateway_without_any_strategy(monkeypatch):
+    live_trade = SimpleNamespace(
+        trade_id="T-LIVE-1", order_id="OID-1", symbol="rb2505",
+        direction=Direction.LONG, price=100.0, volume=1, commission=1.0, pnl=0.0,
+        trade_time=__import__("datetime").datetime.now(),
+    )
+    gateway = SimpleNamespace(query_trades=lambda: [live_trade])
+    monkeypatch.setattr(trading_state, "primary_engine", lambda: SimpleNamespace(gateway=gateway))
+    monkeypatch.setattr(trading_state, "all_entries", lambda: [])
+
+    assert [trade["trade_id"] for trade in _collect_all_trades()] == ["T-LIVE-1"]

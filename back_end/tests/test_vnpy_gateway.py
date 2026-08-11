@@ -1432,6 +1432,21 @@ def test_rejected_ctp_order_callback_preserves_broker_error_for_ui_and_engine():
     assert gateway.last_reject_reason == "CTP rejected: insufficient funds"
 
 
+def test_gateway_caches_each_live_trade_once_and_exposes_broker_trades():
+    constants = _install_mock_vnpy_sys()
+    gateway = VnpyGateway()
+    event = SimpleNamespace(data=SimpleNamespace(
+        vt_tradeid="T-1", vt_orderid="OID-1", symbol="rb2505",
+        direction=constants.Direction.LONG, price=100.0, volume=1,
+        commission=1.0, pnl=0.0, datetime=datetime.now(),
+    ))
+
+    gateway._on_vnpy_trade(event)
+    gateway._on_vnpy_trade(event)
+
+    assert [trade.trade_id for trade in gateway.query_trades()] == ["T-1"]
+
+
 def test_ctp_order_error_mapping_preserves_error_id_and_original_message():
     constants = _install_mock_vnpy_sys()
     gateway = VnpyGateway()
