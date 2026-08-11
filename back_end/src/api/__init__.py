@@ -839,6 +839,7 @@ def _gateway_connection_snapshot(gateway) -> Dict[str, Any]:
         "md_connected": connected,
         "fully_connected": connected,
         "contracts_ready": False,
+        "reconciliation_ready": False,
         "order_entry_ready": False,
         "reconnecting": False,
         "reconnect_count": 0,
@@ -915,6 +916,7 @@ def _build_system_snapshot() -> dict:
         "td_connected":        td_connected,
         "md_connected":        market_connected,
         "contracts_ready":     bool(connection.get("contracts_ready", False)),
+        "reconciliation_ready": bool(connection.get("reconciliation_ready", False)),
         "order_entry_ready":   bool(connection.get("order_entry_ready", False)),
         "gateway_status":      gateway_status,
         "gateway_name":        gateway_name,
@@ -2061,14 +2063,28 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         engine = trading_state.primary_engine()
         if engine is None:
             raise HTTPException(status_code=503, detail="交易引擎未连接")
+        gateway = engine.gateway
+        try:
+            reconciliation = gateway.refresh_reconciliation(timeout_seconds=8.0)
+        except Exception as exc:
+            logger.exception("[gateway] 券商权威对账失败")
+            reconciliation = {
+                "ok": False,
+                "fresh": False,
+                "failure_code": "broker_snapshot_exception",
+                "error_msg": str(exc),
+            }
+        connection = _gateway_connection_snapshot(gateway)
         account = engine.get_account()
         positions_snapshot = _build_positions_snapshot()
         orders = _collect_all_orders()
         active_orders = [order for order in orders if order.get("status") in {"submitting", "submitted", "partfilled"}]
         return {
             "timestamp": datetime.now().isoformat(),
-            "connected": engine.gateway.status in (TradingStatus.CONNECTED, TradingStatus.TRADING),
-            "gateway_status": engine.gateway.status.value if hasattr(engine.gateway.status, "value") else str(engine.gateway.status),
+            "connected": gateway.status in (TradingStatus.CONNECTED, TradingStatus.TRADING),
+            "gateway_status": gateway.status.value if hasattr(gateway.status, "value") else str(gateway.status),
+            "reconciliation": reconciliation,
+            "order_entry_ready": bool(connection.get("order_entry_ready", False)),
             "account": _account_to_dict(account) if not getattr(account, "error_msg", "") else {"error_msg": account.error_msg},
             "risk": engine.risk_manager.status(),
             "orders": {

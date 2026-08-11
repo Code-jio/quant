@@ -793,6 +793,9 @@ class TestBrokerReconciliation:
         constants = _install_mock_vnpy_constants(monkeypatch)
         gateway = VnpyGateway()
         gateway.status = TradingStatus.CONNECTED
+        gateway._td_connected = True
+        gateway._md_connected = True
+        gateway._contracts_ready = True
         gateway.orders["STALE"] = Order(
             order_id="STALE",
             symbol="rb2505",
@@ -920,6 +923,9 @@ class TestBrokerReconciliation:
     def test_delayed_completion_from_timed_out_request_cannot_unlock_retry(self):
         gateway = VnpyGateway()
         gateway.status = TradingStatus.CONNECTED
+        gateway._td_connected = True
+        gateway._md_connected = True
+        gateway._contracts_ready = True
 
         first_snapshot = SimpleNamespace(
             query_orders_snapshot=lambda: (

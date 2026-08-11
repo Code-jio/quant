@@ -188,19 +188,23 @@ class VnpyGateway(GatewayBase):
         self._td_connected = False
         self._md_connected = False
         self._contracts_ready = False
+        self._reconciliation_ready = False
         self._reconnecting = False
         self._reconnect_count = 0
         self._last_disconnect_reason = ""
         self._connection_changed_at = datetime.now().isoformat()
         self._restore_status = TradingStatus.CONNECTED
         self._connection_outage = False
+        self._connection_generation = 0
+        self._reconciliation_worker: threading.Thread | None = None
+        self._reconciliation_timeout_seconds = 8.0
         self._vn_orders: Dict[str, Any] = {}
         self._order_meta: Dict[str, Tuple[str, Any]] = {}
         self.latest_ticks: Dict[str, MarketData] = {}
         self.latest_tick_snapshots: Dict[str, Dict[str, Any]] = {}
         self._subscribed_symbols: set[str] = set()
         self._reconciliation_gateway_class: Any = None
-        self._reconciliation_lock = threading.Lock()
+        self._reconciliation_lock = threading.RLock()
         self._reconciliation_capture_lock = threading.RLock()
         self._reconciliation_capture: Dict[str, Any] | None = None
         self._reconciliation_events = {
@@ -218,14 +222,20 @@ class VnpyGateway(GatewayBase):
             self._td_connected = False
             self._md_connected = False
             self._contracts_ready = False
+            self._reconciliation_ready = False
             self._reconnecting = False
             self._connection_outage = False
+            self._connection_generation += 1
             self._last_disconnect_reason = ""
             self._connection_changed_at = datetime.now().isoformat()
         self._connected_event.clear()
         self._error_event.clear()
         self._connect_errors.clear()
         self._connect_log_callback = config.get("log_callback")
+        self._reconciliation_timeout_seconds = max(
+            0.1,
+            float(config.get("reconciliation_timeout", 8.0)),
+        )
 
         try:
             _ensure_vnpy_runtime_dir()
@@ -281,7 +291,19 @@ class VnpyGateway(GatewayBase):
         while time.monotonic() < deadline:
             if self._connected_event.wait(timeout=0.2):
                 self.status = TradingStatus.CONNECTED
-                return True
+                reconciliation = self.refresh_reconciliation(
+                    timeout_seconds=self._reconciliation_timeout_seconds,
+                )
+                if reconciliation.get("ok") is True and reconciliation.get("fresh") is True:
+                    with self._connection_lock:
+                        if self._reconciliation_ready:
+                            return True
+                failure_code = str(
+                    reconciliation.get("failure_code") or "broker_snapshot_unavailable"
+                )
+                self._remember_connect_error(f"券商权威对账失败: {failure_code}")
+                self.status = TradingStatus.ERROR
+                return False
             if self._error_event.is_set():
                 self.status = TradingStatus.ERROR
                 return False
@@ -303,9 +325,11 @@ class VnpyGateway(GatewayBase):
                 "md_connected": self._md_connected,
                 "fully_connected": channels_ready,
                 "contracts_ready": self._contracts_ready,
+                "reconciliation_ready": self._reconciliation_ready,
                 "order_entry_ready": (
                     channels_ready
                     and self._contracts_ready
+                    and self._reconciliation_ready
                     and not self._reconnecting
                     and self.status in (TradingStatus.CONNECTED, TradingStatus.TRADING)
                 ),
@@ -388,6 +412,14 @@ class VnpyGateway(GatewayBase):
         self._reconnecting = True
         self._connection_outage = True
         if changed or new_outage:
+            self._connection_generation += 1
+            self._reconciliation_ready = False
+            self.last_reconciliation = {
+                "ok": False,
+                "fresh": False,
+                "failure_code": "broker_connection_changed",
+                "refreshed_monotonic": time.monotonic(),
+            }
             self._last_disconnect_reason = reason
             self._connection_changed_at = datetime.now().isoformat()
             logger.warning("[vn.py] connection health degraded: %s", reason)
@@ -397,13 +429,59 @@ class VnpyGateway(GatewayBase):
             return
         if self.status == TradingStatus.CONNECTING:
             self._connected_event.set()
-        if self._connection_outage:
-            self._reconnect_count += 1
-            self._connection_outage = False
-            self._reconnecting = False
-            if self.status == TradingStatus.ERROR:
-                self.status = self._restore_status
-            logger.info("[vn.py] TD, MD and contract readiness restored")
+        elif self._connection_outage and self._main_engine:
+            self._start_reconciliation_worker_locked()
+
+    def _start_reconciliation_worker_locked(self) -> None:
+        worker = self._reconciliation_worker
+        if worker is not None and worker.is_alive():
+            return
+        generation = self._connection_generation
+        worker = threading.Thread(
+            target=self._run_recovery_reconciliation,
+            args=(generation,),
+            name="ctp-reconciliation-recovery",
+            daemon=True,
+        )
+        self._reconciliation_worker = worker
+        worker.start()
+
+    def _run_recovery_reconciliation(self, generation: int) -> None:
+        try:
+            result = self.refresh_reconciliation(
+                timeout_seconds=self._reconciliation_timeout_seconds,
+            )
+            if result.get("ok") is not True or result.get("fresh") is not True:
+                logger.error(
+                    "[vn.py] broker reconciliation after reconnect failed: %s",
+                    result.get("failure_code", "broker_snapshot_unavailable"),
+                )
+        except Exception:
+            logger.exception("[vn.py] broker reconciliation after reconnect crashed")
+        finally:
+            with self._connection_lock:
+                if self._reconciliation_worker is threading.current_thread():
+                    self._reconciliation_worker = None
+                generation_changed = generation != self._connection_generation
+                if (
+                    generation_changed
+                    and self._connection_outage
+                    and self._td_connected
+                    and self._md_connected
+                    and self._contracts_ready
+                    and self._main_engine
+                ):
+                    self._start_reconciliation_worker_locked()
+
+    def _complete_connection_recovery_locked(self) -> None:
+        if not self._connection_outage:
+            return
+        self._reconnect_count += 1
+        self._connection_outage = False
+        self._reconnecting = False
+        if self.status == TradingStatus.ERROR:
+            self.status = self._restore_status
+        logger.info("[vn.py] CTP connection and broker reconciliation restored")
 
     def disconnect(self) -> None:
         """Disconnect CTP and stop vn.py event engine."""
@@ -419,8 +497,11 @@ class VnpyGateway(GatewayBase):
                 self._td_connected = False
                 self._md_connected = False
                 self._contracts_ready = False
+                self._reconciliation_ready = False
                 self._reconnecting = False
                 self._connection_outage = False
+                self._connection_generation += 1
+                self._reconciliation_worker = None
                 self._connected_event.clear()
                 self._connection_changed_at = datetime.now().isoformat()
             self.status = TradingStatus.STOPPED
@@ -438,6 +519,7 @@ class VnpyGateway(GatewayBase):
                 self._td_connected
                 and self._md_connected
                 and self._contracts_ready
+                and self._reconciliation_ready
                 and not self._reconnecting
             )
         if not order_entry_ready:
@@ -503,9 +585,51 @@ class VnpyGateway(GatewayBase):
         return list(self.orders.values())
 
     def refresh_reconciliation(self, timeout_seconds: float = 8.0) -> Dict[str, Any]:
+        """Refresh broker state and update the fail-closed order-entry gate."""
+        with self._reconciliation_lock:
+            with self._connection_lock:
+                generation = self._connection_generation
+                self._reconciliation_ready = False
+
+            result = self._refresh_reconciliation_snapshot(timeout_seconds)
+
+            with self._connection_lock:
+                transport_ready = (
+                    self._td_connected and self._md_connected and self._contracts_ready
+                )
+                accepted = bool(
+                    result.get("ok") is True
+                    and result.get("fresh") is True
+                    and generation == self._connection_generation
+                    and transport_ready
+                )
+                if result.get("ok") is True and result.get("fresh") is True and not accepted:
+                    result = {
+                        **result,
+                        "ok": False,
+                        "fresh": False,
+                        "failure_code": "broker_connection_changed_during_snapshot",
+                    }
+                    self.last_reconciliation = dict(result)
+                self._reconciliation_ready = accepted
+                if accepted:
+                    self._complete_connection_recovery_locked()
+            return result
+
+    def _refresh_reconciliation_snapshot(self, timeout_seconds: float = 8.0) -> Dict[str, Any]:
         """Actively query orders, positions and account with completion fences."""
         started = time.monotonic()
-        if self.status not in (TradingStatus.CONNECTED, TradingStatus.TRADING) or not self._main_engine:
+        with self._connection_lock:
+            recovery_query_allowed = bool(
+                self._connection_outage
+                and self._td_connected
+                and self._md_connected
+                and self._contracts_ready
+            )
+        if (
+            self.status not in (TradingStatus.CONNECTED, TradingStatus.TRADING)
+            and not recovery_query_allowed
+        ) or not self._main_engine:
             return self._finish_reconciliation(
                 ok=False,
                 failure_code="broker_gateway_not_connected",
