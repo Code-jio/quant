@@ -1115,6 +1115,38 @@ class TestLiveBrokerReconciliationGate:
         assert gateway.send_order(signal) == ""
         assert sent == []
 
+    def test_disconnect_during_snapshot_rejects_the_old_connection_result(self):
+        gateway = VnpyGateway()
+        self._make_transport_ready(gateway)
+
+        class BrokerSnapshot:
+            def query_orders_snapshot(self):
+                TestBrokerReconciliation._complete(gateway, "orders")
+                return 0
+
+            def query_positions_snapshot(self):
+                TestBrokerReconciliation._complete(gateway, "positions")
+                return 0
+
+            def query_account_snapshot(self):
+                gateway._on_vnpy_account(SimpleNamespace(data=SimpleNamespace(
+                    accountid="ACC001", balance=500000, available=480000, frozen=20000,
+                )))
+                TestLiveBrokerReconciliationGate._log(gateway, "交易服务器连接断开")
+                TestBrokerReconciliation._complete(gateway, "account")
+                return 0
+
+        gateway._main_engine = SimpleNamespace(get_gateway=lambda _name: BrokerSnapshot())
+
+        result = gateway.refresh_reconciliation(timeout_seconds=0.5)
+        snapshot = gateway.connection_snapshot()
+
+        assert result["ok"] is False
+        assert result["fresh"] is False
+        assert result["failure_code"] == "broker_connection_changed_during_snapshot"
+        assert snapshot["reconciliation_ready"] is False
+        assert snapshot["order_entry_ready"] is False
+
     def test_disconnect_and_relogin_invalidate_reconciliation_until_a_new_snapshot_succeeds(self):
         gateway = VnpyGateway()
         self._make_transport_ready(gateway)
