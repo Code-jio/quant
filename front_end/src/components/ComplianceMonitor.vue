@@ -15,6 +15,7 @@
         <span :class="['refresh-dot', errorMessage ? 'is-error' : 'is-ok']"></span>
         {{ errorMessage || (loading ? '刷新中' : '每 2 秒刷新') }}
       </div>
+      <el-button size="small" @click="openThresholdSettings">阈值设置</el-button>
     </div>
 
     <el-alert
@@ -59,17 +60,47 @@
       </el-table>
       <el-empty v-else description="当前交易日暂无合规阈值告警" :image-size="48" />
     </div>
+
+    <el-dialog v-model="thresholdSettingsVisible" title="合规阈值设置" width="520px" :close-on-click-modal="false">
+      <p class="threshold-settings-hint">设置为 0 表示停用该项阈值告警。</p>
+      <el-form label-position="top">
+        <el-form-item v-for="field in thresholdSettingsFields" :key="field.key" :label="field.label">
+          <el-input-number
+            v-model="thresholdDraft[field.key]"
+            :min="0"
+            :step="1"
+            :precision="0"
+            controls-position="right"
+          />
+          <span class="threshold-disabled-text">{{ thresholdDraft[field.key] === 0 ? '已停用' : `阈值：${thresholdDraft[field.key]}` }}</span>
+        </el-form-item>
+      </el-form>
+      <el-alert v-if="thresholdSaveError" type="error" :title="thresholdSaveError" :closable="false" show-icon />
+      <template #footer>
+        <el-button :disabled="thresholdSaving" @click="cancelThresholdSettings">取消</el-button>
+        <el-button type="primary" :loading="thresholdSaving" @click="saveThresholdSettings">保存设置</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { fetchRiskStatus } from '@/api/index.js'
+import { ElMessage } from 'element-plus'
+import { fetchRiskStatus, updateRiskConfig } from '@/api/index.js'
+import {
+  createComplianceThresholdDraft,
+  normalizeComplianceThresholdPatch,
+} from '@/utils/complianceRisk.js'
 
 const POLL_INTERVAL_MS = 2_000
 const riskStatus = ref({})
 const loading = ref(false)
 const errorMessage = ref('')
+const thresholdSettingsVisible = ref(false)
+const thresholdSaving = ref(false)
+const thresholdSaveError = ref('')
+const thresholdDraft = ref(createComplianceThresholdDraft())
 let timer = null
 
 const risk = computed(() => riskStatus.value?.risk || {})
@@ -83,6 +114,14 @@ const COUNTER_DEFINITIONS = [
   { key: 'orders_submitted', label: '已提交委托' },
   { key: 'cancel_requests', label: '撤单请求' },
   { key: 'cancels_accepted', label: '已受理撤单', thresholdKey: '' },
+  { key: 'duplicate_open', label: '重复开仓' },
+  { key: 'duplicate_close', label: '重复平仓' },
+  { key: 'duplicate_cancel', label: '重复撤单' },
+]
+
+const thresholdSettingsFields = [
+  { key: 'orders_submitted', label: '已提交委托' },
+  { key: 'cancel_requests', label: '撤单请求' },
   { key: 'duplicate_open', label: '重复开仓' },
   { key: 'duplicate_close', label: '重复平仓' },
   { key: 'duplicate_cancel', label: '重复撤单' },
@@ -129,6 +168,33 @@ async function refresh() {
     errorMessage.value = error?.message || '合规监控数据读取失败'
   } finally {
     loading.value = false
+  }
+}
+
+function openThresholdSettings() {
+  thresholdDraft.value = createComplianceThresholdDraft(thresholds.value)
+  thresholdSaveError.value = ''
+  thresholdSettingsVisible.value = true
+}
+
+function cancelThresholdSettings() {
+  thresholdSettingsVisible.value = false
+  thresholdSaveError.value = ''
+}
+
+async function saveThresholdSettings() {
+  thresholdSaving.value = true
+  thresholdSaveError.value = ''
+  try {
+    await updateRiskConfig(normalizeComplianceThresholdPatch(thresholdDraft.value))
+    ElMessage.success('合规阈值设置已保存')
+    thresholdSettingsVisible.value = false
+    await refresh()
+  } catch (error) {
+    thresholdSaveError.value = error?.message || '合规阈值设置保存失败'
+    ElMessage.error(thresholdSaveError.value)
+  } finally {
+    thresholdSaving.value = false
   }
 }
 
@@ -181,6 +247,8 @@ onUnmounted(() => {
   background: var(--bg-base, #0d1117); padding: 12px;
 }
 .block-title { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 13px; font-weight: 600; }
+.threshold-settings-hint { margin: 0 0 16px; color: var(--text-muted, #6e7681); font-size: 13px; }
+.threshold-disabled-text { margin-left: 10px; color: var(--text-muted, #6e7681); font-size: 12px; }
 @media (max-width: 1100px) { .counter-grid { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 600px) {
   .counter-grid { grid-template-columns: repeat(2, 1fr); }

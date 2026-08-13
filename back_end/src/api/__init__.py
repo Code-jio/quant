@@ -2248,7 +2248,30 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         engines = _unique_engines()
         if not engines:
             raise HTTPException(status_code=503, detail="交易引擎未连接")
-        merged = {**_DEFAULT_RUNTIME_RISK, **dict(body.risk or {})}
+        current_config = vars(engines[0].risk_manager.config)
+        merged = {
+            name: (
+                sorted(value)
+                if isinstance(value, set)
+                else dict(value)
+                if isinstance(value, dict)
+                else value
+            )
+            for name, value in current_config.items()
+        }
+        patch = dict(body.risk or {})
+        unknown_fields = sorted(set(patch) - set(merged))
+        if unknown_fields:
+            raise HTTPException(
+                status_code=422,
+                detail=f"不支持的风控配置字段: {', '.join(unknown_fields)}",
+            )
+        merged.update(patch)
+        for name, value in list(merged.items()):
+            if isinstance(value, set):
+                merged[name] = sorted(value)
+            elif isinstance(value, dict):
+                merged[name] = dict(value)
         for engine in engines:
             engine.configure_risk({"risk": merged})
         if trading_state._main_config is not None:
