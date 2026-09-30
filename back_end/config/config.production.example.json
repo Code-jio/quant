@@ -28,10 +28,10 @@
     "duplicate_open_alert_threshold": 1,
     "duplicate_close_alert_threshold": 1,
     "duplicate_cancel_alert_threshold": 1,
-    "default_contract_multiplier": 1000,
-    "contract_multipliers": {"AU": 1000, "au2606": 1000},
+    "default_contract_multiplier": 10,
+    "contract_multipliers": {"RB": 10, "rb2610": 10},
     "allow_market_orders": false,
-    "allowed_symbols": ["au2606"],
+    "allowed_symbols": ["rb2610"],
     "blocked_symbols": []
   }
 }

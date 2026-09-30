@@ -266,15 +266,15 @@ fetchServers({ suppressErrorLog: true }).then(data => {
   if (data.md_servers?.length) mdServers.value = data.md_servers
 }).catch(() => {/* 用本地默认值 */})
 
-// ── 表单数据 ──────────────────────────────────────────────────────────────
+// ── 表单数据(默认保存至代码中) ──────────────────────────────────────────────────────────────
 const form = reactive({
-  username:  '',
-  password:  '',
+  username:  '0061839732',
+  password:  'hbg914520',
   broker_id: '2071',
-  td_server: '',
-  md_server: '',
-  app_id:      '',
-  auth_code:   '',
+  td_server: 'tcp://114.94.128.1:42205',
+  md_server: 'tcp://114.94.128.1:42213',
+  app_id:      'client_TraderMaster_v1.0.0',
+  auth_code:   '20260324LHJYMHBG',
   environment: '实盘',
   td_custom:   false,
   md_custom:   false,
