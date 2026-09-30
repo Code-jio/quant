@@ -10,6 +10,8 @@ ARG VITE_WS_BASE_URL=
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
 ENV VITE_WS_BASE_URL=$VITE_WS_BASE_URL
 
+# `prebuild` runs the credential-default gate before Vite can emit a browser
+# bundle.  Do not replace this with `vite build` directly.
 RUN npm run build
 
 FROM nginx:alpine

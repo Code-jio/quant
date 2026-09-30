@@ -9,7 +9,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   placeOrder, cancelAllOrders, closePosition,
   fetchPositions, searchContracts,
-  fetchRiskStatus, emergencyStop, resumeTrading, fetchTradingReconcile,
+  fetchRiskStatus, fetchSystemStatus, emergencyStop, resumeTrading, fetchTradingReconcile,
 } from '@/api/index.js'
 
 // ── 下单表单 ─────────────────────────────────────────────────────────────────
@@ -27,7 +27,10 @@ const cancellingAll = ref(false)
 const emergencyLoading = ref(false)
 const quickCloseOffset = ref('close')
 const riskState = ref(null)
+const readinessState = ref(null)
 const reconcileState = ref(null)
+const reconcileLoading = ref(false)
+const emergencyFeedback = ref(null)
 
 const QUICK_VOLUMES = [1, 3, 5, 10]
 const OFFSET_LABELS = {
@@ -103,16 +106,16 @@ const orderValidation = computed(() => {
 })
 
 const emergencyActive = computed(() => Boolean(riskState.value?.risk?.emergency_stop))
-const orderEntryReady = computed(() => reconcileState.value?.order_entry_ready === true)
+const orderEntryReady = computed(() => readinessState.value?.order_entry_ready === true)
 const orderEntryBlockReason = computed(() => {
   if (!riskState.value) return '风控状态不可用，禁止报单'
   if (emergencyActive.value) {
     const reason = riskState.value?.risk?.emergency_reason
     return `交易急停中${reason ? `：${reason}` : ''}`
   }
-  if (!reconcileState.value) return '券商对账状态不可用，禁止报单'
+  if (!readinessState.value) return '券商对账就绪状态不可用，禁止报单'
   if (!orderEntryReady.value) {
-    const reason = reconcileState.value?.failure_code || reconcileState.value?.message
+    const reason = readinessState.value?.failure_code || readinessState.value?.message
     return `券商对账未就绪${reason ? `：${reason}` : ''}`
   }
   return ''
@@ -129,6 +132,30 @@ const riskSummary = computed(() => {
   if (risk.emergency_stop) return `急停中${risk.emergency_reason ? `：${risk.emergency_reason}` : ''}`
   return `单笔≤${risk.max_order_volume}手 / 日亏损≤${Math.round((risk.max_daily_loss_ratio || 0) * 100)}%`
 })
+
+const emergencyCancelSummary = computed(() => {
+  const feedback = emergencyFeedback.value
+  if (!feedback) return ''
+  return `撤单：请求 ${feedback.requested}，确认 ${feedback.confirmed}，待确认 ${feedback.pending}，失败 ${feedback.failed}`
+})
+
+function normalizeEmergencyFeedback(result) {
+  const confirmed = Number(result?.confirmed ?? result?.cancelled) || 0
+  return {
+    requested: Number(result?.requested) || 0,
+    confirmed,
+    pending: Number(result?.pending) || 0,
+    failed: Number(result?.failed) || 0,
+    outcomes: Array.isArray(result?.outcomes) ? result.outcomes : [],
+  }
+}
+
+function cancelOutcomeText(outcome) {
+  const status = String(outcome?.status || '').toLowerCase()
+  if (status === 'confirmed' || outcome?.confirmed === true) return '已确认撤单'
+  if (status === 'pending' || outcome?.pending === true) return '待券商确认'
+  return '撤单失败'
+}
 
 const orderPreview = computed(() => {
   const isLong = form.value.direction === 'long'
@@ -266,11 +293,42 @@ async function handleCancelAll() {
 
 async function loadRiskStatus() {
   try {
-    riskState.value = await fetchRiskStatus()
-    reconcileState.value = await fetchTradingReconcile().catch(() => null)
+    const [risk, readiness] = await Promise.all([fetchRiskStatus(), fetchSystemStatus()])
+    riskState.value = risk
+    readinessState.value = readiness
   } catch {
     riskState.value = null
+    readinessState.value = null
+  }
+}
+
+async function handleManualReconcile() {
+  reconcileLoading.value = true
+  try {
+    const result = await fetchTradingReconcile()
+    reconcileState.value = result
+    readinessState.value = {
+      ...(readinessState.value || {}),
+      order_entry_ready: result.order_entry_ready === true,
+      failure_code: result.reconciliation?.failure_code || '',
+      message: result.reconciliation?.error_msg || '',
+    }
+    if (result.order_entry_ready === true) {
+      ElMessage.success('券商权威对账已刷新，允许报单')
+    } else {
+      ElMessage.warning(`券商权威对账完成，但报单仍被禁止${result.reconciliation?.failure_code ? `：${result.reconciliation.failure_code}` : ''}`)
+    }
+  } catch (err) {
     reconcileState.value = null
+    readinessState.value = {
+      ...(readinessState.value || {}),
+      order_entry_ready: false,
+      failure_code: 'manual_reconcile_failed',
+      message: err.message,
+    }
+    ElMessage.error(`券商权威对账失败: ${err.message}`)
+  } finally {
+    reconcileLoading.value = false
   }
 }
 
@@ -286,7 +344,15 @@ async function handleEmergencyStop() {
   emergencyLoading.value = true
   try {
     const res = await emergencyStop({ reason: 'operator_panel', cancel_orders: true, stop_strategies: false })
-    ElMessage.success(`急停已开启，撤单 ${res.cancelled || 0} 笔，失败 ${res.failed || 0} 笔`)
+    const feedback = normalizeEmergencyFeedback(res)
+    emergencyFeedback.value = feedback
+    if (feedback.pending > 0 || feedback.failed > 0) {
+      ElMessage.warning(`急停已激活；撤单未全部确认。${emergencyCancelSummary.value}`)
+    } else if (feedback.requested > 0) {
+      ElMessage.success(`急停已激活；撤单全部确认。${emergencyCancelSummary.value}`)
+    } else {
+      ElMessage.info('急停已激活；当前无活动委托，无需撤单')
+    }
     await loadRiskStatus()
   } catch (err) {
     ElMessage.error(`急停失败: ${err.message}`)
@@ -307,6 +373,7 @@ async function handleResumeTrading() {
   emergencyLoading.value = true
   try {
     await resumeTrading()
+    emergencyFeedback.value = null
     ElMessage.success('交易急停已解除')
     await loadRiskStatus()
   } catch (err) {
@@ -431,6 +498,15 @@ onUnmounted(() => {
         <span v-if="reconcileState" class="c-muted">
           活跃委托 {{ reconcileState.orders?.active_count ?? 0 }}
         </span>
+        <el-button
+          size="small"
+          plain
+          :loading="reconcileLoading"
+          @click="handleManualReconcile"
+        >
+          <el-icon><RefreshRight /></el-icon>
+          刷新核对
+        </el-button>
         <span
           class="validation-pill order-entry-pill"
           :class="orderEntryReady && !emergencyActive ? 'pill-ok' : 'pill-danger'"
@@ -466,6 +542,31 @@ onUnmounted(() => {
           {{ orderValidation.message }}
         </span>
       </div>
+    </div>
+
+    <div
+      v-if="emergencyFeedback"
+      class="emergency-feedback"
+      :class="emergencyFeedback.pending > 0 || emergencyFeedback.failed > 0 ? 'is-warning' : 'is-confirmed'"
+      role="status"
+    >
+      <div class="emergency-feedback-title">
+        <strong>急停已激活</strong>
+        <span>{{ emergencyFeedback.pending > 0 || emergencyFeedback.failed > 0 ? '撤单尚未全部确认' : '撤单全部确认' }}</span>
+      </div>
+      <div class="emergency-feedback-summary">
+        <span>已请求 {{ emergencyFeedback.requested }}</span>
+        <span>已确认撤单 {{ emergencyFeedback.confirmed }}</span>
+        <span>待确认 {{ emergencyFeedback.pending }}</span>
+        <span>失败 {{ emergencyFeedback.failed }}</span>
+      </div>
+      <ul v-if="emergencyFeedback.outcomes.length" class="emergency-outcomes">
+        <li v-for="outcome in emergencyFeedback.outcomes" :key="outcome.order_id || outcome.id">
+          <span class="mono">{{ outcome.order_id || outcome.id || '--' }}</span>
+          <span>{{ cancelOutcomeText(outcome) }}</span>
+          <span v-if="outcome.error_msg" class="c-muted">{{ outcome.error_msg }}</span>
+        </li>
+      </ul>
     </div>
 
     <div class="tp-body">
@@ -747,6 +848,55 @@ onUnmounted(() => {
   color: var(--q-red);
   border-color: rgba(248,81,73,.4);
   background: rgba(248,81,73,.1);
+}
+
+.emergency-feedback {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--q-border);
+  font-size: 12px;
+}
+
+.emergency-feedback.is-confirmed {
+  color: var(--q-green);
+  background: rgba(63,185,80,.08);
+}
+
+.emergency-feedback.is-warning {
+  color: var(--q-yellow);
+  background: rgba(210,153,34,.1);
+}
+
+.emergency-feedback-title,
+.emergency-feedback-summary,
+.emergency-outcomes,
+.emergency-outcomes li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.emergency-feedback-summary {
+  color: var(--q-text);
+  flex-wrap: wrap;
+}
+
+.emergency-outcomes {
+  width: 100%;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--q-text);
+}
+
+.emergency-outcomes li {
+  padding: 2px 6px;
+  border: 1px solid var(--q-border);
+  border-radius: 4px;
 }
 
 .tp-body {

@@ -1,0 +1,37 @@
+{
+  "mode": "live",
+  "trading": {
+    "gateway": "vnpy",
+    "username": "",
+    "broker_id": "",
+    "td_server": "",
+    "md_server": "",
+    "app_id": "",
+    "auth_code": "",
+    "vnpy_environment": "实盘"
+  },
+  "risk": {
+    "enabled": true,
+    "max_order_volume": 1,
+    "max_position_volume": 1,
+    "max_active_orders": 2,
+    "max_orders_per_minute": 5,
+    "max_daily_loss_ratio": 0.01,
+    "max_order_value": 2000000,
+    "max_position_value": 2000000,
+    "max_price_deviation": 0.01,
+    "max_market_data_age_seconds": 5,
+    "duplicate_signal_window_seconds": 5,
+    "duplicate_cancel_window_seconds": 5,
+    "order_count_alert_threshold": 500,
+    "cancel_count_alert_threshold": 300,
+    "duplicate_open_alert_threshold": 1,
+    "duplicate_close_alert_threshold": 1,
+    "duplicate_cancel_alert_threshold": 1,
+    "default_contract_multiplier": 1000,
+    "contract_multipliers": {"AU": 1000, "au2606": 1000},
+    "allow_market_orders": false,
+    "allowed_symbols": ["au2606"],
+    "blocked_symbols": []
+  }
+}

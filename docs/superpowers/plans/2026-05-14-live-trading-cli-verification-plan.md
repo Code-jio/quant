@@ -748,10 +748,10 @@ git commit -m "feat: add interactive CTP credential input via getpass"
   "trading": {
     "gateway": "vnpy",
     "broker_id": "2071",
-    "td_server": "tcp://114.94.128.1:42205",
-    "md_server": "tcp://114.94.128.1:42213",
-    "app_id": "client_TraderMaster_v1.0.0",
-    "auth_code": "20260324LHJYMHBG",
+    "td_server": "<CONFIGURE_LOCALLY>",
+    "md_server": "<CONFIGURE_LOCALLY>",
+    "app_id": "<CONFIGURE_LOCALLY>",
+    "auth_code": "<CONFIGURE_LOCALLY>",
     "vnpy_environment": "仿真",
     "bar_interval_minutes": 1,
     "initial_capital": 100000,
@@ -769,7 +769,7 @@ git commit -m "feat: add interactive CTP credential input via getpass"
 
 - [ ] **Step 2: Add to .gitignore (credentials handled by interactive input)**
 
-Verify `config/config_production.json` is NOT in `.gitignore` — the file contains no secrets (username/password are interactive-only). The broker_id, app_id, auth_code are public broker-issued identifiers.
+Verify `config/config_production.json` is ignored and stored only on the deployment host. Broker connection identifiers and authorization material must never be committed.
 
 - [ ] **Step 3: Commit**
 

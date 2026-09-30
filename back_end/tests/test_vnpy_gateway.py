@@ -15,8 +15,39 @@ from src.trading.vnpy_gateway import (
     VnpyGateway,
     _build_reconciliation_ctp_gateway,
     _ctp_contracts_ready,
+    _ensure_vnpy_runtime_dir,
     _extract_product,
 )
+
+
+def test_vnpy_runtime_dir_uses_explicit_persisted_path(monkeypatch, tmp_path):
+    runtime_dir = tmp_path / "persisted-vnpy"
+    monkeypatch.setenv("QUANT_VNPY_RUNTIME_DIR", str(runtime_dir))
+
+    _ensure_vnpy_runtime_dir()
+
+    assert runtime_dir.is_dir()
+    try:
+        from vnpy.trader import utility as vnpy_utility
+    except ImportError:
+        return
+    assert vnpy_utility.TEMP_DIR == runtime_dir.resolve()
+
+
+def test_connection_error_redaction_never_retains_live_credentials():
+    gateway = VnpyGateway()
+    password = "PASSWORD_SENTINEL"
+    auth_code = "AUTH_SENTINEL"
+    gateway._connection_secret_values = (password, auth_code)
+
+    gateway._remember_connect_error(
+        f"password={password}; 授权编码:{auth_code}; connection refused"
+    )
+
+    summary = gateway.connection_error_summary()
+    assert password not in summary
+    assert auth_code not in summary
+    assert "***" in summary
 
 
 # ── Mock vnpy enums (must be real Enum subclasses for hashability + iteration) ─

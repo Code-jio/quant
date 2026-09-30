@@ -510,10 +510,10 @@ const LOGIN_DEFAULTS = {
   username: '',
   password: '',
   broker_id: '2071',
-  td_server: 'tcp://114.94.128.1:42205',
-  md_server: 'tcp://114.94.128.1:42213',
-  app_id: 'client_TraderMaster_v1.0.0',
-  auth_code: '20260324LHJYMHBG',
+  td_server: '',
+  md_server: '',
+  app_id: '',
+  auth_code: '',
   environment: '仿真',
 }
 

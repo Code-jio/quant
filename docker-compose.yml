@@ -2,27 +2,32 @@ services:
   backend:
     build: ./back_end
     container_name: quant-backend
-    ports:
-      - "8000:8000"
+    # Deliberately no host `ports`: this service is reachable only through the
+    # frontend reverse proxy on the internal Compose network.
+    expose:
+      - "8000"
     volumes:
+      # The production CTP/risk configuration stays on the host and is never
+      # copied into the image or a named volume.
+      - ${QUANT_LIVE_CONFIG_HOST_PATH:?required}:/run/secrets/quant-live-config.json:ro
       - quant_data:/app/data
+      - quant_audit:/app/runtime/audit
+      - quant_sessions:/app/runtime/session
+      - quant_live_risk:/app/runtime/risk
+      # vn.py writes flow/runtime files under Path.cwd()/.vntrader.
+      - quant_vnpy_flow:/app/.vntrader
     environment:
-      - QUANT_ENV=${QUANT_ENV:-production}
-      - QUANT_DB_PATH=/app/data/historical/quotes.db
-      - QUANT_SESSION_COOKIE_SECURE=${QUANT_SESSION_COOKIE_SECURE:-false}
-      - QUANT_ALLOW_SYNTHETIC_DATA=${QUANT_ALLOW_SYNTHETIC_DATA:-false}
-      - QUANT_RISK_MAX_ORDER_VOLUME=${QUANT_RISK_MAX_ORDER_VOLUME:-100}
-      - QUANT_RISK_MAX_POSITION_VOLUME=${QUANT_RISK_MAX_POSITION_VOLUME:-1000}
-      - QUANT_RISK_MAX_DAILY_LOSS_RATIO=${QUANT_RISK_MAX_DAILY_LOSS_RATIO:-0.03}
-      - QUANT_RISK_ALLOW_MARKET_ORDERS=${QUANT_RISK_ALLOW_MARKET_ORDERS:-false}
-      - QUANT_CTP_BROKER_ID=${QUANT_CTP_BROKER_ID}
-      - QUANT_CTP_TD_SERVER=${QUANT_CTP_TD_SERVER}
-      - QUANT_CTP_MD_SERVER=${QUANT_CTP_MD_SERVER}
-      - QUANT_CTP_APP_ID=${QUANT_CTP_APP_ID}
-      - QUANT_CTP_AUTH_CODE=${QUANT_CTP_AUTH_CODE}
-      - QUANT_CTP_ENVIRONMENT=${QUANT_CTP_ENVIRONMENT:-测试}
-      - QUANT_CORS_ORIGINS=${QUANT_CORS_ORIGINS:-http://localhost}
-      - QUANT_RATE_LIMIT_ENABLED=${QUANT_RATE_LIMIT_ENABLED:-true}
+      QUANT_ENV: production
+      QUANT_DB_PATH: /app/data/historical/quotes.db
+      QUANT_LIVE_CONFIG_PATH: /run/secrets/quant-live-config.json
+      QUANT_ALLOW_SYNTHETIC_DATA: "false"
+      QUANT_SESSION_COOKIE_SECURE: "true"
+      QUANT_RATE_LIMIT_ENABLED: "true"
+      QUANT_CORS_ORIGINS: ${QUANT_CORS_ORIGINS:?required}
+      QUANT_AUDIT_LOG_DIR: /app/runtime/audit
+      QUANT_SESSION_DB: /app/runtime/session/sessions.db
+      QUANT_LIVE_RISK_STATE_PATH: /app/runtime/risk/live_risk_state.json
+      QUANT_VNPY_RUNTIME_DIR: /app/.vntrader
     restart: unless-stopped
 
   frontend:
@@ -32,11 +37,17 @@ services:
         VITE_API_BASE_URL: /api
         VITE_WS_BASE_URL: ""
     container_name: quant-frontend
+    # Only a local reverse proxy may publish this HTTP listener.  Put external
+    # traffic behind a separately managed HTTPS reverse proxy.
     ports:
-      - "${FRONTEND_PORT:-80}:80"
+      - "127.0.0.1:${FRONTEND_PORT:-8080}:80"
     depends_on:
       - backend
     restart: unless-stopped
 
 volumes:
   quant_data:
+  quant_audit:
+  quant_sessions:
+  quant_live_risk:
+  quant_vnpy_flow:

@@ -1,10 +1,17 @@
 import os
+import tempfile
+from pathlib import Path
 
 import pytest
 
 # Disable rate limiting during tests so that multiple test cases sharing the
 # same module-level slowapi Limiter do not exhaust each other's quotas.
 os.environ.setdefault("QUANT_RATE_LIMIT_ENABLED", "false")
+
+# Import-time construction of the API session store must never open or mutate
+# a deployment database while the test modules are being collected.
+_SESSION_TEST_DIR = tempfile.TemporaryDirectory(prefix="quant-test-sessions-")
+os.environ["QUANT_SESSION_DB"] = str(Path(_SESSION_TEST_DIR.name) / "sessions.db")
 
 
 @pytest.fixture(autouse=True)

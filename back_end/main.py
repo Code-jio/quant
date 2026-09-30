@@ -7,7 +7,6 @@ import sys
 import json
 import logging
 import argparse
-from getpass import getpass
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -15,7 +14,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.data import DataManager
 from src.strategy import create_strategy
 from src.backtest import BacktestEngine, BacktestConfig
-from src.trading import TradingEngine, create_gateway
 from src.analysis import Analyzer
 from src.settings import ctp_defaults, runtime_risk_defaults, warn_production_risk_defaults
 from src.observability import AuditLogHandler, audit_log
@@ -139,47 +137,12 @@ def run_backtest(config: dict):
     return result
 
 
-def run_live_trading(config: dict):
-    """运行实盘交易"""
-    logger.info("=" * 60)
-    logger.info("开始实盘交易")
-    logger.info("=" * 60)
-
-    trading_config = dict(config.get('trading', {}))
-    if 'risk' in config:
-        trading_config['risk'] = config['risk']
-
-    # Interactive credential input — not stored in config file
-    if not trading_config.get("username"):
-        trading_config["username"] = input("CTP 账号: ").strip()
-    if not trading_config.get("password"):
-        trading_config["password"] = getpass("CTP 密码: ")
-
-    gateway_type = trading_config.get('gateway', 'vnpy')
-    logger.info(f"使用交易网关: {gateway_type}")
-
-    gateway = create_gateway(gateway_type)
-    trading_engine = TradingEngine(gateway)
-
-    strategy = create_strategy(config['strategy']['name'], config['strategy'])
-    strategy.initial_capital = trading_config.get('initial_capital', 1000000)
-    trading_engine.set_strategy(strategy)
-
-    success = trading_engine.start(trading_config)
-    if not success:
-        logger.error("实盘交易启动失败")
-        return
-
-    logger.info("实盘交易启动成功，按 Ctrl+C 停止")
-
-    try:
-        while True:
-            import time
-            time.sleep(1)
-    except KeyboardInterrupt:
-        pass
-
-    trading_engine.stop()
+def run_live_trading(_config: dict):
+    """Reject the legacy live CLI, which cannot provide the API safety gates."""
+    raise RuntimeError(
+        "CLI 实盘入口已禁用；请使用 back_end/start.bat 启动受生产配置、"
+        "审计持久化、会话鉴权和券商对账门禁保护的实盘 API"
+    )
 
 
 def main():

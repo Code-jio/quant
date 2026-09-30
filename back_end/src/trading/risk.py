@@ -136,6 +136,11 @@ class RiskManager:
         self._bound_trading_day = ""
         self._wall_clock = time.time
         self._persistence_error = ""
+        # A failed durable write means the in-memory risk state can no longer
+        # be treated as authoritative.  Keep this latch separate from an
+        # operator emergency stop: only an explicit successful store probe can
+        # clear it.
+        self._persistence_integrity_stop = False
 
     @_risk_locked
     def configure(self, config: Optional[Mapping[str, Any]]) -> None:
@@ -188,23 +193,32 @@ class RiskManager:
                     raise
                 except (TypeError, ValueError, OverflowError) as exc:
                     raise RuntimeError(f"risk state payload is invalid: {exc}") from exc
-                self._persistence_error = ""
+                if not self._persistence_integrity_stop:
+                    self._persistence_error = ""
                 return
 
             preserved_stop = self.emergency_stop
             preserved_reason = self.emergency_reason
+            preserved_integrity_stop = self._persistence_integrity_stop
             if record:
                 previous = record.get("state")
                 if not isinstance(previous, dict):
                     raise RuntimeError("risk state payload is invalid")
                 preserved_stop = bool(previous.get("emergency_stop", preserved_stop))
                 preserved_reason = str(previous.get("emergency_reason", preserved_reason) or "")
+                preserved_integrity_stop = bool(
+                    previous.get("persistence_integrity_stop", preserved_integrity_stop)
+                )
 
             self._reset_intraday_state(normalized_day)
             if day_open_balance is not None:
                 self.day_open_balance = max(0.0, float(day_open_balance or 0.0))
             self.emergency_stop = preserved_stop
             self.emergency_reason = preserved_reason
+            self._persistence_integrity_stop = preserved_integrity_stop
+            if preserved_integrity_stop:
+                self.emergency_stop = True
+                self._persistence_error = preserved_reason or "Live risk state recovery is required"
             self._persist_state(raise_on_error=True)
         except Exception:
             if acquired_lease is not None:
@@ -225,8 +239,39 @@ class RiskManager:
             self._state_path_key = ""
             self._bound_trading_day = ""
         self._persistence_error = str(reason or "Live risk state is unavailable")
+        self._persistence_integrity_stop = True
         self.emergency_stop = True
         self.emergency_reason = self._persistence_error
+
+    @_risk_locked
+    def probe_persistence_recovery(self) -> bool:
+        """Verify durable risk-state storage before releasing an integrity halt.
+
+        This deliberately leaves the emergency stop engaged.  Once this probe
+        succeeds, an operator may use ``set_emergency_stop(False)`` to resume.
+        A failed probe retains the fail-closed latch and returns ``False``.
+        """
+        if not self._persistence_integrity_stop:
+            return self._persistence_error == ""
+        if self._state_store is None or not self._state_scope or not self._bound_trading_day:
+            return False
+
+        try:
+            self._state_store.save(
+                self._state_scope,
+                self._bound_trading_day,
+                self._persistent_state(),
+            )
+        except RuntimeError as exc:
+            self._persistence_error = f"Live risk state persistence failed: {exc}"
+            self.emergency_stop = True
+            self.emergency_reason = self._persistence_error
+            logger.error("live risk state recovery probe failed; emergency stop remains active: %s", exc)
+            return False
+
+        self._persistence_error = ""
+        self._persistence_integrity_stop = False
+        return True
 
     @_risk_locked
     def close_persistent_state(self) -> None:
@@ -246,9 +291,17 @@ class RiskManager:
 
     @_risk_locked
     def set_emergency_stop(self, enabled: bool, reason: str = "") -> None:
+        if not enabled and self._persistence_integrity_stop:
+            raise RuntimeError(
+                "cannot resume while live risk persistence is unhealthy; "
+                "run probe_persistence_recovery first"
+            )
         self.emergency_stop = bool(enabled)
         self.emergency_reason = str(reason or "").strip()
-        self._persist_state()
+        # Resuming is a safety-critical transition: callers must know if the
+        # cleared stop could not be made durable.  Arming a stop remains best
+        # effort because _persist_state itself latches the failure closed.
+        self._persist_state(raise_on_error=not enabled)
 
     @_risk_locked
     def status(self) -> Dict[str, Any]:
@@ -260,6 +313,7 @@ class RiskManager:
             "emergency_stop": self.emergency_stop,
             "emergency_reason": self.emergency_reason,
             "persistence_error": self._persistence_error,
+            "persistence_recovery_required": self._persistence_integrity_stop,
             "day_open_balance": self.day_open_balance,
             "max_order_volume": cfg.max_order_volume,
             "max_position_volume": cfg.max_position_volume,
@@ -332,12 +386,14 @@ class RiskManager:
         allow_stale_close: bool = False,
     ) -> RiskCheckResult:
         cfg = self.config
-        if not cfg.enabled:
-            return RiskCheckResult(True)
-
+        if self._persistence_error:
+            return RiskCheckResult(False, f"Live risk persistence is unhealthy: {self._persistence_error}")
         if self.emergency_stop:
             suffix = f": {self.emergency_reason}" if self.emergency_reason else ""
             return RiskCheckResult(False, f"Emergency stop is active{suffix}")
+
+        if not cfg.enabled:
+            return RiskCheckResult(True)
 
         if not signal.validate():
             return RiskCheckResult(False, "Invalid signal: symbol, price or volume is invalid")
@@ -600,6 +656,10 @@ class RiskManager:
         self.day_open_balance = max(0.0, float(state.get("day_open_balance", 0.0) or 0.0))
         self.emergency_stop = bool(state.get("emergency_stop", False))
         self.emergency_reason = str(state.get("emergency_reason", "") or "")
+        self._persistence_integrity_stop = bool(state.get("persistence_integrity_stop", False))
+        if self._persistence_integrity_stop:
+            self._persistence_error = self.emergency_reason or "Live risk state recovery is required"
+            self.emergency_stop = True
 
         counters = state.get("compliance_counters") or {}
         if not isinstance(counters, Mapping):
@@ -657,6 +717,7 @@ class RiskManager:
             "day_open_balance": self.day_open_balance,
             "emergency_stop": self.emergency_stop,
             "emergency_reason": self.emergency_reason,
+            "persistence_integrity_stop": self._persistence_integrity_stop,
             "order_timestamps": [to_epoch(ts) for ts in self._order_timestamps],
             "recent_signal_timestamps": {
                 key: to_epoch(ts) for key, ts in self._recent_signal_timestamps.items()
@@ -678,9 +739,11 @@ class RiskManager:
                 self._bound_trading_day,
                 self._persistent_state(),
             )
-            self._persistence_error = ""
+            if not self._persistence_integrity_stop:
+                self._persistence_error = ""
         except RuntimeError as exc:
             self._persistence_error = f"Live risk state persistence failed: {exc}"
+            self._persistence_integrity_stop = True
             self.emergency_stop = True
             self.emergency_reason = self._persistence_error
             logger.error("实盘风控状态落盘失败，已触发急停: %s", exc)

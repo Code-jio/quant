@@ -1,24 +1,26 @@
 """
 Authentication and session helpers for the FastAPI layer.
 
-Session tokens are persisted to SQLite so that server restarts do not force
-every client through the CTP login flow again. The in-memory cache is the
-primary read path; writes go through to SQLite synchronously.
+Session tokens are persisted to SQLite for local continuity. Production
+startup revokes them so a browser session can never cross a live-account
+process generation. The in-memory cache is the primary read path; writes go
+through to SQLite synchronously.
 """
 
 from __future__ import annotations
 
+import os
 import secrets
 import sqlite3
 import threading
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Dict, FrozenSet
 
 
 OPEN_PATHS: FrozenSet[str] = frozenset(
     {
         "/auth/login",
-        "/auth/logout",
         "/auth/status",
         "/auth/servers",
         "/health",
@@ -38,7 +40,15 @@ OPEN_PATHS: FrozenSet[str] = frozenset(
 SESSION_COOKIE_NAME = "quant_session"
 SESSION_COOKIE_MAX_AGE = 24 * 60 * 60
 
-DEFAULT_SESSION_DB = "data/historical/sessions.db"
+
+def default_session_db() -> str:
+    configured = os.getenv("QUANT_SESSION_DB", "").strip()
+    if configured:
+        return str(Path(configured).expanduser().resolve())
+    return str((Path(__file__).resolve().parents[2] / "data" / "historical" / "sessions.db").resolve())
+
+
+DEFAULT_SESSION_DB = default_session_db()
 
 
 class SessionStore:
@@ -51,6 +61,7 @@ class SessionStore:
     ) -> None:
         self.ttl = ttl or timedelta(hours=24)
         self._sessions: Dict[str, datetime] = {}
+        self._account_ids: Dict[str, str] = {}
         self._lock = threading.RLock()
         self._db_path = db_path
         self._init_db()
@@ -84,14 +95,15 @@ class SessionStore:
         conn = self._get_conn()
         now = datetime.now()
         rows = conn.execute(
-            "SELECT token, expires_at FROM sessions WHERE expires_at > ?",
+            "SELECT token, expires_at, account_id FROM sessions WHERE expires_at > ?",
             (now.isoformat(),),
         ).fetchall()
         conn.close()
         with self._lock:
-            for token, expires_at_str in rows:
+            for token, expires_at_str, account_id in rows:
                 try:
                     self._sessions[token] = datetime.fromisoformat(expires_at_str)
+                    self._account_ids[token] = str(account_id or "")
                 except (ValueError, TypeError):
                     pass
 
@@ -102,6 +114,7 @@ class SessionStore:
         expires_at = datetime.now() + self.ttl
         with self._lock:
             self._sessions[token] = expires_at
+            self._account_ids[token] = str(account_id or "")
         conn = self._get_conn()
         conn.execute(
             "INSERT INTO sessions (token, expires_at, account_id, created_at) "
@@ -117,6 +130,7 @@ class SessionStore:
             return
         with self._lock:
             self._sessions.pop(token, None)
+            self._account_ids.pop(token, None)
         conn = self._get_conn()
         conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
         conn.commit()
@@ -131,9 +145,31 @@ class SessionStore:
                 return False
             if datetime.now() > expires_at:
                 self._sessions.pop(token, None)
+                self._account_ids.pop(token, None)
                 self._prune_token_from_db(token)
                 return False
             return True
+
+    def is_valid_for_account(self, token: str, account_id: str) -> bool:
+        if not self.is_valid(token):
+            return False
+        expected = str(account_id or "").strip()
+        if not expected:
+            return False
+        with self._lock:
+            return self._account_ids.get(token, "") == expected
+
+    def revoke_all(self) -> None:
+        """Invalidate every session before a live account generation changes."""
+        with self._lock:
+            self._sessions.clear()
+            self._account_ids.clear()
+        conn = self._get_conn()
+        try:
+            conn.execute("DELETE FROM sessions")
+            conn.commit()
+        finally:
+            conn.close()
 
     def has_active_sessions(self) -> bool:
         self.prune_expired()
@@ -154,6 +190,7 @@ class SessionStore:
                     expired.append(token)
             for token in expired:
                 self._sessions.pop(token, None)
+                self._account_ids.pop(token, None)
         for token in expired:
             self._prune_token_from_db(token)
 

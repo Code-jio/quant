@@ -1,0 +1,51 @@
+# Production image build context: never send operator state or credentials.
+
+# Runtime CTP credentials/configuration.  Keep only the committed examples.
+config/*
+!config/config.example.json
+!config/config.production.example.json
+.env
+.env.*
+
+# Local databases and their SQLite sidecars.
+data/**/*.db
+data/**/*.db-wal
+data/**/*.db-shm
+data/**/*.sqlite
+data/**/*.sqlite-wal
+data/**/*.sqlite-shm
+data/historical/live_risk_state.json
+data/historical/.live_risk_state.json.lock
+data/historical/.live_risk_state.json.*.tmp
+data/historical/.live_risk_state.json.*.writer.lock
+data/cache/
+data/factors/
+data/runtime/
+
+# CTP/vn.py flow files and local operational state.
+.vntrader/
+**/ctp_flow_td/
+**/ctp_flow_md/
+*.con
+TRADE_*/
+MD_*/
+logs/
+*.log
+
+# Local Python environments, caches, and generated tooling artifacts.
+.venv*/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+coverage.xml
+.test-artifacts/
+pytest-cache-files-*/
+
+# Tests are run before image creation and do not belong in the runtime image.
+tests/

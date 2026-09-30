@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import logging
 import math
+import os
+import re
 import threading
 import time
 from datetime import datetime
@@ -272,8 +274,27 @@ def _build_reconciliation_ctp_gateway(adapter: "VnpyGateway") -> Any:
 
 
 def _ensure_vnpy_runtime_dir() -> None:
-    """Make vn.py use the project-local runtime directory."""
-    Path.cwd().joinpath(".vntrader").mkdir(exist_ok=True)
+    """Create and select the operator-owned vn.py runtime directory."""
+    configured = str(os.getenv("QUANT_VNPY_RUNTIME_DIR", "") or "").strip()
+    runtime_dir = (
+        Path(configured).expanduser().resolve()
+        if configured
+        else Path.cwd().joinpath(".vntrader")
+    )
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+
+    # vn.py resolves these globals at import time.  Override both paths before
+    # the real gateway is constructed so CTP flow files stay inside the
+    # explicitly persisted runtime directory in containers.
+    try:
+        from vnpy.trader import utility as vnpy_utility
+
+        vnpy_utility.TRADER_DIR = runtime_dir.parent
+        vnpy_utility.TEMP_DIR = runtime_dir
+    except Exception:
+        # Import compatibility is reported by the normal gateway connection
+        # path; creating the directory remains harmless for dependency checks.
+        pass
 
 
 def _extract_product(symbol: str) -> str:
@@ -293,6 +314,7 @@ class VnpyGateway(GatewayBase):
         self._error_event = threading.Event()
         self._connect_errors: List[str] = []
         self._connect_log_callback: Any = None
+        self._connection_secret_values: Tuple[str, ...] = ()
         self._connection_lock = threading.RLock()
         self._td_connected = False
         self._md_connected = False
@@ -307,6 +329,17 @@ class VnpyGateway(GatewayBase):
         self._connection_generation = 0
         self._reconciliation_worker: threading.Thread | None = None
         self._reconciliation_timeout_seconds = 8.0
+        # Reconciliation already serializes through _reconciliation_lock.  Keep a
+        # successful snapshot for a short interval in the same connection
+        # generation so concurrent callers share it instead of each issuing four
+        # broker queries and briefly closing the order-entry gate.
+        self._reconciliation_min_interval_seconds = 1.0
+        self._last_reconciliation_success_generation = -1
+        self._last_reconciliation_success_monotonic = 0.0
+        self._reconciliation_retry_attempts = 3
+        self._reconciliation_retry_base_delay_seconds = 0.25
+        self._reconciliation_retry_max_delay_seconds = 5.0
+        self._reconciliation_sleep: Any = time.sleep
         self._contract_capabilities: Dict[str, Dict[str, Any]] = {}
         self._contract_capability_request_id: int | None = None
         self.last_reject_reason = ""
@@ -354,6 +387,18 @@ class VnpyGateway(GatewayBase):
         self._error_event.clear()
         self._connect_errors.clear()
         self._connect_log_callback = config.get("log_callback")
+        self._connection_secret_values = tuple(
+            str(config.get(name) or "")
+            for name in (
+                "username",
+                "password",
+                "app_id",
+                "auth_code",
+                "td_server",
+                "md_server",
+            )
+            if str(config.get(name) or "")
+        )
         self._reconciliation_timeout_seconds = max(
             0.1,
             float(config.get("reconciliation_timeout", 8.0)),
@@ -609,14 +654,58 @@ class VnpyGateway(GatewayBase):
 
     def _run_recovery_reconciliation(self, generation: int) -> None:
         try:
-            result = self.refresh_reconciliation(
-                timeout_seconds=self._reconciliation_timeout_seconds,
+            attempts = max(1, int(self._reconciliation_retry_attempts))
+            delay_seconds = max(
+                0.01,
+                float(self._reconciliation_retry_base_delay_seconds),
             )
-            if result.get("ok") is not True or result.get("fresh") is not True:
-                logger.error(
-                    "[vn.py] broker reconciliation after reconnect failed: %s",
-                    result.get("failure_code", "broker_snapshot_unavailable"),
-                )
+            max_delay_seconds = max(
+                delay_seconds,
+                float(self._reconciliation_retry_max_delay_seconds),
+            )
+            batch = 1
+            while True:
+                for attempt in range(attempts):
+                    with self._connection_lock:
+                        recovery_active = self._recovery_reconciliation_active_locked(
+                            generation
+                        )
+                    if not recovery_active:
+                        return
+
+                    result = self.refresh_reconciliation(
+                        timeout_seconds=self._reconciliation_timeout_seconds,
+                    )
+                    if result.get("ok") is True and result.get("fresh") is True:
+                        return
+
+                    logger.error(
+                        "[vn.py] broker reconciliation after reconnect failed "
+                        "(batch %s, attempt %s/%s): %s",
+                        batch,
+                        attempt + 1,
+                        attempts,
+                        result.get("failure_code", "broker_snapshot_unavailable"),
+                    )
+
+                    with self._connection_lock:
+                        retry_allowed = self._recovery_reconciliation_active_locked(
+                            generation
+                        )
+                    if not retry_allowed:
+                        return
+
+                    # Wait between failed attempts and between batches.  The delay
+                    # is capped so an extended broker outage cannot turn a recovery
+                    # into an effectively permanent sleep, while the non-zero floor
+                    # prevents a tight reconnect/query loop.
+                    self._reconciliation_sleep(delay_seconds)
+                    delay_seconds = min(
+                        max_delay_seconds,
+                        max(0.01, delay_seconds * 2.0),
+                    )
+                batch += 1
+
         except Exception:
             logger.exception("[vn.py] broker reconciliation after reconnect crashed")
         finally:
@@ -633,6 +722,17 @@ class VnpyGateway(GatewayBase):
                     and self._main_engine
                 ):
                     self._start_reconciliation_worker_locked()
+
+    def _recovery_reconciliation_active_locked(self, generation: int) -> bool:
+        """Return whether a recovery worker may query this connection generation."""
+        return bool(
+            generation == self._connection_generation
+            and self._connection_outage
+            and self._td_connected
+            and self._md_connected
+            and self._contracts_ready
+            and self._main_engine
+        )
 
     def _complete_connection_recovery_locked(self) -> None:
         if not self._connection_outage:
@@ -1023,11 +1123,31 @@ class VnpyGateway(GatewayBase):
     def query_trades(self) -> List[Trade]:
         return list(self.trades.values())
 
-    def refresh_reconciliation(self, timeout_seconds: float = 8.0) -> Dict[str, Any]:
+    def refresh_reconciliation_for_resume(self, timeout_seconds: float = 8.0) -> Dict[str, Any]:
+        """Resume must observe the broker after the stop, never a pre-stop cache."""
+        return self.refresh_reconciliation(timeout_seconds=timeout_seconds, force=True)
+
+    def refresh_reconciliation(
+        self, timeout_seconds: float = 8.0, *, force: bool = False,
+    ) -> Dict[str, Any]:
         """Refresh broker state and update the fail-closed order-entry gate."""
         with self._reconciliation_lock:
             with self._connection_lock:
                 generation = self._connection_generation
+                now = time.monotonic()
+                cache_is_current = bool(
+                    not force
+                    and self._reconciliation_ready
+                    and self._last_reconciliation_success_generation == generation
+                    and now - self._last_reconciliation_success_monotonic
+                    <= self._reconciliation_min_interval_seconds
+                )
+                if cache_is_current:
+                    return dict(self.last_reconciliation)
+
+                # A new generation, a failed/expired snapshot, or an explicit
+                # refresh outside the coalescing interval must fail closed while
+                # its authoritative broker queries are in flight.
                 self._reconciliation_ready = False
 
             result = self._refresh_reconciliation_snapshot(timeout_seconds)
@@ -1052,6 +1172,8 @@ class VnpyGateway(GatewayBase):
                     self.last_reconciliation = dict(result)
                 self._reconciliation_ready = accepted
                 if accepted:
+                    self._last_reconciliation_success_generation = generation
+                    self._last_reconciliation_success_monotonic = time.monotonic()
                     self._complete_connection_recovery_locked()
             return result
 
@@ -1246,8 +1368,9 @@ class VnpyGateway(GatewayBase):
     def _on_vnpy_log(self, event: Any) -> None:
         log = event.data
         msg = getattr(log, "msg", str(log))
-        logger.info("[vn.py] %s", msg)
-        self._emit_connect_log(msg)
+        safe_msg = self._redact_connection_message(msg)
+        logger.info("[vn.py] %s", safe_msg)
+        self._emit_connect_log(safe_msg)
         with self._connection_lock:
             if "交易服务器登录成功" in msg:
                 self._set_channel_connected("td")
@@ -1266,7 +1389,7 @@ class VnpyGateway(GatewayBase):
 
         if self.status == TradingStatus.CONNECTING:
             if self._is_connect_error(msg):
-                self._remember_connect_error(msg)
+                self._remember_connect_error(safe_msg)
                 self._error_event.set()
 
     def _emit_connect_log(self, msg: str) -> None:
@@ -1277,8 +1400,21 @@ class VnpyGateway(GatewayBase):
                 logger.exception("[vn.py] connect log callback failed")
 
     def _remember_connect_error(self, msg: str) -> None:
-        if msg and msg not in self._connect_errors:
-            self._connect_errors.append(msg)
+        safe_msg = self._redact_connection_message(msg)
+        if safe_msg and safe_msg not in self._connect_errors:
+            self._connect_errors.append(safe_msg)
+
+    def _redact_connection_message(self, msg: Any) -> str:
+        redacted = str(msg or "")
+        for secret in self._connection_secret_values:
+            redacted = redacted.replace(secret, "***")
+        for label in ("password", "auth_code", "app_id", "密码", "授权编码", "产品名称"):
+            redacted = re.sub(
+                rf"(?i)({re.escape(label)}\s*[:=]\s*)[^\s,;，；]+",
+                r"\1***",
+                redacted,
+            )
+        return redacted
 
     @staticmethod
     def _is_connect_error(msg: str) -> bool:

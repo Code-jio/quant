@@ -143,7 +143,7 @@ def teardown_function():
     trial_run_state.reset()
 
 
-def test_trial_run_config_is_public_and_prefills_non_password_connection_fields(monkeypatch, tmp_path):
+def test_trial_run_config_is_public_and_redacts_connection_credentials(monkeypatch, tmp_path):
     config_path = _trial_config(_config_path(tmp_path, "config"))
     monkeypatch.setenv("QUANT_TRIAL_CONFIG", str(config_path))
     app = create_app()
@@ -161,11 +161,11 @@ def test_trial_run_config_is_public_and_prefills_non_password_connection_fields(
     assert body["masked_account_id"] == "tr****nt"
     assert "password" not in body["config"]["trading"]
     assert body["trading"]["broker_id"] == "2071"
-    assert body["trading"]["td_server"] == "tcp://td.example:123"
-    assert body["trading"]["md_server"] == "tcp://md.example:123"
-    assert body["trading"]["app_id"] == "trial-app"
-    assert body["trading"]["auth_code"] == "trial-auth-code"
-    assert "trial-auth-code" in response.text
+    assert "td_server" not in body["trading"]
+    assert "md_server" not in body["trading"]
+    assert "app_id" not in body["trading"]
+    assert "auth_code" not in body["trading"]
+    assert "trial-auth-code" not in response.text
     assert "secret-password" not in response.text
     assert "trial-account" not in response.text
 

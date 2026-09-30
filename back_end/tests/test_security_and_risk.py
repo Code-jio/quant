@@ -35,6 +35,12 @@ class SafeDefaultsTest(unittest.TestCase):
             config = json.load(handle)
 
         self.assertNotIn("password", config.get("trading", {}))
+        self.assertEqual(config["trading"]["broker_id"], "")
+        self.assertEqual(config["trading"]["td_server"], "")
+        self.assertEqual(config["trading"]["md_server"], "")
+        self.assertEqual(config["trading"]["app_id"], "")
+        self.assertEqual(config["trading"]["auth_code"], "")
+        self.assertEqual(config["trading"]["fronts"], [])
         self.assertEqual(config["trial_run"]["manual_open_enabled"], False)
         self.assertEqual(config["trial_run"]["auto_arm"], True)
         self.assertEqual(config["trial_run"]["bar_timeout_seconds"], 90)
@@ -45,6 +51,19 @@ class SafeDefaultsTest(unittest.TestCase):
         self.assertEqual(config["risk"]["max_position_volume"], 1)
         self.assertEqual(config["risk"]["allowed_symbols"], [config["trial_run"]["allowed_symbol"]])
         self.assertEqual(config["strategy"]["symbol"], config["trial_run"]["allowed_symbol"])
+
+    def test_production_example_has_only_empty_connection_placeholders(self):
+        config_path = os.path.join(ROOT, "config", "config.production.example.json")
+        with open(config_path, encoding="utf-8") as handle:
+            config = json.load(handle)
+
+        trading = config["trading"]
+        self.assertEqual(trading["username"], "")
+        self.assertEqual(trading["broker_id"], "")
+        self.assertEqual(trading["td_server"], "")
+        self.assertEqual(trading["md_server"], "")
+        self.assertEqual(trading["app_id"], "")
+        self.assertEqual(trading["auth_code"], "")
 
 
 class SessionStoreTest(unittest.TestCase):
@@ -83,6 +102,21 @@ class SessionStoreTest(unittest.TestCase):
 
         store2 = SessionStore(ttl=timedelta(minutes=5), db_path=self._db_path)
         self.assertTrue(store2.is_valid(token))
+
+    def test_sessions_are_bound_to_an_account_and_revoke_all_invalidates_every_token(self):
+        store = SessionStore(ttl=timedelta(minutes=5), db_path=self._db_path)
+        account_a_token = store.create(account_id="ACCOUNT_A")
+        account_b_token = store.create(account_id="ACCOUNT_B")
+
+        self.assertTrue(store.is_valid_for_account(account_a_token, "ACCOUNT_A"))
+        self.assertFalse(store.is_valid_for_account(account_a_token, "ACCOUNT_B"))
+        self.assertFalse(store.is_valid_for_account(account_a_token, ""))
+
+        store.revoke_all()
+
+        self.assertFalse(store.is_valid(account_a_token))
+        self.assertFalse(store.is_valid(account_b_token))
+        self.assertFalse(store.has_active_sessions())
 
 
 class RiskManagerTest(unittest.TestCase):

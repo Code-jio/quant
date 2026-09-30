@@ -34,6 +34,7 @@ import asyncio
 import json as _json
 import logging
 import os
+import re
 import threading
 import time
 import traceback
@@ -58,10 +59,14 @@ from ..trading import AccountInfo, TradingEngine, TradingStatus
 from ..strategy import Signal, OrderType, OffsetFlag
 from ..observability import audit_log, metrics, new_request_id, runtime_log_category, structured_json
 from ..settings import (
+    LIVE_MUTABLE_RISK_FIELDS,
     ctp_server_presets,
-    runtime_risk_defaults,
+    is_production_env,
+    production_runtime_paths,
+    server_live_ctp_environment,
+    server_live_risk_config,
     secure_session_cookie_enabled,
-    warn_production_risk_defaults,
+    validate_production_runtime,
     websocket_query_token_enabled,
 )
 from .backtest_service import STRATEGY_CATALOG, run_backtest_sync
@@ -93,7 +98,6 @@ from .trial_run import (
 )
 
 logger = logging.getLogger(__name__)
-_DEFAULT_RUNTIME_RISK = runtime_risk_defaults()
 
 def _rate_limit_key(request: Request) -> str:
     """Session-based key for trading endpoints; IP-based for everything else."""
@@ -519,6 +523,32 @@ def _request_id(request: Optional[Request]) -> str:
     return getattr(getattr(request, "state", None), "request_id", "") if request else ""
 
 
+_SENSITIVE_CONNECTION_FIELD_NAMES = (
+    "password",
+    "auth_code",
+    "app_id",
+    "密码",
+    "授权编码",
+    "产品名称",
+)
+
+
+def _redact_connection_text(text: Any, secret_values: Any = ()) -> str:
+    """Remove credential values and labelled credential fragments from errors."""
+    redacted = str(text or "")
+    for value in secret_values:
+        secret = str(value or "")
+        if secret:
+            redacted = redacted.replace(secret, "***")
+    for field_name in _SENSITIVE_CONNECTION_FIELD_NAMES:
+        redacted = re.sub(
+            rf"(?i)({re.escape(field_name)}\s*[:=]\s*)[^\s,;，；]+",
+            rf"\1***",
+            redacted,
+        )
+    return redacted
+
+
 def _websocket_session_token(ws: WebSocket) -> str:
     auth = ws.headers.get("authorization", "")
     if auth.lower().startswith("bearer "):
@@ -534,7 +564,14 @@ def _websocket_session_token(ws: WebSocket) -> str:
 async def _require_websocket_session(ws: WebSocket) -> bool:
     token = _websocket_session_token(ws)
     if token and session_store.is_valid(token):
-        return True
+        if not is_production_env():
+            return True
+        engine = trading_state.primary_engine()
+        account_id = ""
+        if engine is not None:
+            account_id = str(getattr(getattr(engine.gateway, "account", None), "account_id", "") or "")
+        if session_store.is_valid_for_account(token, account_id):
+            return True
     await ws.close(code=1008)
     return False
 
@@ -1009,7 +1046,8 @@ def _gateway_connection_snapshot(gateway) -> Dict[str, Any]:
     """Return independent TD/MD health while preserving legacy gateways."""
     connected = bool(
         gateway is not None
-        and gateway.status in (TradingStatus.CONNECTED, TradingStatus.TRADING)
+        and getattr(gateway, "status", TradingStatus.STOPPED)
+        in (TradingStatus.CONNECTED, TradingStatus.TRADING)
     )
     fallback = {
         "td_connected": connected,
@@ -1592,13 +1630,27 @@ log_buffer.setFormatter(logging.Formatter("%(message)s"))
 # ---------------------------------------------------------------------------
 
 def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") -> FastAPI:
+    connection_transition_lock = threading.Lock()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         global _event_loop
         _event_loop = asyncio.get_running_loop()
+        effective_risk = validate_production_runtime()
+        runtime_paths = production_runtime_paths()
         default_audit_dir = Path(__file__).resolve().parents[2] / "logs" / "compliance"
-        audit_log.configure_persistence(os.getenv("QUANT_AUDIT_LOG_DIR") or default_audit_dir)
+        audit_dir = runtime_paths.get("audit") or os.getenv("QUANT_AUDIT_LOG_DIR") or default_audit_dir
+        audit_log.configure_persistence(audit_dir)
+        audit_status = audit_log.persistence_status()
+        if is_production_env() and (not audit_status["enabled"] or not audit_status["ok"]):
+            raise RuntimeError(
+                "production audit persistence is unavailable: "
+                + str(audit_status.get("error") or audit_status.get("directory") or "unknown")
+            )
+        if is_production_env():
+            # A browser session is never allowed to survive a process restart
+            # and silently control a newly connected live account.
+            session_store.revoke_all()
         try:
             recovered = trial_run_state.checkpoint_store.abort_non_terminal("backend_restarted")
             if recovered is not None:
@@ -1618,10 +1670,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         # 挂载日志缓冲 handler（异步队列必须在事件循环就绪后创建）
         log_buffer._queue = asyncio.Queue(maxsize=1000)
         logging.getLogger().addHandler(log_buffer)
-        # 风控启动告警（生产环境未显式设置的风险参数）
-        for warning in warn_production_risk_defaults():
-            logger.warning("风控配置: %s", warning)
-        logger.info("生效风控: %s", runtime_risk_defaults())
+        logger.info("生效风控: %s", effective_risk)
 
         broadcast_task   = asyncio.create_task(_system_broadcast_loop())
         dashboard_task   = asyncio.create_task(_dashboard_broadcast_loop())
@@ -1737,18 +1786,31 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
                 {"detail": "会话已过期，请重新登录"},
                 status_code=401,
             )
+        if is_production_env():
+            engine = trading_state.primary_engine()
+            account_id = ""
+            if engine is not None:
+                account_id = str(getattr(getattr(engine.gateway, "account", None), "account_id", "") or "")
+            if not session_store.is_valid_for_account(token, account_id):
+                return JSONResponse(
+                    {"detail": "会话与当前实盘账户不匹配，请重新登录"},
+                    status_code=401,
+                )
         response = await call_next(request)
         request_id = getattr(request.state, "request_id", "")
         if request_id:
             response.headers["X-Request-ID"] = request_id
         return response
 
-    register_trial_run_routes(
-        app,
-        trading_state=trading_state,
-        subscribe_market_ticks=_subscribe_market_ticks,
-        record_audit=_record_audit,
-    )
+    # Trial/simulation routes are development-only.  The production live API
+    # does not expose them at all, even if an old client knows their paths.
+    if not is_production_env():
+        register_trial_run_routes(
+            app,
+            trading_state=trading_state,
+            subscribe_market_ticks=_subscribe_market_ticks,
+            record_audit=_record_audit,
+        )
 
     # ==================================================================
     # Auth 端点
@@ -1760,12 +1822,13 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         gateway_status = "stopped"
         if engine:
             gateway_status = engine.gateway.status.value if hasattr(engine.gateway.status, "value") else str(engine.gateway.status)
-        return {
-            "status": "ok",
+        audit_status = audit_log.persistence_status()
+        payload = {
+            "status": "ok" if audit_status.get("ok") else "degraded",
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "gateway_status": gateway_status,
             "active_sessions": session_store.active_count(),
-            "audit_persistence": audit_log.persistence_status(),
+            "audit_persistence": audit_status,
             "websockets": {
                 "system": system_manager.count,
                 "orders": orders_manager.count,
@@ -1774,6 +1837,9 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
                 "logs": log_manager.count,
             },
         }
+        if is_production_env() and not audit_status.get("ok"):
+            return JSONResponse(payload, status_code=503)
+        return payload
 
     @app.get("/metrics", summary="Prometheus 指标", tags=["运维"])
     def prometheus_metrics():
@@ -1811,13 +1877,28 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             connected  = bool(connection["fully_connected"])
             account_id = gw.account.account_id if hasattr(gw, "account") else ""
 
+        connect_log = trading_state.get_log()
+        if is_production_env():
+            if account_id:
+                account_id = (
+                    f"{account_id[:2]}{'*' * max(4, len(account_id) - 4)}{account_id[-2:]}"
+                    if len(account_id) > 4
+                    else "****"
+                )
+            sensitive_log_tokens = ("账户", "账号", "前置", "余额", "username", "tcp://")
+            connect_log = [
+                line
+                for line in connect_log
+                if not any(token.lower() in line.lower() for token in sensitive_log_tokens)
+            ]
+
         return AuthStatusResponse(
             logged_in         = session_store.has_active_sessions(),
             gateway_connected = connected,
             gateway_status    = gw_status,
             gateway_name      = gw_name,
             account_id        = account_id,
-            connect_log       = trading_state.get_log(),
+            connect_log       = connect_log,
             td_connected      = bool(connection["td_connected"]),
             md_connected      = bool(connection["md_connected"]),
             reconnecting      = bool(connection["reconnecting"]),
@@ -1833,6 +1914,14 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
     )
     @_limiter.limit("5/minute")
     async def do_login(body: LoginRequest, response: Response, request: Request):
+        if not connection_transition_lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="交易连接正在切换，请稍后重试")
+        try:
+            return await connect_account(body, response, request)
+        finally:
+            connection_transition_lock.release()
+
+    async def connect_account(body: LoginRequest, response: Response, request: Request):
         """
         接受 CTP 账户配置，连接交易前置和行情前置。
         连接过程最长等待 35 秒。成功后返回会话 token。
@@ -1840,8 +1929,14 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         """
         from ..trading import create_gateway
 
+        if trading_state._main_engine is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="已有交易连接，请先通过已登录会话安全断开后再登录",
+            )
+
         trading_state.clear_log()
-        trading_state.add_log(f"开始连接账户: {body.username}")
+        trading_state.add_log("开始连接实盘账户")
         _record_audit(
             "auth",
             "login_attempt",
@@ -1851,25 +1946,6 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             detail={"gateway_type": body.gateway_type},
         )
 
-        # 若已有连接先断开
-        if trading_state._main_engine:
-            trading_state.add_log("检测到已有连接，正在断开…")
-            flatten_detail = trial_run_logout_guard(trading_state)
-            if flatten_detail:
-                raise HTTPException(status_code=409, detail=flatten_detail)
-            finalize_trial_run_for_disconnect(
-                trading_state,
-                abort_code="session_replaced",
-            )
-            if not trading_state.disconnect_main():
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "failure_code": "gateway_disconnect_failed",
-                        "message": "现有交易连接未能安全断开，已保留原会话和引擎",
-                    },
-                )
-
         # 确定网关类型：ctp 作为 vn.py CTP 网关别名保留，便于兼容旧配置。
         requested_gateway = (body.gateway_type or "vnpy").lower()
         if requested_gateway not in {"vnpy", "ctp"}:
@@ -1878,6 +1954,23 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         gateway_type = "vnpy"
         trading_state.add_log("使用 vn.py CTP 网关登录")
 
+        if body.risk:
+            raise HTTPException(
+                status_code=422,
+                detail="登录请求不得覆盖服务端实盘硬风控，请修改本机生产配置并重启",
+            )
+        strategy = None
+        strategy_params = dict(body.strategy_params or {})
+        if body.auto_start_strategy:
+            from ..strategy import create_strategy
+
+            if not strategy_params.get("symbol") and not strategy_params.get("symbols"):
+                raise HTTPException(status_code=400, detail="自动启动策略需要 strategy_params.symbol 或 symbols")
+            try:
+                strategy = create_strategy(body.strategy_name, strategy_params)
+            except (ValueError, KeyError, TypeError) as exc:
+                raise HTTPException(status_code=400, detail="自动启动策略配置无效") from exc
+        runtime_paths = production_runtime_paths()
         config: Dict[str, Any] = {
             "gateway":    gateway_type,
             "username":   body.username,
@@ -1887,15 +1980,29 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             "md_server":  body.md_server,
             "app_id":     body.app_id,
             "auth_code":  body.auth_code,
-            "vnpy_environment": body.environment,
+            "vnpy_environment": server_live_ctp_environment() or body.environment,
             "connect_timeout": 25,
             "initial_capital": 0.0,
-            "risk": {**_DEFAULT_RUNTIME_RISK, **dict(body.risk or {})},
+            "risk": server_live_risk_config(),
+            "live_risk_state_path": str(runtime_paths.get("risk_state") or ""),
             "log_callback": trading_state.add_log,
         }
+        connection_secrets = (
+            body.username,
+            body.password,
+            body.auth_code,
+            body.app_id,
+        )
 
-        trading_state.add_log(f"交易前置: {body.td_server}")
-        trading_state.add_log(f"行情前置: {body.md_server}")
+        def safe_connection_log(message: Any) -> None:
+            trading_state.add_log(
+                _redact_connection_text(message, connection_secrets)
+            )
+
+        config["log_callback"] = safe_connection_log
+
+        trading_state.add_log("交易前置配置已接收")
+        trading_state.add_log("行情前置配置已接收")
 
         gateway = None
         try:
@@ -1922,8 +2029,9 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
                     gateway.disconnect()
                 except Exception:
                     logger.exception("[API] 登录异常后断开网关异常")
-            trading_state.add_log(f"✘ 连接异常: {exc}")
-            raise HTTPException(status_code=500, detail=f"连接异常: {exc}")
+            safe_error = _redact_connection_text(exc, connection_secrets)
+            safe_connection_log(f"✘ 连接异常: {safe_error}")
+            raise HTTPException(status_code=500, detail=f"连接异常: {safe_error}")
 
         if not success:
             if gateway:
@@ -1933,10 +2041,13 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
                     logger.exception("[API] 登录失败后断开网关异常")
             error_summary = ""
             if gateway and hasattr(gateway, "connection_error_summary"):
-                error_summary = gateway.connection_error_summary()
+                error_summary = _redact_connection_text(
+                    gateway.connection_error_summary(),
+                    connection_secrets,
+                )
             if error_summary:
                 detail = f"vn.py/CTP 连接失败：{error_summary}"
-                trading_state.add_log(f"✘ {detail}")
+                safe_connection_log(f"✘ {detail}")
                 raise HTTPException(status_code=502, detail=detail)
 
             trading_state.add_log("✘ 登录失败，请检查账户信息")
@@ -1953,44 +2064,64 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         except Exception:
             account_id, balance = "", 0.0
 
-        # 用真实余额覆盖 initial_capital，并重置当日基准
-        if balance > 0:
-            config["initial_capital"] = balance
-        engine.configure_risk(config)
-        trading_state.set_main_engine(engine, config)
-        trading_state._day_open_balance = balance  # 以登录时余额作为日内基准
-        engine.risk_manager.set_day_open_balance(balance)
+        token = ""
+        try:
+            if not account_id:
+                raise HTTPException(status_code=502, detail="券商账户身份未就绪，无法建立交易会话")
+            if balance > 0:
+                config["initial_capital"] = balance
+            engine.configure_risk(config)
+            # Hooks must be installed before any strategy can produce orders.
+            _install_hook_on_engine(engine)
+            engine.risk_manager.set_day_open_balance(balance)
 
-        strategy_started = False
-        strategy_id = ""
-        if body.auto_start_strategy:
-            from ..strategy import create_strategy
+            session_store.revoke_all()
+            token = session_store.create(account_id=account_id)
+            strategy_started = False
+            strategy_id = ""
+            if strategy is not None:
+                strategy.initial_capital = config.get("initial_capital", 0.0) or balance or 1_000_000.0
+                engine.set_strategy(strategy)
+                strategy_config = {
+                    **config,
+                    "strategy_name": body.strategy_name,
+                    "strategy_params": strategy_params,
+                }
+                if not engine.start(strategy_config):
+                    raise HTTPException(status_code=500, detail="策略运行时启动失败")
+                strategy_id = f"{body.strategy_name}_main"
+                strategy_started = True
 
-            strategy_params = dict(body.strategy_params or {})
-            if not strategy_params.get("symbol") and not strategy_params.get("symbols"):
-                raise HTTPException(status_code=400, detail="自动启动策略需要 strategy_params.symbol 或 symbols")
-            strategy = create_strategy(body.strategy_name, strategy_params)
-            strategy.initial_capital = config.get("initial_capital", 0.0) or balance or 1_000_000.0
-            engine.set_strategy(strategy)
+            trading_state.set_main_engine(engine, config)
+            trading_state._day_open_balance = balance
+            if strategy_started:
+                trading_state.register(strategy_id, strategy, engine, strategy_config)
+                symbols = strategy_params.get("symbols") or [strategy_params.get("symbol")]
+                _subscribe_market_ticks(engine, [s for s in symbols if s])
+                trading_state.add_log(f"策略已自动启动: {strategy_id}")
+        except Exception as exc:
+            if token:
+                session_store.revoke(token)
+            engine.risk_manager.set_emergency_stop(True, "login initialization failed")
+            try:
+                stopped = engine.stop() is True
+            except Exception:
+                stopped = False
+            if stopped:
+                if trading_state._main_engine is engine:
+                    trading_state.clear_main()
+            else:
+                # Retain a failed-to-stop engine so another login cannot hide
+                # or replace a broker connection whose disposition is unknown.
+                trading_state.set_main_engine(engine, config)
+            if isinstance(exc, HTTPException):
+                raise
+            raise HTTPException(
+                status_code=500,
+                detail="交易会话初始化失败，已阻止继续报单",
+            ) from exc
 
-            strategy_config = {
-                **config,
-                "strategy_name": body.strategy_name,
-                "strategy_params": strategy_params,
-            }
-            if not engine.start(strategy_config):
-                raise HTTPException(status_code=500, detail="策略运行时启动失败")
-
-            strategy_id = f"{body.strategy_name}_main"
-            trading_state.register(strategy_id, strategy, engine, strategy_config)
-            symbols = strategy_params.get("symbols") or [strategy_params.get("symbol")]
-            _subscribe_market_ticks(engine, [s for s in symbols if s])
-            strategy_started = True
-            trading_state.add_log(f"策略已自动启动: {strategy_id}")
-
-        trading_state.add_log(f"✔ 登录成功，账户: {account_id}，当前余额: ¥{balance:,.2f}（用作初始资金基准）")
-
-        token = session_store.create()
+        trading_state.add_log("✔ 登录成功，券商资金和实盘风控已就绪")
         response.set_cookie(
             key=SESSION_COOKIE_NAME,
             value=token,
@@ -2021,6 +2152,14 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
 
     @app.post("/auth/logout", summary="断开连接并注销会话", tags=["认证"])
     async def do_logout(request: Request):
+        if not connection_transition_lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="交易连接正在切换，请稍后重试")
+        try:
+            return await disconnect_account(request)
+        finally:
+            connection_transition_lock.release()
+
+    async def disconnect_account(request: Request):
         flatten_detail = trial_run_logout_guard(trading_state)
         if flatten_detail:
             raise HTTPException(status_code=409, detail=flatten_detail)
@@ -2260,11 +2399,29 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             for name, value in current_config.items()
         }
         patch = dict(body.risk or {})
-        unknown_fields = sorted(set(patch) - set(merged))
-        if unknown_fields:
+        forbidden_fields = sorted(set(patch) - LIVE_MUTABLE_RISK_FIELDS)
+        if forbidden_fields:
             raise HTTPException(
                 status_code=422,
-                detail=f"不支持的风控配置字段: {', '.join(unknown_fields)}",
+                detail=(
+                    "运行时仅允许调整五项合规告警阈值；硬风控字段必须修改本机配置并重启: "
+                    + ", ".join(forbidden_fields)
+                ),
+            )
+        invalid_thresholds = sorted(
+            name
+            for name, value in patch.items()
+            if isinstance(value, bool)
+            or not isinstance(value, int)
+            or value <= 0
+        )
+        if invalid_thresholds:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "合规告警阈值必须是正整数: "
+                    + ", ".join(invalid_thresholds)
+                ),
             )
         merged.update(patch)
         for name, value in list(merged.items()):
@@ -2300,7 +2457,18 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             except Exception:
                 pass
 
-        cancel_result = _cancel_all_active_orders() if body.cancel_orders else {"cancelled": 0, "failed": 0}
+        cancel_result = (
+            _cancel_all_active_orders()
+            if body.cancel_orders
+            else {
+                "requested": 0,
+                "confirmed": 0,
+                "cancelled": 0,
+                "pending": 0,
+                "failed": 0,
+                "outcomes": [],
+            }
+        )
         stopped = 0
         if body.stop_strategies:
             for entry in trading_state.all_entries():
@@ -2318,9 +2486,12 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             request=request,
             detail={**cancel_result, "stopped_strategies": stopped, "reason": reason},
         )
+        cancel_complete = cancel_result["pending"] == 0 and cancel_result["failed"] == 0
         return {
-            "success": True,
+            "success": cancel_complete,
             "emergency_stop": True,
+            "emergency_stop_activated": True,
+            "cancel_complete": cancel_complete,
             "reason": reason,
             **cancel_result,
             "stopped_strategies": stopped,
@@ -2331,10 +2502,101 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         engines = _unique_engines()
         if not engines:
             raise HTTPException(status_code=503, detail="交易引擎未连接")
+        audit_status = audit_log.persistence_status()
+        if not audit_status.get("enabled") or not audit_status.get("ok"):
+            raise HTTPException(status_code=409, detail="审计存储不可用，不能解除实盘急停")
+        if not _record_audit("risk", "resume_attempt", "started", request=request):
+            raise HTTPException(status_code=409, detail="审计写入失败，不能解除实盘急停")
         for engine in engines:
-            engine.risk_manager.set_emergency_stop(False, "")
+            manager = engine.risk_manager
+            if manager.status().get("persistence_recovery_required"):
+                if not manager.probe_persistence_recovery():
+                    raise HTTPException(status_code=409, detail="实盘风控状态存储仍不可用，急停保持")
+
+        # An emergency stop may have been triggered while broker orders were
+        # still live.  Before reopening order entry, replace every local order
+        # view with a fresh broker snapshot and require both the reconciliation
+        # gate and a completely inactive order book.  Never clear the stop on a
+        # partial/failed snapshot: an old order could otherwise fill alongside
+        # newly submitted orders after resume.
+        for engine in engines:
+            gateway = engine.gateway
+            try:
+                refresher = getattr(
+                    gateway, "refresh_reconciliation_for_resume", gateway.refresh_reconciliation,
+                )
+                reconciliation = refresher(timeout_seconds=8.0)
+            except Exception as exc:
+                logger.exception("[risk] 急停恢复前券商权威对账异常")
+                raise HTTPException(
+                    status_code=409,
+                    detail="券商权威对账失败，急停保持",
+                ) from exc
+            connection = _gateway_connection_snapshot(gateway)
+            if not (
+                reconciliation.get("ok") is True
+                and reconciliation.get("fresh") is True
+                and connection.get("reconciliation_ready") is True
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="券商权威对账尚未就绪，急停保持",
+                )
+
+            active_order_ids: list[str] = []
+            for order_id, order in getattr(gateway, "orders", {}).items():
+                is_active = getattr(order, "is_active", None)
+                try:
+                    active = bool(is_active()) if callable(is_active) else False
+                except Exception:
+                    # An unreadable broker order must be treated as active.
+                    active = True
+                if not callable(is_active):
+                    status = str(
+                        getattr(
+                            getattr(order, "status", None),
+                            "value",
+                            getattr(order, "status", ""),
+                        )
+                        or ""
+                    ).lower()
+                    active = status in {"submitting", "submitted", "partfilled", "pending"}
+                if active:
+                    active_order_ids.append(str(order_id))
+            if active_order_ids:
+                _record_audit(
+                    "risk",
+                    "resume_blocked",
+                    "active_orders",
+                    request=request,
+                    detail={"active_order_ids": active_order_ids[:100]},
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail="券商仍有活动或待撤委托，急停保持",
+                )
+
+        def rearm_all(reason: str) -> None:
+            for target in engines:
+                try:
+                    target.risk_manager.set_emergency_stop(True, reason)
+                except Exception:
+                    logger.exception("[risk] 恢复失败后重新激活急停异常")
+
+        for engine in engines:
+            manager = engine.risk_manager
+            try:
+                manager.set_emergency_stop(False, "")
+            except RuntimeError as exc:
+                rearm_all("resume failed: live risk persistence is unhealthy")
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            status = manager.status()
+            if status.get("emergency_stop") or status.get("persistence_error"):
+                rearm_all("resume failed: live risk persistence is unhealthy")
+                raise HTTPException(status_code=409, detail="实盘风控状态写入失败，急停保持")
         trading_state.add_log("交易急停已解除")
-        _record_audit("risk", "resume", "success", request=request)
+        if not _record_audit("risk", "resume", "success", request=request):
+            raise HTTPException(status_code=409, detail="审计写入失败，实盘急停已重新激活")
         return {"success": True, "emergency_stop": False}
 
     @app.get("/trading/reconcile", summary="账户/委托/持仓对账快照", tags=["风控"])

@@ -57,12 +57,17 @@ def login(client):
     assert response.status_code == 200
 
 
-def allow_market_orders(client):
-    response = client.put(
-        "/risk/config",
-        json={"risk": {"allow_market_orders": True, "max_market_data_age_seconds": 0}},
-    )
-    assert response.status_code == 200
+def set_server_test_risk(**patch):
+    """Install an operator-owned hard-risk fixture without using the runtime API."""
+    engine = trading_state.primary_engine()
+    assert engine is not None
+    risk = dict(vars(engine.risk_manager.config))
+    risk.update(patch)
+    engine.configure_risk({"risk": risk})
+
+
+def allow_market_orders(_client):
+    set_server_test_risk(allow_market_orders=True, max_market_data_age_seconds=0)
 
 
 def teardown_function():
@@ -208,7 +213,7 @@ def test_quick_close_falls_back_to_limit_when_market_disabled(monkeypatch):
 
     with TestClient(app) as client:
         login(client)
-        client.put("/risk/config", json={"risk": {"allow_market_orders": False, "max_market_data_age_seconds": 0}})
+        set_server_test_risk(allow_market_orders=False, max_market_data_age_seconds=0)
         engine = trading_state.primary_engine()
         engine.gateway.positions["rb2505.long"] = Position(
             symbol="rb2505", direction=Direction.LONG, volume=2, price=3880.0
@@ -233,7 +238,7 @@ def test_quick_close_force_limit_when_market_stale(monkeypatch):
 
     with TestClient(app) as client:
         login(client)
-        client.put("/risk/config", json={"risk": {"allow_market_orders": True, "max_market_data_age_seconds": 5}})
+        set_server_test_risk(allow_market_orders=True, max_market_data_age_seconds=5)
         engine = trading_state.primary_engine()
         engine.gateway.positions["rb2505.long"] = Position(
             symbol="rb2505", direction=Direction.LONG, volume=2, price=3880.0

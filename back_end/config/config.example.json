@@ -5,7 +5,7 @@
     "account_id": "",
     "gateway": "vnpy",
     "vnpy_environment": "实盘",
-    "allowed_symbol": "rb2610",
+    "allowed_symbol": "au2606",
     "manual_open_enabled": false,
     "auto_arm": true,
     "no_fill_timeout_seconds": 2,
@@ -25,14 +25,14 @@
   },
   "strategy": {
     "name": "verify",
-    "symbol": "rb2610",
+    "symbol": "au2606",
     "volume": 1,
     "warmup_bars": 1,
     "readiness_bars": 1,
     "hold_bars": 1,
-    "contract_multiplier": 10,
+    "contract_multiplier": 1000,
     "order_type": "limit",
-    "price_tick": 1,
+    "price_tick": 0.02,
     "aggressive_ticks": 3,
     "chase_enabled": true,
     "chase_interval_seconds": 2,
@@ -44,50 +44,13 @@
   "trading": {
     "gateway": "vnpy",
     "username": "",
-    "broker_id": "2071",
-    "td_server": "tcp://114.94.128.1:42205",
-    "md_server": "tcp://114.94.128.1:42213",
-    "app_id": "client_TraderMaster_v1.0.0",
-    "auth_code": "20260324LHJYMHBG",
+    "broker_id": "",
+    "td_server": "",
+    "md_server": "",
+    "app_id": "",
+    "auth_code": "",
     "vnpy_environment": "实盘",
-    "fronts": [
-      {
-        "label": "电信 114.94.128.1",
-        "td_server": "tcp://114.94.128.1:42205",
-        "md_server": "tcp://114.94.128.1:42213",
-        "environment": "实盘"
-      },
-      {
-        "label": "联通 140.206.34.161",
-        "td_server": "tcp://140.206.34.161:42205",
-        "md_server": "tcp://140.206.34.161:42213",
-        "environment": "实盘"
-      },
-      {
-        "label": "电信 114.94.128.5",
-        "td_server": "tcp://114.94.128.5:42205",
-        "md_server": "tcp://114.94.128.5:42213",
-        "environment": "实盘"
-      },
-      {
-        "label": "联通 140.206.34.165",
-        "td_server": "tcp://140.206.34.165:42205",
-        "md_server": "tcp://140.206.34.165:42213",
-        "environment": "实盘"
-      },
-      {
-        "label": "电信 114.94.128.6",
-        "td_server": "tcp://114.94.128.6:42205",
-        "md_server": "tcp://114.94.128.6:42213",
-        "environment": "实盘"
-      },
-      {
-        "label": "联通 140.206.34.166",
-        "td_server": "tcp://140.206.34.166:42205",
-        "md_server": "tcp://140.206.34.166:42213",
-        "environment": "实盘"
-      }
-    ],
+    "fronts": [],
     "initial_capital": 1000000,
     "max_errors": 10
   },
@@ -103,13 +66,16 @@
     "max_price_deviation": 0.01,
     "max_market_data_age_seconds": 5,
     "duplicate_signal_window_seconds": 5,
-    "default_contract_multiplier": 10,
-    "contract_multipliers": {
-      "RB": 10,
-      "rb2610": 10
-    },
+    "duplicate_cancel_window_seconds": 5,
+    "order_count_alert_threshold": 500,
+    "cancel_count_alert_threshold": 300,
+    "duplicate_open_alert_threshold": 1,
+    "duplicate_close_alert_threshold": 1,
+    "duplicate_cancel_alert_threshold": 1,
+    "default_contract_multiplier": 1000,
+    "contract_multipliers": {"AU": 1000, "au2606": 1000},
     "allow_market_orders": true,
-    "allowed_symbols": ["rb2610"],
+    "allowed_symbols": ["au2606"],
     "blocked_symbols": []
   }
 }
