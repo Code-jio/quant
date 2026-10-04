@@ -203,6 +203,9 @@ def run_backtest_sync(body: Any, cancel_event=None) -> Dict[str, Any]:
     warnings = []
     if (eq_df["capital"] <= 0).any():
         warnings.append("回测期间权益曾非正；收益率类风险指标不可计算，本模型未模拟柜台强制平仓。")
+        daily_ret_pct = []
+        heatmap_data = []
+        years_list = []
     return finite_json(
         {
             "success": True,

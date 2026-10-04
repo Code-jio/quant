@@ -224,7 +224,7 @@ const kpiCards = computed(() => {
       key: 'volatility', label: '年化波动率',
       value: `${fmtNumber(m.volatility,2)}%`,
       sub: `Sortino ${fmtNumber(m.sortino_ratio,2)}`,
-      colorClass: m.volatility <= 20 ? 'kpi-green' : 'kpi-yellow',
+      colorClass: m.volatility == null ? 'kpi-neutral' : m.volatility <= 20 ? 'kpi-green' : 'kpi-yellow',
     },
     {
       key: 'var_95', label: 'VaR (95%)',
@@ -248,6 +248,7 @@ const riskRows = computed(() => {
   const sign = v => v > 0 ? '+' : ''
 
   function rateGrade(val, good, ok) {
+    if (val == null || !Number.isFinite(val)) return {rating: '不可计算',ratingType: 'info'}
     if (val >= good) return { rating: '优秀', ratingType: 'success' }
     if (val >= ok)   return { rating: '良好', ratingType: '' }
     return              { rating: '一般', ratingType: 'warning' }
@@ -265,7 +266,7 @@ const riskRows = computed(() => {
     {
       category: '收益',
       name: '年化收益率', value: `${sign(m.annual_return)}${fmtNumber(m.annual_return,3)}%`,
-      valueClass: m.annual_return >= 0 ? 'pos' : 'neg',
+      valueClass: m.annual_return == null ? '' : m.annual_return >= 0 ? 'pos' : 'neg',
       desc: '以 252 交易日折算的年化收益',
       ...rateGrade(m.annual_return, 15, 8),
     },
@@ -275,7 +276,7 @@ const riskRows = computed(() => {
       name: '年化波动率', value: `${fmtNumber(m.volatility,3)}%`,
       valueClass: '',
       desc: '日收益率标准差 × √252',
-      ...rateGrade(30 - m.volatility, 10, 0),
+      ...rateGrade(m.volatility == null ? null : 30 - m.volatility, 10, 0),
     },
     {
       category: '风险',

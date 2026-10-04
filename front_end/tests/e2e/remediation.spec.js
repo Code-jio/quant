@@ -11,6 +11,9 @@ test('offline backtest runs with explicit synthetic data and renders result char
   expect(response.status()).toBe(200)
   const result=await response.json()
   expect(result.success).toBe(true)
+  if (result.metrics.volatility == null) {
+    await expect(page.locator('.el-table__row').filter({hasText:'年化波动率'})).toContainText('不可计算')
+  }
   await expect(page.getByText(/数据来源：.*模拟数据/)).toBeVisible()
   await expect(page.locator('.chart-equity canvas')).toBeVisible()
   await page.screenshot({path:'test-results/backtest-offline.png',fullPage:true})
