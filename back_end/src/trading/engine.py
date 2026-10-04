@@ -68,11 +68,15 @@ class TradingEngine:
         """Configure pre-order risk controls."""
         config = config or {}
         self.risk_manager.configure(config)
+        if hasattr(self.gateway,'ready'):
+            self.risk_manager.config.require_account=True
         account = self.gateway.account
         if self.ledger is None and account.account_id:
             default_path = ':memory:' if os.getenv('QUANT_ENV') == 'test' else 'data/runtime/execution.db'
             self.ledger = ExecutionLedger(os.getenv('QUANT_LEDGER_PATH', default_path),
                 f"{config.get('broker_id', '')}:{account.account_id}")
+            for trade in self.trades.values():
+                self.ledger.record_trade(trade)
             if self.ledger.unresolved():
                 self.risk_manager.set_emergency_stop(True, 'Unresolved execution intent; reconcile before resuming')
         if config.get("initial_capital"):
@@ -161,6 +165,30 @@ class TradingEngine:
                 return ""
 
         try:
+            account = self.gateway.account
+            if self.ledger and account.trading_day:
+                self.risk_manager.set_day_open_balance(self.ledger.day_baseline(account.trading_day,account.balance))
+            specs=getattr(self.gateway,'contract_specs',None)
+            if specs is not None:
+                spec=specs.get(signal.symbol,{})
+                if not spec or not spec.get('size'):
+                    self.last_reject_reason='Contract metadata is unavailable'
+                    return ''
+                self.risk_manager.config.contract_multipliers[signal.symbol]=spec['size']
+                if signal.offset.value=='open':
+                    margin=spec.get('margin_rate')
+                    if not margin or not account.fields_known:
+                        self.last_reject_reason='Broker margin rate/account fields must be verified before opening'
+                        return ''
+                    pending=sum(max(0,o.volume-o.traded_volume)*o.price*specs.get(o.symbol,{}).get('size',0)*
+                        (specs.get(o.symbol,{}).get('margin_rate') or 1) for o in self.gateway.orders.values()
+                        if o.is_active() and o.offset.value=='open' and o.status.value=='submitting')
+                    if signal.price*signal.volume*spec['size']*margin+pending>account.available:
+                        self.last_reject_reason='Insufficient available margin after reservations'
+                        return ''
+            if self.ledger and self.ledger.unresolved():
+                self.last_reject_reason='Unresolved execution intent requires reconciliation'
+                return ''
             risk_result = self.risk_manager.check_signal(
                 signal,
                 positions=self.gateway.positions,
@@ -176,9 +204,6 @@ class TradingEngine:
             if hasattr(self.gateway, 'ready') and not self.gateway.ready:
                 self.last_reject_reason = 'Gateway snapshot is not ready'
                 return ''
-            account = self.gateway.account
-            if self.ledger and account.trading_day:
-                self.risk_manager.set_day_open_balance(self.ledger.day_baseline(account.trading_day, account.balance))
             identity = self.ledger.begin_intent(signal) if self.ledger else None
             order_id = self.order_manager._submit_validated(signal)
             if self.ledger:

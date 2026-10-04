@@ -98,6 +98,7 @@ class LoginRequest(BaseModel):
     strategy_name: str = "ma_cross"
     strategy_params: Dict[str, Any] = Field(default_factory=dict)
     risk: Dict[str, Any] = Field(default_factory=dict)
+    contract_margin_rates: Dict[str, float] = Field(default_factory=dict)
 
 
 class LoginResponse(BaseModel):
@@ -529,10 +530,19 @@ class TradingState:
             return list(self._connect_log)
 
     # ── 策略权重 ──────────────────────────────────────────────────────────────
-    def set_weights(self, weights: Dict[str, float]):
+    def set_weights(self, weights: Dict[str,float]):
+        import math
         with self._lock:
-            for sid, w in weights.items():
-                self._weights[sid] = max(0.0, min(1.0, float(w)))
+            merged={**self.all_weights(),**weights}
+            if any(not math.isfinite(w) or not 0<=w<=1 for w in merged.values()) or sum(merged.values())>1+1e-9:
+                raise ValueError('权重必须在 0..1 且总和不超过 1')
+            self._weights=merged
+            for sid,w in merged.items():
+                entry=self._entries[sid]
+                with entry.engine.order_manager.lock:
+                    entry.strategy.allocation_weight=w
+                if entry.engine.ledger:
+                    entry.engine.ledger.save_setting('weights',merged)
 
     def get_weight(self, strategy_id: str) -> float:
         with self._lock:
@@ -570,6 +580,13 @@ class TradingState:
         entry = _StrategyEntry(strategy_id, strategy, engine, config or {})
         with self._lock:
             self._entries[strategy_id] = entry
+            saved=engine.ledger.load_setting('weights',{}) if engine.ledger else {}
+            if strategy_id in saved:
+                self._weights[strategy_id]=saved[strategy_id]
+            effective=self.all_weights()
+            total=sum(effective.values())
+            for sid,value in effective.items():
+                self._entries[sid].strategy.allocation_weight=value/max(1,total)
         if _event_loop and not _event_loop.is_closed():
             _install_order_hook(entry)
         logger.info(f"[API] 策略已注册: {strategy_id}")
@@ -1492,12 +1509,21 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             "app_id": body.app_id, "auth_code": body.auth_code,
             "vnpy_environment": body.environment, "connect_timeout": 25,
             "risk": {**runtime_risk_defaults(), **body.risk},
+            "contract_margin_rates":body.contract_margin_rates,
             "log_callback": trading_state.add_log,
         }
+        from ..trading.risk import RiskConfig
+        try:
+            RiskConfig.from_mapping(config['risk'])
+            if any(not 0<v<=1 for v in body.contract_margin_rates.values()):
+                raise ValueError('保证金比例必须在 (0,1]')
+        except (ValueError,TypeError) as exc:
+            raise HTTPException(422,str(exc)) from exc
         gateway = create_gateway("vnpy")
         engine = TradingEngine(gateway)
+        connect_task=asyncio.create_task(asyncio.to_thread(gateway.connect,config))
         try:
-            success = await asyncio.wait_for(asyncio.to_thread(gateway.connect, config), 35)
+            success = await asyncio.wait_for(asyncio.shield(connect_task), 35)
             if not success:
                 raise HTTPException(502, "柜台连接未就绪，原账户连接保持不变")
             account = gateway.query_account()
@@ -1514,6 +1540,12 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
                 strategy_id = f"{body.strategy_name}_main"
         except BaseException as exc:
             await asyncio.to_thread(gateway.disconnect)
+            # A cancelled await must not leave the connection worker able to commit late.
+            try:
+                await asyncio.shield(connect_task)
+            except Exception:
+                logger.debug('连接工作线程结束',exc_info=True)
+            await asyncio.to_thread(gateway.disconnect)
             if isinstance(exc, asyncio.TimeoutError):
                 raise HTTPException(408, "连接超时，原账户连接保持不变") from exc
             if isinstance(exc, (HTTPException, asyncio.CancelledError)):
@@ -1526,7 +1558,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         await asyncio.to_thread(trading_state.clear_main)
         stored_config = {k: v for k, v in config.items() if k not in {"password", "auth_code"}}
         trading_state.set_main_engine(engine, stored_config)
-        trading_state._day_open_balance = balance
+        trading_state._day_open_balance = engine.risk_manager.day_open_balance
         if strategy:
             stored_config.update(strategy_name=body.strategy_name, strategy_params=dict(body.strategy_params))
             trading_state.register(strategy_id, strategy, engine, stored_config)
@@ -1695,7 +1727,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         summary="批量更新策略权重",
         tags=["策略"],
     )
-    def update_weights(body: WeightRequest):
+    def update_weights(body: WeightRequest, request: Request):
         """
         更新所有策略的权重分配（0.0~1.0）。权重用于后续资金分配计算。
         """
@@ -1703,7 +1735,11 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         unknown = [sid for sid in body.weights if trading_state.get(sid) is None]
         if unknown:
             raise HTTPException(status_code=404, detail=f"未知策略: {unknown}")
-        trading_state.set_weights(body.weights)
+        try:
+            trading_state.set_weights(body.weights)
+        except ValueError as exc:
+            raise HTTPException(422,str(exc)) from exc
+        _record_audit('strategy','weights','success',request=request,detail=body.weights)
         return {
             "success": True,
             "weights": trading_state.all_weights(),

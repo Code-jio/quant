@@ -664,44 +664,15 @@ class ExceptionHandler:
             logger.error(f"数据库操作最终失败: {e}")
             return None
 
-    def handle_trading_operation(self,
-                                trade_func: Callable,
-                                max_retries: int = 2,
-                                timeout: float = 5.0) -> Any:
-        """
-        处理交易操作，包含重试和超时逻辑
-
-        Args:
-            trade_func: 交易操作函数
-            max_retries: 最大重试次数
-            timeout: 操作超时时间
-
-        Returns:
-            操作结果或None
-        """
-        # 创建包装函数以应用多重装饰器
-        def wrapped_func():
-            @retry(
-                max_retries=max_retries,
-                initial_delay=0.5,
-                backoff_factor=2.0,
-                retry_on=(Exception,),
-                error_handler=self.error_handler
-            )
-            def retry_wrapper():
-                return trade_func()
-
-            @with_timeout(seconds=timeout, error_handler=self.error_handler)
-            def timeout_wrapper():
-                return retry_wrapper()
-
-            return timeout_wrapper()
-
-        try:
-            return wrapped_func()
-        except Exception as e:
-            logger.error(f"交易操作最终失败: {e}")
-            return None
+    def handle_trading_operation(self, trade_func: Callable, max_retries: int = 0,
+                                 timeout: float = 5.0) -> Any:
+        """Never retry an unknown broker outcome. Reconcile in the execution engine."""
+        if max_retries:
+            raise ValueError('Automatic trading retries are prohibited; reconcile by order ID')
+        @with_timeout(seconds=timeout, error_handler=self.error_handler)
+        def invoke():
+            return trade_func()
+        return invoke()
 
     def get_error_summary(self) -> dict:
         """获取错误摘要"""

@@ -206,6 +206,13 @@ class StrategyBase(ABC):
         source_position = self._get_position_from_source(symbol)
         if source_position is not None:
             return source_position
+        if any(p.symbol==symbol for p in self.positions.values()) and symbol not in self.positions:
+            saved=self._position_source
+            try:
+                self._position_source=self.positions
+                return self._get_position_from_source(symbol)
+            finally:
+                self._position_source=saved
         return self.positions.get(symbol, Position(symbol=symbol, direction=Direction.NET, volume=0))
 
     def set_position_source(self, positions: Optional[Mapping[str, Position]]) -> None:
@@ -213,7 +220,7 @@ class StrategyBase(ABC):
         self._position_source = positions
 
     def _get_position_from_source(self, symbol: str) -> Optional[Position]:
-        if not self._position_source:
+        if self._position_source is None:
             return None
 
         matches = [
@@ -221,7 +228,7 @@ class StrategyBase(ABC):
             if key == symbol or getattr(pos, "symbol", "") == symbol
         ]
         if not matches:
-            return None
+            return Position(symbol=symbol,direction=Direction.NET,volume=0)
 
         signed_volume = 0
         weighted_cost = 0.0
@@ -259,7 +266,7 @@ class StrategyBase(ABC):
             symbol=symbol,
             direction=direction,
             volume=signed_volume,
-            frozen=frozen,
+            frozen=min(frozen,abs(signed_volume)),
             price=weighted_price / total_abs_volume if total_abs_volume else 0.0,
             cost=weighted_cost / total_abs_volume if total_abs_volume else 0.0,
             pnl=pnl,
@@ -272,6 +279,23 @@ class StrategyBase(ABC):
     def update_position(self, symbol: str, trade: 'Trade'):
         """更新持仓"""
         try:
+            if trade.offset is not None:
+                side=trade.direction if trade.offset==OffsetFlag.OPEN else (Direction.SHORT if trade.direction==Direction.LONG else Direction.LONG)
+                key=f'{symbol}_{side.value}'
+                pos=self.positions.get(key,Position(symbol,side,0))
+                if trade.offset==OffsetFlag.OPEN:
+                    total=abs(pos.volume)+trade.volume
+                    pos.cost=(pos.cost*abs(pos.volume)+trade.price*trade.volume)/total
+                    pos.price=pos.cost
+                    pos.volume=total
+                else:
+                    if trade.volume>abs(pos.volume):
+                        # External position snapshots remain authoritative for inherited holdings.
+                        if self._position_source is None:
+                            raise ValueError('Close exceeds local position')
+                    pos.volume=max(0,abs(pos.volume)-trade.volume)
+                self.positions[key]=pos
+                return
             if symbol not in self.positions:
                 self.positions[symbol] = Position(symbol=symbol, direction=Direction.NET, volume=0)
 
