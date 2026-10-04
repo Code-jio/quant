@@ -495,9 +495,9 @@ class TradingState:
             self._weights.clear()
         if engine:
             try:
-                engine.stop()
+                engine.close()
             except Exception:
-                pass
+                logger.exception("关闭账户引擎失败")
 
     # ── 连接日志 ──────────────────────────────────────────────────────────────
     def add_log(self, msg: str):
@@ -1109,17 +1109,13 @@ def _collect_all_orders() -> list:
 
 
 def _collect_all_trades() -> list:
-    """从各策略的成交记录收集，去重并按时间倒序。"""
-    seen:   set  = set()
-    result: list = []
-    for entry in trading_state.all_entries():
-        for t in getattr(entry.strategy, "trades", []):
-            tid = getattr(t, "trade_id", None)
-            if tid and tid not in seen:
-                seen.add(tid)
-                result.append(_trade_to_dict(t))
-    result.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
-    return result
+    result = {}
+    for engine in _unique_engines():
+        trades = engine.ledger.trades() if engine.ledger else list(engine.trades.values())
+        for trade in trades:
+            key = (trade.account_id, trade.trading_day, trade.exchange, trade.trade_id)
+            result[key] = _trade_to_dict(trade)
+    return sorted(result.values(), key=lambda x: x.get('timestamp', ''), reverse=True)[:500]
 
 
 def _unique_engines() -> list:
@@ -1652,34 +1648,36 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         if entry is None:
             raise HTTPException(status_code=404, detail=f"策略不存在: {strategy_id}")
 
-        s = entry.strategy
-        # 更新 params 字典
-        s.params.update(body.params)
-        entry.config.update(body.params)
-
-        # 尝试热更新策略实例属性
-        for key, val in body.params.items():
-            if hasattr(s, key):
-                try:
-                    setattr(s, key, type(getattr(s, key))(val))
-                except Exception:
-                    setattr(s, key, val)
-
-        was_running = entry.status == "running"
-        if body.restart and was_running:
-            try:
+        from ..strategy import create_strategy
+        try:
+            candidate = create_strategy(entry.strategy.name, {**entry.strategy.params, **body.params})
+            candidate.on_init()
+        except Exception as exc:
+            raise HTTPException(422, f"策略参数无效: {exc}") from exc
+        if entry.status == 'running' and not body.restart:
+            raise HTTPException(409, '运行中的参数变更需要 restart=true')
+        with entry.engine.order_manager.lock:
+            old_strategy = entry.strategy
+            was_running = entry.status == 'running'
+            if was_running:
                 entry.engine.stop()
-                entry.engine.start(entry.config)
-                logger.info(f"[API] 策略 {strategy_id} 参数更新后重启")
+            candidate.current_capital = old_strategy.current_capital
+            candidate.initial_capital = old_strategy.initial_capital
+            candidate.allocation_weight = old_strategy.allocation_weight
+            entry.engine.set_strategy(candidate)
+            try:
+                if was_running and not entry.engine.start(entry.config):
+                    raise RuntimeError('策略重启失败')
             except Exception as exc:
-                raise HTTPException(status_code=500, detail=f"重启失败: {exc}")
-
-        return {
-            "success":     True,
-            "strategy_id": strategy_id,
-            "params":      dict(s.params),
-            "restarted":   body.restart and was_running,
-        }
+                entry.engine.set_strategy(old_strategy)
+                raise HTTPException(500, '参数未提交，策略已停止，请检查状态后重启') from exc
+            entry.strategy = candidate
+            entry.config['strategy_params'] = dict(candidate.params)
+            _subscribe_market_ticks(entry.engine, candidate.params.get('symbols') or [candidate.params.get('symbol')])
+            if entry.engine.ledger:
+                entry.engine.ledger.save_setting(f'strategy:{strategy_id}', candidate.params)
+        _record_audit('strategy', 'params', 'success', resource=strategy_id)
+        return {'success': True, 'strategy_id': strategy_id, 'params': dict(candidate.params)}
 
     @app.put(
         "/strategies/weights",
@@ -2002,7 +2000,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             _record_audit("order", "manual_close_position", "rejected", resource=symbol, request=request, detail={"reason": "position_not_found"})
             raise HTTPException(status_code=404, detail=f"未找到 {symbol} 的持仓")
 
-        available_volume = abs(int(getattr(pos, "volume", 0) or 0))
+        available_volume = max(0, abs(int(getattr(pos, "volume", 0) or 0)) - int(getattr(pos, "frozen", 0) or 0))
         close_volume = requested_volume if requested_volume > 0 else available_volume
         if close_volume > available_volume:
             _record_audit(

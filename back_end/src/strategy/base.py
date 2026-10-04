@@ -3,6 +3,7 @@
 """
 
 import logging
+import math
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List, Mapping
 
@@ -32,6 +33,20 @@ class StrategyBase(ABC):
         self._initialized = False
         self._error_count = 0
         self._max_errors = int(self.params.get("max_errors", 10))
+        self.contract_specs = {}
+        self.allocation_weight = 1.0
+
+    def order_volume(self, symbol: str, price: float) -> int:
+        spec = self.contract_specs.get(symbol)
+        if not spec or not math.isfinite(price) or price <= 0:
+            return 0
+        size = float(spec.get('size') or 0)
+        margin = float(spec.get('margin_rate') or 0)
+        unit = int(spec.get('min_volume') or 1)
+        if not math.isfinite(size * margin) or size <= 0 or not 0 < margin <= 1 or unit < 1:
+            return 0
+        budget = max(0, self.current_capital) * self.params.get('position_ratio', .8) * self.allocation_weight
+        return int(budget / (price * size * margin) / unit) * unit
 
     @abstractmethod
     def on_init(self):
@@ -69,7 +84,7 @@ class StrategyBase(ABC):
         return True
 
     def buy(self, symbol: str, price: float, volume: int,
-            order_type: OrderType = OrderType.MARKET) -> Optional[Signal]:
+            order_type: OrderType = OrderType.LIMIT) -> Optional[Signal]:
         """买入开多"""
         try:
             if volume <= 0:
@@ -98,7 +113,7 @@ class StrategyBase(ABC):
             return None
 
     def sell(self, symbol: str, price: float, volume: int,
-             order_type: OrderType = OrderType.MARKET) -> Optional[Signal]:
+             order_type: OrderType = OrderType.LIMIT) -> Optional[Signal]:
         """卖出平多"""
         try:
             if volume <= 0:
@@ -128,7 +143,7 @@ class StrategyBase(ABC):
             return None
 
     def short(self, symbol: str, price: float, volume: int,
-              order_type: OrderType = OrderType.MARKET) -> Optional[Signal]:
+              order_type: OrderType = OrderType.LIMIT) -> Optional[Signal]:
         """卖出开空"""
         try:
             if volume <= 0:
@@ -157,7 +172,7 @@ class StrategyBase(ABC):
             return None
 
     def cover(self, symbol: str, price: float, volume: int,
-              order_type: OrderType = OrderType.MARKET) -> Optional[Signal]:
+              order_type: OrderType = OrderType.LIMIT) -> Optional[Signal]:
         """买入平空"""
         try:
             if volume <= 0:

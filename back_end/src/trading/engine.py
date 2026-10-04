@@ -3,6 +3,8 @@
 """
 
 import logging
+import os
+from datetime import datetime
 import traceback
 from typing import Dict, Any, TYPE_CHECKING
 
@@ -20,6 +22,8 @@ from .gateway import GatewayBase, create_gateway
 from .errors import TradingError
 from .order_manager import OrderManager, PreOrder
 from .risk import RiskManager
+from .bars import BarAggregator
+from .ledger import ExecutionLedger
 from ..common.exceptions import ExceptionHandler
 
 
@@ -36,6 +40,8 @@ class TradingEngine:
         self.order_manager.dispatch_signal = self.send_signal
         self.trades = {}
         self._seen_trades = set()
+        self.ledger = None
+        self._bars = {}
         self.gateway.on_order_callback = self._on_order
         self.gateway.on_trade_callback = self._on_trade
         self.gateway.on_tick_callback = self._on_tick
@@ -62,8 +68,18 @@ class TradingEngine:
         """Configure pre-order risk controls."""
         config = config or {}
         self.risk_manager.configure(config)
+        account = self.gateway.account
+        if self.ledger is None and account.account_id:
+            default_path = ':memory:' if os.getenv('QUANT_ENV') == 'test' else 'data/runtime/execution.db'
+            self.ledger = ExecutionLedger(os.getenv('QUANT_LEDGER_PATH', default_path),
+                f"{config.get('broker_id', '')}:{account.account_id}")
+            if self.ledger.unresolved():
+                self.risk_manager.set_emergency_stop(True, 'Unresolved execution intent; reconcile before resuming')
         if config.get("initial_capital"):
-            self.risk_manager.set_day_open_balance(float(config.get("initial_capital") or 0.0))
+            balance = float(config.get("initial_capital") or 0.0)
+            day = account.trading_day or (datetime.now().strftime('%Y%m%d') if os.getenv('QUANT_ENV') == 'test' else '')
+            baseline = self.ledger.day_baseline(day, balance) if self.ledger else balance
+            self.risk_manager.set_day_open_balance(baseline)
 
     def start(self, config: Dict[str, Any] = None) -> bool:
         """启动交易引擎"""
@@ -117,12 +133,18 @@ class TradingEngine:
 
             self.order_manager.stop()
 
-            self.gateway.disconnect()
             self.status = TradingStatus.STOPPED
             logger.info("交易引擎已停止")
         except Exception as e:
             logger.error(f"停止交易引擎失败: {e}")
             self.status = TradingStatus.STOPPED
+
+    def close(self):
+        self.stop()
+        self.gateway.disconnect()
+        if self.ledger:
+            self.ledger.close()
+            self.ledger = None
 
     def send_signal(self, signal):
         with self.order_manager.lock:
@@ -151,12 +173,24 @@ class TradingEngine:
                 logger.warning(f"风控拒单: {risk_result.reason}")
                 return ""
 
+            if hasattr(self.gateway, 'ready') and not self.gateway.ready:
+                self.last_reject_reason = 'Gateway snapshot is not ready'
+                return ''
+            account = self.gateway.account
+            if self.ledger and account.trading_day:
+                self.risk_manager.set_day_open_balance(self.ledger.day_baseline(account.trading_day, account.balance))
+            identity = self.ledger.begin_intent(signal) if self.ledger else None
             order_id = self.order_manager._submit_validated(signal)
+            if self.ledger:
+                self.ledger.complete_intent(identity, order_id)
+                if order_id:
+                    self.ledger.record_order(self.gateway.orders[order_id])
             if order_id:
                 self.risk_manager.record_order(signal)
                 logger.info(f"发送信号: {signal.symbol} {signal.direction.value} {signal.volume}@{signal.price}")
             return order_id
         except Exception as e:
+            self.risk_manager.set_emergency_stop(True, 'Submission outcome unknown; reconcile before retry')
             self._error_count += 1
             logger.error(f"发送信号失败: {e}")
             if self._error_count >= self._max_errors:
@@ -213,8 +247,19 @@ class TradingEngine:
         if tick.symbol not in symbols:
             return
         try:
-            bar = self._tick_to_bar(tick)
-            self.strategy.current_date = tick.timestamp
+            interval = self.strategy.params.get('timeframe', '1d')
+            if interval == 'tick':  # Explicit custom tick strategies only; built-ins use bars.
+                bar = self._tick_to_bar(tick)
+            else:
+                aggregate = self._bars.setdefault((tick.symbol, interval), BarAggregator(interval))
+                completed = aggregate.update(tick)
+                if completed is None:
+                    return
+                import pandas as pd
+                bar = pd.Series(completed)
+            self.strategy.current_date = bar['datetime']
+            self.strategy.contract_specs = getattr(self.gateway, 'contract_specs', {})
+            self.strategy.current_capital = max(0, self.gateway.account.available)
             self.strategy.on_bar(bar)
             self._dispatch_strategy_signals()
             self._append_live_bar(tick, bar)
@@ -243,7 +288,7 @@ class TradingEngine:
 
         if bar is None:
             bar = self._tick_to_bar(tick)
-        bar_frame = pd.DataFrame([bar.to_dict()], index=[tick.timestamp])
+        bar_frame = pd.DataFrame([bar.to_dict()], index=[bar["datetime"]])
 
         existing = self.strategy.data.get(tick.symbol)
         if existing is None or existing.empty:
@@ -318,6 +363,8 @@ class TradingEngine:
     def _on_order(self, order: 'Order'):
         """订单回调"""
         self.order_manager.update_order(order)
+        if self.ledger:
+            self.ledger.record_order(order)
         if self.strategy:
             try:
                 self.strategy.on_order(order)
@@ -328,7 +375,12 @@ class TradingEngine:
         key = (trade.account_id or self.gateway.account.account_id, trade.trading_day,
                trade.exchange, trade.trade_id)
         with self.order_manager.lock:
-            if not trade.trade_id or key in self._seen_trades:
+            if not trade.trade_id:
+                return
+            if self.ledger:
+                if not self.ledger.record_trade(trade):
+                    return
+            elif key in self._seen_trades:
                 return
             self._seen_trades.add(key)
             self.trades[key] = trade
@@ -336,6 +388,11 @@ class TradingEngine:
                 self.strategy.trades.append(trade)
                 self.strategy.update_position(trade.symbol, trade)
                 self.strategy.on_trade(trade)
+                del self.strategy.trades[:-500]
+            while len(self.trades) > 500:
+                self.trades.pop(next(iter(self.trades)))
+            if self.ledger:
+                self._seen_trades.clear()
 
     def _on_pre_order_status_change(self, pre_order: PreOrder):
         """预埋单状态变更回调"""

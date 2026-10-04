@@ -28,6 +28,8 @@ class AccountInfo:
     position_pnl: float = 0.0
     total_pnl: float = 0.0
     error_msg: str = ""
+    trading_day: str = ""
+    fields_known: bool = True
 
 
 @dataclass
@@ -43,3 +45,4 @@ class MarketData:
     turnover: float
     timestamp: datetime = field(default_factory=datetime.now)
     error_msg: str = ""
+    trading_day: str = ""

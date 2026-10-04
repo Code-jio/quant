@@ -49,7 +49,7 @@ class BreakoutStrategy(StrategyBase):
 
             if bar['close'] > recent_high:
                 if pos.is_short or pos.is_empty:
-                    volume = int((self.current_capital * self.position_ratio) / bar['close'] / 100) * 100
+                    volume = self.order_volume(symbol, float(bar['close']))
                     if volume > 0:
                         if pos.volume != 0:
                             self.cover(symbol, bar['close'], abs(pos.volume))
@@ -57,7 +57,7 @@ class BreakoutStrategy(StrategyBase):
 
             elif bar['close'] < recent_low:
                 if pos.is_long or pos.is_empty:
-                    volume = int((self.current_capital * self.position_ratio) / bar['close'] / 100) * 100
+                    volume = self.order_volume(symbol, float(bar['close']))
                     if volume > 0:
                         if pos.volume != 0:
                             self.sell(symbol, bar['close'], abs(pos.volume))

@@ -59,7 +59,7 @@ class RSIStrategy(StrategyBase):
 
             if current_rsi < self.oversold:
                 if pos.is_short or pos.is_empty:
-                    volume = int((self.current_capital * self.position_ratio) / bar['close'] / 100) * 100
+                    volume = self.order_volume(symbol, float(bar['close']))
                     if volume > 0:
                         if pos.volume != 0:
                             self.cover(symbol, bar['close'], abs(pos.volume))
@@ -67,7 +67,7 @@ class RSIStrategy(StrategyBase):
 
             elif current_rsi > self.overbought:
                 if pos.is_long or pos.is_empty:
-                    volume = int((self.current_capital * self.position_ratio) / bar['close'] / 100) * 100
+                    volume = self.order_volume(symbol, float(bar['close']))
                     if volume > 0:
                         if pos.volume != 0:
                             self.sell(symbol, bar['close'], abs(pos.volume))

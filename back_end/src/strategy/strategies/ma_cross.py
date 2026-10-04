@@ -58,7 +58,7 @@ class MACrossStrategy(StrategyBase):
 
             if prev_fast <= prev_slow and curr_fast > curr_slow:
                 if pos.is_short or pos.is_empty:
-                    volume = int((self.current_capital * self.position_ratio) / bar['close'] / 100) * 100
+                    volume = self.order_volume(symbol, float(bar['close']))
                     if volume > 0:
                         if pos.volume != 0:
                             self.cover(symbol, bar['close'], abs(pos.volume))
@@ -66,7 +66,7 @@ class MACrossStrategy(StrategyBase):
 
             elif prev_fast >= prev_slow and curr_fast < curr_slow:
                 if pos.is_long or pos.is_empty:
-                    volume = int((self.current_capital * self.position_ratio) / bar['close'] / 100) * 100
+                    volume = self.order_volume(symbol, float(bar['close']))
                     if volume > 0:
                         if pos.volume != 0:
                             self.sell(symbol, bar['close'], abs(pos.volume))
