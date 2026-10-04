@@ -110,7 +110,7 @@ const historyStore = useHistoryStore()
 const { currentSymbol: currentContract, currentInterval } = storeToRefs(watchStore)
 
 const searchOpen = ref(false)
-const HOT_QUICK  = HOT_CONTRACTS.slice(0, 8)
+const HOT_QUICK  = computed(() => HOT_CONTRACTS.slice(0, 8))
 
 // ── WebSocket 实时行情 ────────────────────────────────────────────────────
 const watchWs = useWatchWs()

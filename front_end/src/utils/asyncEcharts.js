@@ -2,7 +2,7 @@ let echartsPromise
 
 export function loadEcharts() {
   if (!echartsPromise) {
-    echartsPromise = import('echarts')
+    echartsPromise = import('./echarts.js')
   }
   return echartsPromise
 }

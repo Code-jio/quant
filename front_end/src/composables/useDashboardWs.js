@@ -16,7 +16,7 @@ const DEFAULT_DATA = {
   available:       0,
   margin:          0,
   initialCapital:  1_000_000,
-  sharpeRatio:     0,
+  sharpeRatio:     null,
   maxDrawdownPct:  0,
   totalExposure:   0,
   exposurePct:     0,
@@ -51,7 +51,7 @@ export function useDashboardWs(url) {
     data.available        = payload.available        ?? data.available
     data.margin           = payload.margin           ?? data.margin
     data.initialCapital   = payload.initial_capital  ?? data.initialCapital
-    data.sharpeRatio      = payload.sharpe_ratio     ?? data.sharpeRatio
+    data.sharpeRatio      = payload.sharpe_ratio ?? null
     data.maxDrawdownPct   = payload.max_drawdown_pct ?? data.maxDrawdownPct
     data.totalExposure    = payload.total_exposure   ?? data.totalExposure
     data.exposurePct      = payload.exposure_pct     ?? data.exposurePct
@@ -73,7 +73,7 @@ export function useDashboardWs(url) {
   }
 
   function connect() {
-    if (destroyed) return
+    if (destroyed || sessionStorage.getItem('quant_session_active')!=='1') return
     ws = new WebSocket(wsUrl)
 
     ws.onopen = () => {
@@ -86,10 +86,10 @@ export function useDashboardWs(url) {
       try { applyPayload(JSON.parse(e.data)) } catch { /* ignore */ }
     }
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       connected.value = false
       stopPing()
-      if (!destroyed) scheduleRetry()
+      if (!destroyed && event.code!==1008) scheduleRetry()
     }
 
     ws.onerror = () => {

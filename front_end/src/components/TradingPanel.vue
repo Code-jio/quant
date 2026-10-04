@@ -8,7 +8,7 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   placeOrder, cancelAllOrders, closePosition,
-  fetchPositions, searchContracts,
+  fetchPositions, searchContracts, fetchTicks,
   fetchRiskStatus, emergencyStop, resumeTrading, fetchTradingReconcile,
 } from '@/api/index.js'
 
@@ -19,7 +19,7 @@ const form = ref({
   offset:     'open',
   price:      0,
   volume:     1,
-  order_type: 'market',
+  order_type: 'limit',
 })
 
 const submitting    = ref(false)
@@ -73,14 +73,16 @@ function onSymbolSearch(query) {
 // ── 持仓列表（用于快捷平仓）─────────────────────────────────────────────────
 const positions      = ref([])
 const posLoading     = ref(false)
+const positionError = ref('')
 const closingKey     = ref('')
 
 async function loadPositions() {
   posLoading.value = true
   try {
     positions.value = await fetchPositions()
-  } catch {
-    positions.value = []
+    positionError.value=''
+  } catch (error) {
+    positionError.value=error.message
   } finally {
     posLoading.value = false
   }
@@ -289,11 +291,19 @@ async function handleClosePosition(pos) {
     return
   }
 
+  let closePrice
+  try {
+    const data=await fetchTicks([pos.symbol])
+    const tick=data.ticks?.[pos.symbol]
+    const age=Date.now()-new Date(tick?.timestamp).getTime()
+    closePrice=Number(pos.direction==='short' ? tick?.ask1 : tick?.bid1)
+    if (!Number.isFinite(age) || age>10000 || age< -5000 || !(closePrice>0)) throw new Error('缺少新鲜买卖报价，请使用手动限价平仓')
+  } catch(error) { ElMessage.warning(error.message); return }
   const key = positionKey(pos)
   const direction = pos.direction === 'long' || pos.direction === 'short' ? pos.direction : ''
   try {
     await ElMessageBox.confirm(
-      `确认${closeActionText(pos)} ${pos.symbol} ${available}手，${offsetLabel(quickCloseOffset.value)}，市价？`,
+      `确认${closeActionText(pos)} ${pos.symbol} ${available}手，${offsetLabel(quickCloseOffset.value)}，限价 ${closePrice}？`,
       '平仓确认',
       { confirmButtonText: '确认平仓', cancelButtonText: '取消', type: 'warning' },
     )
@@ -307,8 +317,8 @@ async function handleClosePosition(pos) {
       direction,
       offset: quickCloseOffset.value,
       volume: 0,
-      price: 0,
-      order_type: 'market',
+      price: closePrice,
+      order_type: 'limit',
     })
     ElMessage.success(`${pos.symbol} 平仓指令已发送`)
     setTimeout(loadPositions, 500)
@@ -337,6 +347,7 @@ onUnmounted(() => {
 
 <template>
   <div class="tp-wrap">
+    <el-alert v-if="positionError" :title="'持仓数据可能过期：'+positionError" type="warning" :closable="false" />
     <div class="tp-statusbar">
       <div class="status-left">
         <span class="live-dot"></span>
@@ -440,7 +451,7 @@ onUnmounted(() => {
           <div class="tp-row">
             <label class="tp-label">类型</label>
             <el-radio-group v-model="form.order_type" size="small" class="tp-input">
-              <el-radio-button value="market">市价</el-radio-button>
+              <el-radio-button value="market" disabled>市价（当前网关不支持）</el-radio-button>
               <el-radio-button value="limit">限价</el-radio-button>
             </el-radio-group>
           </div>

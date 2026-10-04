@@ -1,5 +1,6 @@
 <template>
   <div ref="wrapRef" class="kline-wrap" :class="{ fullscreen: isFullscreen, mobile: isMobile }">
+    <span class="kline-source" style="font-size:11px;color:var(--q-muted)">历史来源：{{ provenance }} · 实时增量仅含订阅后收到的成交</span>
 
     <KlineToolbar
       :name="name"
@@ -111,7 +112,7 @@
 import {
   ref, watch, onMounted, onUnmounted, nextTick,
 } from 'vue'
-import * as echarts from 'echarts'
+import * as echarts from '@/utils/echarts.js'
 import {
   WarningFilled, TrendCharts,
 } from '@element-plus/icons-vue'
@@ -176,7 +177,7 @@ const isMobile     = ref(window.innerWidth < 768)
 // 数据
 const {
   bars, maData, macdData, kdjData, rsiData, volMaData,
-  loading, loadingMore, hasMore, error, load, loadMore: loadMoreData,
+  loading, loadingMore, hasMore, error, provenance, load, loadMore: loadMoreData,
 } = useKlineData()
 
 const indicatorWorker = useIndicatorWorker()
@@ -186,47 +187,24 @@ const watchWs = useWatchWs()
 const showShortcutsHelp = ref(false)
 
 // ── 数据加载 ──────────────────────────────────────────────────────────────
+let chartGeneration=0
+let indicatorGeneration=0
 async function reload() {
+  const epoch=++chartGeneration
+  indicatorGeneration++
   if (!props.symbol) return
-
-  // 尝试命中内存缓存
-  const cached = watchStore.getCacheEntry(props.symbol, currentInterval.value)
-  if (cached) {
-    bars.value    = cached.bars    ?? []
-    Object.assign(maData.value,   cached.maData   ?? {})
-    Object.assign(macdData.value, cached.macdData ?? {})
-    Object.assign(kdjData.value,  cached.kdjData  ?? {})
-    rsiData.value    = cached.rsiData    ?? []
-    volMaData.value  = cached.volMaData  ?? []
-    await nextTick()
-    buildChart()
-    return
-  }
-
-  // 先获取基础 K 线（后端也返回指标，两路可并行）
-  await load(props.symbol, currentInterval.value, props.defaultLimit, maNums.value)
-
-  // 尝试用 Web Worker 在后台重新计算指标（更快、不阻塞主线程）
-  // 若 Worker 返回结果则覆盖后端指标（保证参数一致性）
-  _applyWorkerIndicators()
-
-  // 写入缓存
-  watchStore.setCacheEntry(props.symbol, currentInterval.value, {
-    bars:     bars.value,
-    maData:   { ...maData.value },
-    macdData: { ...macdData.value },
-    kdjData:  { ...kdjData.value },
-    rsiData:  [...rsiData.value],
-    volMaData:[...volMaData.value],
-  })
-
+  const loaded=await load(props.symbol,currentInterval.value,props.defaultLimit,maNums.value)
+  if (!loaded || epoch!==chartGeneration) return
+  await _applyWorkerIndicators()
   await nextTick()
-  buildChart()
+  if (epoch===chartGeneration) buildChart()
 }
 
 /** 使用 Web Worker 在后台重算指标（不阻塞渲染，完成后静默更新） */
 async function _applyWorkerIndicators() {
   if (!bars.value.length) return
+  const generation=++indicatorGeneration
+  const snap = { sym: props.symbol, iv: currentInterval.value }
   const { macdParams, kdjParams, rsiParams } = indicatorStore
   const result = await indicatorWorker.calcAll(
     props.symbol,
@@ -241,9 +219,8 @@ async function _applyWorkerIndicators() {
   )
   if (!result) return
   // 覆盖响应式数据（仅当品种/周期未切换时）
-  const snap = { sym: props.symbol, iv: currentInterval.value }
   await nextTick()
-  if (props.symbol === snap.sym && currentInterval.value === snap.iv) {
+  if (generation===indicatorGeneration && props.symbol === snap.sym && currentInterval.value === snap.iv) {
     Object.assign(maData.value, result.ma ?? {})
     if (result.volMa?.length) volMaData.value = result.volMa
     if (result.macd?.diff?.length) Object.assign(macdData.value, result.macd)
@@ -268,6 +245,7 @@ async function triggerLoadMore() {
 
     const added = await loadMoreData(props.symbol, currentInterval.value, 300, maNums.value)
     if (added > 0) {
+      await _applyWorkerIndicators()
       await nextTick()
       // 恢复视图：向右偏移 added 个 bar（保持用户当前视图不跳动）
       if (chart && startVal != null) {
@@ -688,7 +666,7 @@ function buildRsiSeries() {
 }
 
 // ── Tooltip formatter ─────────────────────────────────────────────────────
-function formatTooltip(params, times) {
+function formatTooltip(params, _times) {
   if (!params?.length) return ''
   const idx = params[0]?.dataIndex ?? 0
   const bar = bars.value[idx]
@@ -744,7 +722,7 @@ function bindChartEvents() {
   chart.getZr().on('dblclick', onCanvasDblclick)
 
   // 向左拖到边缘时自动加载更多历史数据
-  chart.on('datazoom', (params) => {
+  chart.on('datazoom', (_params) => {
     const opt   = chart.getOption()?.dataZoom?.[0]
     const start = opt?.startValue ?? 0
     if (start <= 5) {
@@ -923,9 +901,10 @@ function toggleFullscreen() {
   }
 }
 
-document.addEventListener('fullscreenchange', () => {
+function onFullscreenChange() {
   if (!document.fullscreenElement) isFullscreen.value = false
-})
+}
+document.addEventListener('fullscreenchange',onFullscreenChange)
 
 // ── 保存图片 ──────────────────────────────────────────────────────────────
 function saveImage() {
@@ -959,13 +938,15 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  chartGeneration++; indicatorGeneration++
+  document.removeEventListener('fullscreenchange',onFullscreenChange)
   clearTimeout(_loadMoreDebounceTimer)
   resizeObserver?.disconnect()
   chart?.dispose()
   chart = null
 })
 
-watch(() => props.symbol, async (val, oldVal) => {
+watch(() => props.symbol, async (val, _oldVal) => {
   if (val) {
     // 切换品种时恢复该品种上次使用的周期
     const lastIv = historyStore.getLastInterval(val, props.defaultInterval)
@@ -980,37 +961,18 @@ watch(() => props.symbol, async (val, oldVal) => {
   }
 })
 
-// 实时K线更新：监听WebSocket推送的kline_update，更新最后一根K线
-watch(() => watchWs.getCurrentBar(props.symbol, currentInterval.value), (newBar) => {
-  if (!newBar || !bars.value.length || !chart) return
-  const lastBar = bars.value[bars.value.length - 1]
-  if (lastBar.time !== newBar.time && newBar.time) {
-    bars.value.push({
-      time: newBar.time,
-      open: newBar.open,
-      high: newBar.high,
-      low: newBar.low,
-      close: newBar.close,
-      volume: newBar.volume,
-    })
-  } else {
-    lastBar.open = newBar.open || lastBar.open
-    lastBar.high = Math.max(lastBar.high, newBar.high || lastBar.high)
-    lastBar.low = Math.min(lastBar.low, newBar.low || lastBar.low)
-    lastBar.close = newBar.close || lastBar.close
-    lastBar.volume = newBar.volume || lastBar.volume
-  }
-  chart.setOption({
-    series: [
-      { data: bars.value.map(b => [b.open, b.close, b.low, b.high]) },
-      { data: bars.value.map((b) => {
-        const up = b.close >= b.open
-        const cfg = chartStore.resolvedConfig(props.symbol)
-        return { value: b.volume, itemStyle: { color: up ? (cfg.upColor + 'aa') : (cfg.downColor + 'aa') } }
-      })},
-    ]
-  }, { notMerge: false, silent: true })
-}, { deep: true })
+// Merge by canonical event time, then rebuild axes and every indicator together.
+watch(() => watchWs.getCurrentBar(props.symbol,currentInterval.value), async (bar)=>{
+  if (!bar?.time || loading.value || !bars.value.length) return
+  const time=bar.time.replace(' ','T')
+  const last=bars.value.at(-1)
+  if (time<last.time) return
+  const next={time,open:bar.open,high:bar.high,low:bar.low,close:bar.close,volume:bar.volume}
+  if (time===last.time) bars.value[bars.value.length-1]=next
+  else bars.value.push(next)
+  if (bars.value.length>5000) bars.value.splice(0,bars.value.length-5000)
+  await _applyWorkerIndicators()
+},{deep:true})
 
 // ── 快捷键（仅在图表区域存在时生效） ──────────────────────────────────────
 useHotkeys([

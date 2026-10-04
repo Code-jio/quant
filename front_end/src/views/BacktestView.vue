@@ -1,5 +1,7 @@
 <template>
   <div class="bt-page">
+    <el-alert v-if="result" :title="'数据来源：'+result.data_source+'；周期：'+result.timeframe+(result.synthetic_data_used ? '（演示模拟数据）' : '')" :type="result.synthetic_data_used ? 'warning' : 'info'" :closable="false" />
+    <el-alert v-for="warning in result?.warnings ?? []" :key="warning" :title="warning" type="warning" :closable="false" />
     <!-- ── 顶部导航栏 ───────────────────────────────────────────── -->
     <header class="bt-topbar">
       <div class="bt-topbar-left">
@@ -160,6 +162,7 @@ function onStrategyChange(name) {
 
 // ── 运行回测 ──────────────────────────────────────────────────────────
 async function doRunBacktest() {
+  if (running.value) return
   errorMsg.value = ''
   running.value  = true
   result.value   = null
@@ -180,6 +183,7 @@ async function doRunBacktest() {
 }
 
 // ── KPI 卡片 ──────────────────────────────────────────────────────────
+const fmtNumber=(value,digits=2)=>value==null || !Number.isFinite(Number(value)) ? '—' : Number(value).toFixed(digits)
 const kpiCards = computed(() => {
   if (!result.value) return []
   const m = result.value.metrics
@@ -188,26 +192,26 @@ const kpiCards = computed(() => {
   return [
     {
       key: 'total_return', label: '总收益率',
-      value: `${sign(m.total_return)}${m.total_return.toFixed(2)}%`,
-      sub: `年化 ${sign(m.annual_return)}${m.annual_return.toFixed(2)}%`,
+      value: `${sign(m.total_return)}${fmtNumber(m.total_return,2)}%`,
+      sub: `年化 ${sign(m.annual_return)}${fmtNumber(m.annual_return,2)}%`,
       colorClass: m.total_return >= 0 ? 'kpi-green' : 'kpi-red',
     },
     {
       key: 'sharpe_ratio', label: '夏普比率',
-      value: m.sharpe_ratio.toFixed(3),
+      value: fmtNumber(m.sharpe_ratio,3),
       sub: m.sharpe_ratio >= 2 ? '优秀' : m.sharpe_ratio >= 1 ? '良好' : '一般',
       colorClass: m.sharpe_ratio >= 1 ? 'kpi-green' : 'kpi-yellow',
     },
     {
       key: 'max_drawdown_pct', label: '最大回撤',
-      value: `-${m.max_drawdown_pct.toFixed(2)}%`,
-      sub: `Calmar ${m.calmar_ratio.toFixed(2)}`,
+      value: `-${fmtNumber(m.max_drawdown_pct,2)}%`,
+      sub: `Calmar ${fmtNumber(m.calmar_ratio,2)}`,
       colorClass: m.max_drawdown_pct <= 15 ? 'kpi-yellow' : 'kpi-red',
     },
     {
       key: 'win_rate', label: '胜率',
-      value: `${m.win_rate.toFixed(1)}%`,
-      sub: `盈亏比 ${m.profit_loss_ratio.toFixed(2)}`,
+      value: `${fmtNumber(m.win_rate,1)}%`,
+      sub: `盈亏比 ${fmtNumber(m.profit_loss_ratio,2)}`,
       colorClass: m.win_rate >= 50 ? 'kpi-green' : 'kpi-yellow',
     },
     {
@@ -218,19 +222,19 @@ const kpiCards = computed(() => {
     },
     {
       key: 'volatility', label: '年化波动率',
-      value: `${m.volatility.toFixed(2)}%`,
-      sub: `Sortino ${m.sortino_ratio.toFixed(2)}`,
+      value: `${fmtNumber(m.volatility,2)}%`,
+      sub: `Sortino ${fmtNumber(m.sortino_ratio,2)}`,
       colorClass: m.volatility <= 20 ? 'kpi-green' : 'kpi-yellow',
     },
     {
       key: 'var_95', label: 'VaR (95%)',
-      value: `${m.var_95.toFixed(2)}%`,
-      sub: `CVaR ${m.cvar_95.toFixed(2)}%`,
+      value: `${fmtNumber(m.var_95,2)}%`,
+      sub: `CVaR ${fmtNumber(m.cvar_95,2)}%`,
       colorClass: 'kpi-neutral',
     },
     {
       key: 'avg_win', label: '平均盈利',
-      value: `¥${m.avg_win.toFixed(0)}`,
+      value: `¥${fmtNumber(m.avg_win,0)}`,
       sub: `平均亏损 ¥${Math.abs(m.avg_loss).toFixed(0)}`,
       colorClass: m.avg_win > Math.abs(m.avg_loss) ? 'kpi-green' : 'kpi-red',
     },
@@ -253,14 +257,14 @@ const riskRows = computed(() => {
     // 收益类
     {
       category: '收益',
-      name: '总收益率', value: `${sign(m.total_return)}${m.total_return.toFixed(3)}%`,
+      name: '总收益率', value: `${sign(m.total_return)}${fmtNumber(m.total_return,3)}%`,
       valueClass: m.total_return >= 0 ? 'pos' : 'neg',
       desc: '回测期间整体涨跌幅',
       ...rateGrade(m.total_return, 20, 5),
     },
     {
       category: '收益',
-      name: '年化收益率', value: `${sign(m.annual_return)}${m.annual_return.toFixed(3)}%`,
+      name: '年化收益率', value: `${sign(m.annual_return)}${fmtNumber(m.annual_return,3)}%`,
       valueClass: m.annual_return >= 0 ? 'pos' : 'neg',
       desc: '以 252 交易日折算的年化收益',
       ...rateGrade(m.annual_return, 15, 8),
@@ -268,35 +272,35 @@ const riskRows = computed(() => {
     // 风险类
     {
       category: '风险',
-      name: '年化波动率', value: `${m.volatility.toFixed(3)}%`,
+      name: '年化波动率', value: `${fmtNumber(m.volatility,3)}%`,
       valueClass: '',
       desc: '日收益率标准差 × √252',
       ...rateGrade(30 - m.volatility, 10, 0),
     },
     {
       category: '风险',
-      name: '最大回撤', value: `-${m.max_drawdown_pct.toFixed(3)}%`,
+      name: '最大回撤', value: `-${fmtNumber(m.max_drawdown_pct,3)}%`,
       valueClass: 'neg',
       desc: '历史最大峰谷回撤幅度',
       ...rateGrade(25 - m.max_drawdown_pct, 15, 5),
     },
     {
       category: '风险',
-      name: 'VaR (95%)', value: `${m.var_95.toFixed(3)}%`,
+      name: 'VaR (95%)', value: `${fmtNumber(m.var_95,3)}%`,
       valueClass: m.var_95 < 0 ? 'neg' : '',
       desc: '95% 置信区间单日最大亏损',
       rating: '', ratingType: '',
     },
     {
       category: '风险',
-      name: 'CVaR (95%)', value: `${m.cvar_95.toFixed(3)}%`,
+      name: 'CVaR (95%)', value: `${fmtNumber(m.cvar_95,3)}%`,
       valueClass: m.cvar_95 < 0 ? 'neg' : '',
       desc: '超出 VaR 部分的期望损失（条件VaR）',
       rating: '', ratingType: '',
     },
     {
       category: '风险',
-      name: '下行波动率', value: `${m.downside_vol.toFixed(3)}%`,
+      name: '下行波动率', value: `${fmtNumber(m.downside_vol,3)}%`,
       valueClass: '',
       desc: '仅考虑负收益的波动率',
       rating: '', ratingType: '',
@@ -304,21 +308,21 @@ const riskRows = computed(() => {
     // 比率类
     {
       category: '比率',
-      name: '夏普比率', value: m.sharpe_ratio.toFixed(4),
+      name: '夏普比率', value: fmtNumber(m.sharpe_ratio,4),
       valueClass: m.sharpe_ratio > 0 ? 'pos' : 'neg',
       desc: '超额收益与波动率之比（越高越好）',
       ...rateGrade(m.sharpe_ratio, 2, 1),
     },
     {
       category: '比率',
-      name: 'Sortino 比率', value: m.sortino_ratio.toFixed(4),
+      name: 'Sortino 比率', value: fmtNumber(m.sortino_ratio,4),
       valueClass: m.sortino_ratio > 0 ? 'pos' : 'neg',
       desc: '超额收益与下行波动率之比',
       ...rateGrade(m.sortino_ratio, 2, 1),
     },
     {
       category: '比率',
-      name: 'Calmar 比率', value: m.calmar_ratio.toFixed(4),
+      name: 'Calmar 比率', value: fmtNumber(m.calmar_ratio,4),
       valueClass: m.calmar_ratio > 0 ? 'pos' : 'neg',
       desc: '年化收益与最大回撤之比',
       ...rateGrade(m.calmar_ratio, 1, 0.5),
@@ -326,14 +330,14 @@ const riskRows = computed(() => {
     // 交易统计
     {
       category: '交易',
-      name: '胜率', value: `${m.win_rate.toFixed(2)}%`,
+      name: '胜率', value: `${fmtNumber(m.win_rate,2)}%`,
       valueClass: m.win_rate >= 50 ? 'pos' : 'neg',
       desc: '盈利交易次数占比',
       ...rateGrade(m.win_rate, 60, 50),
     },
     {
       category: '交易',
-      name: '盈亏比', value: m.profit_loss_ratio.toFixed(4),
+      name: '盈亏比', value: fmtNumber(m.profit_loss_ratio,4),
       valueClass: m.profit_loss_ratio >= 1 ? 'pos' : 'neg',
       desc: '平均盈利额 / 平均亏损额',
       ...rateGrade(m.profit_loss_ratio, 1.5, 1),
@@ -362,14 +366,14 @@ const riskRows = computed(() => {
     // 分布特征
     {
       category: '分布',
-      name: '偏度', value: m.skewness.toFixed(4),
+      name: '偏度', value: fmtNumber(m.skewness,4),
       valueClass: m.skewness > 0 ? 'pos' : 'neg',
       desc: '收益分布偏态（>0 右偏，有利）',
       rating: '', ratingType: '',
     },
     {
       category: '分布',
-      name: '峰度', value: m.kurtosis.toFixed(4),
+      name: '峰度', value: fmtNumber(m.kurtosis,4),
       valueClass: '',
       desc: '收益分布尖峰程度（>3 肥尾风险）',
       rating: '', ratingType: '',
@@ -543,7 +547,7 @@ function renderEquityChart() {
         type: 'scatter',
         data: sellMarkers,
         xAxisIndex: 0, yAxisIndex: 0,
-        symbol: (_, params) => 'triangle',
+        symbol: (_, _params) => 'triangle',
         symbolRotate: 180,
         symbolSize: 10,
         itemStyle: { color: '#f85149' },

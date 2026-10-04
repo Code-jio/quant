@@ -322,9 +322,9 @@ function stopPolling() {
 onUnmounted(stopPolling)
 
 // ── 登录处理 ──────────────────────────────────────────────────────────────
-const LOGIN_TIMEOUT = 35_000
 
 async function handleLogin() {
+  if (connecting.value) return
   try {
     await formRef.value.validate()
   } catch {
@@ -337,7 +337,7 @@ async function handleLogin() {
   startPolling()
 
   try {
-    const loginPromise = login({
+    const res = await login({
       username:  form.username,
       password:  form.password,
       broker_id: form.broker_id,
@@ -352,12 +352,6 @@ async function handleLogin() {
         symbol: form.strategy_symbol,
       },
     })
-
-    const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('登录超时（35s），请检查网络和服务器地址')), LOGIN_TIMEOUT)
-    })
-
-    const res = await Promise.race([loginPromise, timeoutPromise])
 
     authStore.setAuth({
       accountId: res.account_id,

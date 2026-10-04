@@ -13,7 +13,7 @@ import { useOrderBookWs } from '@/composables/useOrderBookWs.js'
 
 const {
   ordersArray, trades, positions,
-  loading, ordersWsAlive, positionsWsAlive,
+  loading, stale, error, ordersWsAlive, positionsWsAlive,
   lastOrderTime, lastPositionTime,
   reload,
 } = useOrderBookWs()
@@ -105,6 +105,7 @@ function tradeRowClass({ row }) {
 
 <template>
   <div class="ob-wrap">
+    <el-alert v-if="stale || error" :title="error || '账户快照尚未同步，当前数据可能过期'" type="warning" :closable="false" />
 
     <!-- ── 状态栏 ──────────────────────────────────────────────────────────── -->
     <div class="ob-statusbar">
@@ -342,7 +343,7 @@ function tradeRowClass({ row }) {
           <el-table-column label="本笔盈亏" align="right">
             <template #default="{ row }">
               <span
-                v-if="row.pnl !== 0"
+                v-if="row.pnl != null && row.pnl !== 0"
                 class="mono fw-600"
                 :class="pnlCss(row.pnl)"
               >

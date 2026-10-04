@@ -52,7 +52,7 @@ const fmt = {
   signed: (v, d = 2) => { const n = Number(v) || 0; return (n >= 0 ? '+' : '') + fmt.money(n, d) },
   rate:   (v, d = 4) => { const n = Number(v) || 0; return (n >= 0 ? '+' : '') + n.toFixed(d) + '%' },
   pct:    (v, d = 2) => (Number(v) || 0).toFixed(d) + '%',
-  num:    (v, d = 3) => (Number(v) || 0).toFixed(d),
+  num:    (v, d = 3) => v==null ? '—' : Number(v).toFixed(d),
 }
 
 const lastUpdate = computed(() => {
@@ -68,6 +68,7 @@ function pnlCss(v) {
 }
 
 function sharpeLevel(v) {
+  if (v==null) return {cls:'',label:'需日终权益样本'}
   if (v >= 2)  return { cls: 'level-excellent', label: '优秀' }
   if (v >= 1)  return { cls: 'level-good',      label: '良好' }
   if (v >= 0)  return { cls: 'level-fair',       label: '一般' }
@@ -295,7 +296,7 @@ function dirType(dir)  { return dir === 'long' ? 'success' : 'danger' }
 
       <!-- 夏普比率 -->
       <div class="kpi-card">
-        <div class="kpi-label">夏普比率（滚动）</div>
+        <div class="kpi-label">夏普比率（日终）</div>
         <div class="kpi-val mono" :class="sharpeLevel(data.sharpeRatio).cls">
           {{ fmt.num(data.sharpeRatio) }}
         </div>

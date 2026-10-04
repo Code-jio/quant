@@ -18,6 +18,7 @@ export const useAuthStore = defineStore('auth', () => {
     sessionStorage.setItem(ACCOUNT_KEY, aid)
     sessionStorage.setItem(SESSION_KEY, '1')
     localStorage.removeItem(ACCOUNT_KEY)
+    window.dispatchEvent(new CustomEvent("quant-auth-change"))
   }
 
   function clearAuth() {
@@ -27,6 +28,7 @@ export const useAuthStore = defineStore('auth', () => {
     sessionStorage.removeItem(ACCOUNT_KEY)
     sessionStorage.removeItem(SESSION_KEY)
     localStorage.removeItem(ACCOUNT_KEY)
+    window.dispatchEvent(new CustomEvent("quant-auth-change"))
   }
 
   return { accountId, balance, isLoggedIn, setAuth, clearAuth }

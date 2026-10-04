@@ -23,7 +23,7 @@
 
       <div class="status-item">
         <el-icon class="status-icon"><Timer /></el-icon>
-        <span class="status-label">网关延迟</span>
+        <span class="status-label">距上次回报</span>
         <span :class="['latency-val', latencyClass]">{{ latencyText }}</span>
       </div>
 
@@ -139,19 +139,13 @@ const tdStatusText = computed(() => {
 })
 
 const latencyText = computed(() => {
-  const ms = data.gatewayLatencyMs
+  const ms = data.callbackAgeMs
   if (ms < 0)     return '—'
   if (ms < 1000)  return `${ms} ms`
   return `${(ms / 1000).toFixed(1)} s`
 })
 
-const latencyClass = computed(() => {
-  const ms = data.gatewayLatencyMs
-  if (ms < 0)    return 'lat-unknown'
-  if (ms < 50)   return 'lat-good'
-  if (ms < 200)  return 'lat-warn'
-  return 'lat-bad'
-})
+const latencyClass = computed(() => 'lat-unknown')
 
 function formatBytes(bps) {
   if (bps >= 1_048_576) return (bps / 1_048_576).toFixed(1) + ' MB'

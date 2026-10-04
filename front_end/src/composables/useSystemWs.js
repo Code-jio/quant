@@ -34,7 +34,7 @@ export function useSystemWs(url = buildWsUrl('/ws/system')) {
     mdConnected:       false,
     gatewayStatus:     'stopped',
     gatewayName:       'N/A',
-    gatewayLatencyMs:  -1,    // -1 = 尚未收到回调
+    callbackAgeMs:  -1,    // -1 = 尚未收到回调
     networkSendBps:    0,     // 字节/秒
     networkRecvBps:    0,
     timestamp:         null,
@@ -63,7 +63,7 @@ export function useSystemWs(url = buildWsUrl('/ws/system')) {
       data.mdConnected       = msg.md_connected       ?? data.mdConnected
       data.gatewayStatus     = msg.gateway_status     ?? data.gatewayStatus
       data.gatewayName       = msg.gateway_name       ?? data.gatewayName
-      data.gatewayLatencyMs  = msg.gateway_latency_ms ?? data.gatewayLatencyMs
+      data.callbackAgeMs  = msg.callback_age_ms ?? data.callbackAgeMs
       data.networkSendBps    = msg.network_send_bps   ?? data.networkSendBps
       data.networkRecvBps    = msg.network_recv_bps   ?? data.networkRecvBps
       data.timestamp         = msg.timestamp          ?? data.timestamp
@@ -89,7 +89,7 @@ export function useSystemWs(url = buildWsUrl('/ws/system')) {
 
   // ── 连接管理 ──────────────────────────────────────────────────────────────
   function connect() {
-    if (destroyed) return
+    if (destroyed || sessionStorage.getItem('quant_session_active')!=='1') return
 
     try {
       ws = new WebSocket(url)
@@ -110,7 +110,7 @@ export function useSystemWs(url = buildWsUrl('/ws/system')) {
     ws.onclose = (e) => {
       connected.value = false
       stopHeartbeat()
-      if (!destroyed) {
+      if (!destroyed && e.code!==1008) {
         console.warn(`[useSystemWs] 连接断开 (code=${e.code})，${reconnectDelay / 1000}s 后重连`)
         scheduleReconnect()
       }
@@ -123,7 +123,7 @@ export function useSystemWs(url = buildWsUrl('/ws/system')) {
   }
 
   function scheduleReconnect() {
-    if (destroyed) return
+    if (destroyed || sessionStorage.getItem('quant_session_active')!=='1') return
     clearTimeout(reconnectTimer)
     reconnectTimer = setTimeout(() => {
       reconnectDelay = Math.min(reconnectDelay * 1.5, RECONNECT_MAX)
