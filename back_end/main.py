@@ -19,6 +19,11 @@ from src.settings import ctp_defaults
 
 
 logger = logging.getLogger(__name__)
+_CTP_DEFAULTS = ctp_defaults()
+
+
+def configure_logging():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 DEFAULT_CONFIG_PATH = "config/config_production.json"
 

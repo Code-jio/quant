@@ -380,18 +380,20 @@ class ConnectionManager:
             logger.info(f"[WS:{self.channel}] 连接断开，剩余: {len(self._connections)} 条")
 
     async def broadcast(self, payload: dict):
-        if not self._connections:
-            return
         text = _json.dumps(payload, ensure_ascii=False, default=str)
-        dead: Set[WebSocket] = set()
-        for ws in list(self._connections):
+        async def send(ws):
             try:
+                if not session_store.is_valid(_websocket_session_token(ws)):
+                    await ws.close(code=1008)
+                    self.disconnect(ws)
+                    return 1
                 await asyncio.wait_for(ws.send_text(text), timeout=self.send_timeout)
+                return 0
             except Exception:
-                dead.add(ws)
-        for ws in dead:
-            self.disconnect(ws)
-        metrics.record_ws_broadcast(self.channel, dropped=len(dead))
+                self.disconnect(ws)
+                return 1
+        dropped = await asyncio.gather(*(send(ws) for ws in list(self._connections)))
+        metrics.record_ws_broadcast(self.channel, dropped=sum(dropped))
 
     def broadcast_sync(self, payload: dict, loop: asyncio.AbstractEventLoop):
         if loop and not loop.is_closed():
@@ -601,12 +603,28 @@ def _websocket_session_token(ws: WebSocket) -> str:
     return ""
 
 
+def _request_session_token(request: Request) -> str:
+    auth = request.headers.get("authorization", "")
+    return auth[7:] if auth.lower().startswith("bearer ") else request.cookies.get(SESSION_COOKIE_NAME, "")
+
+
 async def _require_websocket_session(ws: WebSocket) -> bool:
     token = _websocket_session_token(ws)
-    if token and session_store.is_valid(token):
+    origin = ws.headers.get("origin")
+    if token and session_store.is_valid(token) and (not origin or origin in _cors_origins()):
         return True
     await ws.close(code=1008)
     return False
+
+
+async def _session_receive_text(ws: WebSocket) -> str:
+    while session_store.is_valid(_websocket_session_token(ws)):
+        try:
+            return await asyncio.wait_for(ws.receive_text(), timeout=0.25)
+        except asyncio.TimeoutError:
+            continue
+    await ws.close(code=1008)
+    raise WebSocketDisconnect(code=1008)
 
 
 def _record_audit(
@@ -623,7 +641,7 @@ def _record_audit(
         event_type,
         action,
         status,
-        actor=actor,
+        actor=(getattr(request.state, "identity", {}).get("account_id") or actor) if request else actor,
         resource=resource,
         request_id=_request_id(request),
         detail=detail,
@@ -1289,6 +1307,8 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         logs_task        = asyncio.create_task(_logs_broadcast_loop())
         logger.info("[API] WebSocket 广播任务已启动（system / dashboard / positions / logs）")
         yield
+        session_store.revoke_all()
+        await asyncio.to_thread(trading_state.clear_main)
         logging.getLogger().removeHandler(log_buffer)
         for task in (broadcast_task, dashboard_task, positions_task, logs_task):
             task.cancel()
@@ -1303,6 +1323,24 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         description="量化交易系统 API：CTP 登录 · REST 控制 · WebSocket 实时推送",
         lifespan=lifespan,
     )
+
+    # Serialize account transitions with all authenticated actions. Validate after acquiring.
+    account_lock = asyncio.Lock()
+
+    @app.middleware("http")
+    async def auth_middleware(request: Request, call_next):
+        token = _request_session_token(request)
+        request.state.identity = session_store.identity(token)
+        path = request.url.path
+        if path != "/auth/login" and is_open_path(path):
+            return await call_next(request)
+        async with account_lock:
+            request.state.identity = session_store.identity(token)
+            if path != "/auth/login" and not request.state.identity:
+                return JSONResponse({"detail": "未登录或会话已失效"}, status_code=401)
+            if path == "/auth/login" and trading_state.primary_engine() and not request.state.identity:
+                return JSONResponse({"detail": "已有账户连接；切换需当前账户授权"}, status_code=409)
+            return await call_next(request)
 
     app.add_middleware(
         CORSMiddleware,
@@ -1350,32 +1388,6 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             response.headers["X-Request-ID"] = request_id
         return response
 
-    # ── 鉴权中间件 ────────────────────────────────────────────────────────────
-    @app.middleware("http")
-    async def auth_middleware(request: Request, call_next):
-        path = request.url.path
-        # 开放路径（登录、状态查询、文档、WebSocket 握手）
-        if is_open_path(path):
-            return await call_next(request)
-
-        auth = request.headers.get("authorization", "")
-        token = auth[7:] if auth.lower().startswith("bearer ") else request.cookies.get(SESSION_COOKIE_NAME, "")
-        if not token:
-            return JSONResponse(
-                {"detail": "未登录，请先连接交易账户"},
-                status_code=401,
-            )
-        if not session_store.is_valid(token):
-            return JSONResponse(
-                {"detail": "会话已过期，请重新登录"},
-                status_code=401,
-            )
-        response = await call_next(request)
-        request_id = getattr(request.state, "request_id", "")
-        if request_id:
-            response.headers["X-Request-ID"] = request_id
-        return response
-
     # ==================================================================
     # Auth 端点
     # ==================================================================
@@ -1419,8 +1431,11 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         summary="当前连接状态（无需鉴权）",
         tags=["认证"],
     )
-    def get_auth_status():
+    def get_auth_status(request: Request):
         """返回当前 CTP 网关的连接状态及连接日志，可在登录页面轮询。"""
+        if not session_store.is_valid(_request_session_token(request)):
+            return AuthStatusResponse(logged_in=False, gateway_connected=False,
+                gateway_status="stopped", gateway_name="", account_id="", connect_log=[])
         engine = trading_state.primary_engine()
         connected    = False
         gw_status    = TradingStatus.STOPPED.value
@@ -1450,177 +1465,74 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         tags=["认证"],
     )
     async def do_login(body: LoginRequest, response: Response, request: Request):
-        """
-        接受 CTP 账户配置，连接交易前置和行情前置。
-        连接过程最长等待 35 秒。成功后返回会话 token。
-        当前仅支持 vn.py/CTP 网关；登录成功后返回会话 token。
-        """
         from ..trading import create_gateway
+        from ..strategy import create_strategy
 
-        trading_state.clear_log()
-        trading_state.add_log(f"开始连接账户: {body.username}")
-        _record_audit(
-            "auth",
-            "login_attempt",
-            "started",
-            actor=body.username,
-            request=request,
-            detail={"gateway_type": body.gateway_type},
-        )
-
-        # 若已有连接先断开
-        if trading_state._main_engine:
-            trading_state.add_log("检测到已有连接，正在断开…")
-            trading_state.clear_main()
-
-        # 确定网关类型：ctp 作为 vn.py CTP 网关别名保留，便于兼容旧配置。
-        requested_gateway = (body.gateway_type or "vnpy").lower()
-        if requested_gateway not in {"vnpy", "ctp"}:
-            trading_state.add_log(f"不支持的网关类型: {body.gateway_type}")
-            raise HTTPException(status_code=400, detail="仅支持 vn.py/CTP 网关")
-        gateway_type = "vnpy"
-        trading_state.add_log("使用 vn.py CTP 网关登录")
-
-        config: Dict[str, Any] = {
-            "gateway":    gateway_type,
-            "username":   body.username,
-            "password":   body.password,
-            "broker_id":  body.broker_id,
-            "td_server":  body.td_server,
-            "md_server":  body.md_server,
-            "app_id":     body.app_id,
-            "auth_code":  body.auth_code,
-            "vnpy_environment": body.environment,
-            "connect_timeout": 25,
-            "initial_capital": 0.0,
-            "risk": {**_DEFAULT_RUNTIME_RISK, **dict(body.risk or {})},
+        if body.gateway_type.lower() not in {"vnpy", "ctp"}:
+            raise HTTPException(400, "仅支持 vn.py/CTP 网关")
+        strategy = None
+        if body.auto_start_strategy:
+            if not body.strategy_params.get("symbol") and not body.strategy_params.get("symbols"):
+                raise HTTPException(400, "自动启动策略需要合约")
+            try:
+                strategy = create_strategy(body.strategy_name, dict(body.strategy_params))
+                strategy.on_init()
+            except Exception as exc:
+                raise HTTPException(422, f"策略参数无效: {exc}") from exc
+        config = {
+            "gateway": "vnpy", "username": body.username, "password": body.password,
+            "broker_id": body.broker_id, "td_server": body.td_server, "md_server": body.md_server,
+            "app_id": body.app_id, "auth_code": body.auth_code,
+            "vnpy_environment": body.environment, "connect_timeout": 25,
+            "risk": {**runtime_risk_defaults(), **body.risk},
             "log_callback": trading_state.add_log,
         }
-
-        trading_state.add_log(f"交易前置: {body.td_server}")
-        trading_state.add_log(f"行情前置: {body.md_server}")
-
-        gateway = None
-        try:
-            gateway = create_gateway(gateway_type)
-            loop    = asyncio.get_running_loop()
-            trading_state.add_log("正在连接，请稍候（最长 35 秒）…")
-
-            success = await asyncio.wait_for(
-                loop.run_in_executor(None, gateway.connect, config),
-                timeout=35,
-            )
-        except asyncio.TimeoutError:
-            if gateway:
-                try:
-                    gateway.disconnect()
-                except Exception:
-                    logger.exception("[API] 登录超时后断开网关异常")
-            trading_state.add_log("✘ 连接超时（35s）")
-            logger.error("[API] 登录超时（35s），请检查网络和服务器地址")
-            raise HTTPException(status_code=408, detail="连接超时，请检查服务器地址或网络")
-        except Exception as exc:
-            if gateway:
-                try:
-                    gateway.disconnect()
-                except Exception:
-                    logger.exception("[API] 登录异常后断开网关异常")
-            trading_state.add_log(f"✘ 连接异常: {exc}")
-            raise HTTPException(status_code=500, detail=f"连接异常: {exc}")
-
-        if not success:
-            if gateway:
-                try:
-                    gateway.disconnect()
-                except Exception:
-                    logger.exception("[API] 登录失败后断开网关异常")
-            error_summary = ""
-            if gateway and hasattr(gateway, "connection_error_summary"):
-                error_summary = gateway.connection_error_summary()
-            if error_summary:
-                detail = f"vn.py/CTP 连接失败：{error_summary}"
-                trading_state.add_log(f"✘ {detail}")
-                raise HTTPException(status_code=502, detail=detail)
-
-            trading_state.add_log("✘ 登录失败，请检查账户信息")
-            raise HTTPException(status_code=401, detail="登录失败，请检查账户/密码/经纪商ID")
-
-        # 构建 TradingEngine 并注册
+        gateway = create_gateway("vnpy")
         engine = TradingEngine(gateway)
-
-        # 查询真实账户信息，用当前余额作为初始资金基准
         try:
-            account    = gateway.query_account()
-            account_id = account.account_id if account else ""
-            balance    = account.balance    if account else 0.0
-        except Exception:
-            account_id, balance = "", 0.0
-
-        # 用真实余额覆盖 initial_capital，并重置当日基准
-        if balance > 0:
+            success = await asyncio.wait_for(asyncio.to_thread(gateway.connect, config), 35)
+            if not success:
+                raise HTTPException(502, "柜台连接未就绪，原账户连接保持不变")
+            account = gateway.query_account()
+            balance = account.balance if account else 0.0
+            account_id = account.account_id if account else body.username
             config["initial_capital"] = balance
-        engine.configure_risk(config)
-        trading_state.set_main_engine(engine, config)
-        trading_state._day_open_balance = balance  # 以登录时余额作为日内基准
-        engine.risk_manager.set_day_open_balance(balance)
+            engine.configure_risk(config)
+            strategy_id = ""
+            if strategy:
+                strategy.initial_capital = strategy.current_capital = balance
+                engine.set_strategy(strategy)
+                if not engine.start(config):
+                    raise HTTPException(500, "策略启动失败，原账户连接保持不变")
+                strategy_id = f"{body.strategy_name}_main"
+        except BaseException as exc:
+            await asyncio.to_thread(gateway.disconnect)
+            if isinstance(exc, asyncio.TimeoutError):
+                raise HTTPException(408, "连接超时，原账户连接保持不变") from exc
+            if isinstance(exc, (HTTPException, asyncio.CancelledError)):
+                raise
+            logger.exception("新账户连接失败")
+            raise HTTPException(502, "柜台连接失败，原账户连接保持不变") from exc
 
-        strategy_started = False
-        strategy_id = ""
-        if body.auto_start_strategy:
-            from ..strategy import create_strategy
-
-            strategy_params = dict(body.strategy_params or {})
-            if not strategy_params.get("symbol") and not strategy_params.get("symbols"):
-                raise HTTPException(status_code=400, detail="自动启动策略需要 strategy_params.symbol 或 symbols")
-            strategy = create_strategy(body.strategy_name, strategy_params)
-            strategy.initial_capital = config.get("initial_capital", 0.0) or balance or 1_000_000.0
-            engine.set_strategy(strategy)
-
-            strategy_config = {
-                **config,
-                "strategy_name": body.strategy_name,
-                "strategy_params": strategy_params,
-            }
-            if not engine.start(strategy_config):
-                raise HTTPException(status_code=500, detail="策略运行时启动失败")
-
-            strategy_id = f"{body.strategy_name}_main"
-            trading_state.register(strategy_id, strategy, engine, strategy_config)
-            symbols = strategy_params.get("symbols") or [strategy_params.get("symbol")]
-            _subscribe_market_ticks(engine, [s for s in symbols if s])
-            strategy_started = True
-            trading_state.add_log(f"策略已自动启动: {strategy_id}")
-
-        trading_state.add_log(f"✔ 登录成功，账户: {account_id}，当前余额: ¥{balance:,.2f}（用作初始资金基准）")
-
-        token = session_store.create()
-        response.set_cookie(
-            key=SESSION_COOKIE_NAME,
-            value=token,
-            max_age=SESSION_COOKIE_MAX_AGE,
-            httponly=True,
-            samesite="lax",
-            secure=secure_session_cookie_enabled(),
-        )
-
-        _record_audit(
-            "auth",
-            "login",
-            "success",
-            actor=body.username,
-            request=request,
-            detail={"gateway_type": gateway_type, "account_id": account_id},
-        )
-
-        return LoginResponse(
-            success        = True,
-            message        = "登录成功，策略已启动" if strategy_started else "登录成功",
-            gateway_status = gateway.status.value,
-            account_id     = account_id,
-            balance        = balance,
-            strategy_started = strategy_started,
-            strategy_id      = strategy_id,
-        )
+        # Commit only after the replacement is ready. Old cookies and sockets lose access.
+        session_store.revoke_all()
+        await asyncio.to_thread(trading_state.clear_main)
+        stored_config = {k: v for k, v in config.items() if k not in {"password", "auth_code"}}
+        trading_state.set_main_engine(engine, stored_config)
+        trading_state._day_open_balance = balance
+        if strategy:
+            stored_config.update(strategy_name=body.strategy_name, strategy_params=dict(body.strategy_params))
+            trading_state.register(strategy_id, strategy, engine, stored_config)
+            symbols = body.strategy_params.get("symbols") or [body.strategy_params.get("symbol")]
+            _subscribe_market_ticks(engine, [symbol for symbol in symbols if symbol])
+        token = session_store.create(account_id=account_id)
+        response.set_cookie(SESSION_COOKIE_NAME, token, max_age=SESSION_COOKIE_MAX_AGE,
+            httponly=True, samesite="lax", secure=secure_session_cookie_enabled())
+        _record_audit("auth", "login", "success", actor=body.username, request=request,
+            detail={"account_id": account_id})
+        return LoginResponse(success=True, message="登录成功", gateway_status=gateway.status.value,
+            account_id=account_id, balance=balance, strategy_started=strategy is not None,
+            strategy_id=strategy_id)
 
     @app.post("/auth/logout", summary="断开连接并注销会话", tags=["认证"])
     async def do_logout(request: Request):
@@ -1631,6 +1543,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         request_token = request.cookies.get(SESSION_COOKIE_NAME, "")
         if request_token:
             session_store.revoke(request_token)
+        session_store.revoke_all()
         response = JSONResponse({"success": True, "message": "已断开连接"})
         response.delete_cookie(SESSION_COOKIE_NAME)
         trading_state.add_log("用户主动断开连接")
@@ -2230,7 +2143,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         try:
             await ws.send_text(_json.dumps(_build_system_snapshot(), ensure_ascii=False, default=str))
             while True:
-                await ws.receive_text()
+                await _session_receive_text(ws)
         except WebSocketDisconnect:
             pass
         except Exception as exc:
@@ -2245,7 +2158,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         await orders_manager.connect(ws)
         try:
             while True:
-                await ws.receive_text()
+                await _session_receive_text(ws)
         except WebSocketDisconnect:
             pass
         except Exception as exc:
@@ -2264,7 +2177,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
                 _json.dumps(_build_positions_snapshot(), ensure_ascii=False, default=str)
             )
             while True:
-                await ws.receive_text()
+                await _session_receive_text(ws)
         except WebSocketDisconnect:
             pass
         except Exception as exc:
@@ -2283,7 +2196,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
                 _json.dumps(_build_dashboard_metrics(), ensure_ascii=False, default=str)
             )
             while True:
-                await ws.receive_text()
+                await _session_receive_text(ws)
         except WebSocketDisconnect:
             pass
         except Exception as exc:
@@ -2329,7 +2242,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
                 )
             )
             while True:
-                await ws.receive_text()
+                await _session_receive_text(ws)
         except WebSocketDisconnect:
             pass
         except Exception as exc:
@@ -2478,7 +2391,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         async def _recv_loop():
             try:
                 while True:
-                    raw = await ws.receive_text()
+                    raw = await _session_receive_text(ws)
                     if raw == "ping":
                         await ws.send_text("pong")
                         continue
@@ -2582,7 +2495,13 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
                 logger.debug(f"[WS:watch] push_loop 异常: {e}")
 
         try:
-            await asyncio.gather(_recv_loop(), _push_loop())
+            tasks = [asyncio.create_task(_recv_loop()), asyncio.create_task(_push_loop())]
+            try:
+                await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
         except Exception as exc:
             logger.debug(f"[WS:watch] 连接结束: {exc}")
         finally:

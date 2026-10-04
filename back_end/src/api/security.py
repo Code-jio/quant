@@ -17,7 +17,6 @@ from typing import Dict, FrozenSet
 OPEN_PATHS: FrozenSet[str] = frozenset(
     {
         "/auth/login",
-        "/auth/logout",
         "/auth/status",
         "/auth/servers",
         "/health",
@@ -26,7 +25,6 @@ OPEN_PATHS: FrozenSet[str] = frozenset(
         "/openapi.json",
         "/redoc",
         "/ws-demo",
-        "/system/logs",
         "/backtest/strategies",
         "/watch/search",
         "/watch/kline",
@@ -44,20 +42,34 @@ class SessionStore:
     def __init__(self, ttl: timedelta | None = None) -> None:
         self.ttl = ttl or timedelta(hours=24)
         self._sessions: Dict[str, datetime] = {}
+        self._identities: dict[str, dict] = {}
+        self.generation = 0
         self._lock = threading.RLock()
 
-    def create(self) -> str:
+    def create(self, account_id: str = "", role: str = "trading") -> str:
         token = secrets.token_urlsafe(32)
         expires_at = datetime.now() + self.ttl
         with self._lock:
             self._sessions[token] = expires_at
+            self._identities[token] = {"account_id": account_id, "role": role, "generation": self.generation}
         return token
+
+    def revoke_all(self) -> None:
+        with self._lock:
+            self.generation += 1
+            self._sessions.clear()
+            self._identities.clear()
+
+    def identity(self, token: str) -> dict:
+        with self._lock:
+            return dict(self._identities.get(token, {})) if self.is_valid(token) else {}
 
     def revoke(self, token: str) -> None:
         if not token:
             return
         with self._lock:
             self._sessions.pop(token, None)
+            self._identities.pop(token, None)
 
     def is_valid(self, token: str) -> bool:
         if not token:
@@ -90,6 +102,9 @@ class SessionStore:
 
 
 def is_open_path(path: str) -> bool:
+    if path == "/backtest/run":
+        from ..settings import env_bool, is_production_env
+        return env_bool("QUANT_ALLOW_PUBLIC_RESEARCH", not is_production_env())
     return path in OPEN_PATHS
 
 
