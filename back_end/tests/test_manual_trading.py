@@ -144,7 +144,7 @@ def test_quick_close_short_position_uses_buy_direction_and_requested_offset(monk
     with TestClient(app) as client:
         login(client)
         allow_market_orders(client)
-        gateway.positions["rb2505.short"] = Position(symbol="rb2505", direction=Direction.SHORT, volume=2)
+        gateway.positions["rb2505.short"] = Position(symbol="rb2505", direction=Direction.SHORT, volume=2, yd_volume=2)
 
         response = client.post(
             "/positions/rb2505/close",

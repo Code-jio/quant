@@ -102,7 +102,7 @@ class RiskManagerTest(unittest.TestCase):
         positions = {"rb2505": Position(symbol="rb2505", direction=Direction.NET, volume=1)}
 
         result = manager.check_signal(
-            self._signal(offset=OffsetFlag.CLOSE, volume=2),
+            self._signal(offset=OffsetFlag.CLOSE, volume=2, direction=Direction.SHORT),
             positions=positions,
         )
 
