@@ -38,6 +38,8 @@ class OrderManager:
 
     def __init__(self, gateway):  # 使用对象而非类型提示避免循环导入
         self.gateway = gateway
+        self.dispatch_signal = None
+        self._replacements = {}
         self.lock = threading.RLock()
 
         # 普通订单存储
@@ -77,6 +79,12 @@ class OrderManager:
         logger.info("订单管理器已停止")
 
     def submit_order(self, signal: Signal) -> str:
+        """All public dispatch paths must use the engine's risk gateway."""
+        if self.dispatch_signal is None:
+            raise RuntimeError("OrderManager must be bound to a TradingEngine")
+        return self.dispatch_signal(signal)
+
+    def _submit_validated(self, signal: Signal) -> str:
         """提交普通订单"""
         with self.lock:
             order_id = self.gateway.send_order(signal)
@@ -92,7 +100,9 @@ class OrderManager:
                     status=OrderStatus.SUBMITTING,
                     offset=getattr(signal, 'offset', OffsetFlag.OPEN),
                 )
-                self.active_orders[order_id] = order
+                # A synchronous broker callback may already have delivered a newer state.
+                order = self.gateway.orders.get(order_id, order)
+                self.update_order(order)
 
                 # 更新网关中的订单
                 self.gateway.orders[order_id] = order
@@ -101,47 +111,33 @@ class OrderManager:
             return order_id
 
     def cancel_order(self, order_id: str) -> bool:
-        """撤销订单"""
+        """True acknowledges sending the request, never broker cancellation."""
         with self.lock:
-            # 先尝试在网关层撤销
-            success = self.gateway.cancel_order(order_id)
-            if success and order_id in self.active_orders:
-                order = self.active_orders[order_id]
-                order.status = OrderStatus.CANCELLED
-                order.update_time = datetime.now()
-
-                # 移动到已完成订单
-                self.completed_orders[order_id] = self.active_orders.pop(order_id)
-
-                # 更新网关中的订单状态
-                if order_id in self.gateway.orders:
-                    self.gateway.orders[order_id] = order
-
-                # 调用回调
-                if self.on_order_callback:
-                    self.on_order_callback(order)
-
-                logger.info(f"订单已撤销: {order_id}")
-            elif success and order_id in self.gateway.orders:
-                # 如果在网关中有但在管理器中没有，则直接更新网关订单
-                order = self.gateway.orders[order_id]
-                order.status = OrderStatus.CANCELLED
-                order.update_time = datetime.now()
-
-                if self.on_order_callback:
-                    self.on_order_callback(order)
-
-            return success
+            return self.gateway.cancel_order(order_id)
 
     def update_order(self, order: Order) -> None:
-        """Synchronize a broker order callback into local order books."""
+        replacement = None
         with self.lock:
+            previous = self.completed_orders.get(order.order_id)
+            if previous and not previous.is_active() and order.is_active():
+                return
             if order.is_active():
                 self.active_orders[order.order_id] = order
-                self.completed_orders.pop(order.order_id, None)
             else:
                 self.completed_orders[order.order_id] = order
                 self.active_orders.pop(order.order_id, None)
+                change = self._replacements.pop(order.order_id, None)
+                if change and order.status == OrderStatus.CANCELLED:
+                    price, total = change
+                    remaining = max(0, total - order.traded_volume)
+                    if remaining:
+                        replacement = Signal(order.symbol, datetime.now(), order.direction, price,
+                            remaining, order.order_type, order.offset, comment=f"replace:{order.order_id}")
+            self.gateway.orders[order.order_id] = order
+            while len(self.completed_orders) > 2000:
+                self.completed_orders.pop(next(iter(self.completed_orders)))
+        if replacement:
+            self.submit_order(replacement)
 
     def batch_submit_orders(self, signals: List[Signal]) -> List[str]:
         """批量提交订单"""
@@ -161,49 +157,20 @@ class OrderManager:
         return results
 
     def modify_order(self, order_id: str, new_price: Optional[float] = None, new_volume: Optional[int] = None) -> bool:
-        """修改订单（实际上是撤销原订单并提交新订单）"""
+        """Queue a cancel/replace; new_volume is the desired total, not remaining size."""
         with self.lock:
-            if order_id not in self.active_orders:
-                logger.warning(f"订单不存在或已失效: {order_id}")
+            order = self.active_orders.get(order_id)
+            if order is None or order_id in self._replacements:
                 return False
-
-            original_order = self.active_orders[order_id]
-
-            # 撤销原订单
+            total = order.volume if new_volume is None else new_volume
+            price = order.price if new_price is None else new_price
+            if total < order.traded_volume or total <= 0 or price <= 0:
+                return False
+            self._replacements[order_id] = (price, total)
             if not self.cancel_order(order_id):
-                logger.error(f"无法撤销原订单: {order_id}")
+                self._replacements.pop(order_id, None)
                 return False
-
-            # 创建新订单
-            new_signal = Signal(
-                symbol=original_order.symbol,
-                datetime=datetime.now(),
-                direction=original_order.direction,
-                price=new_price if new_price is not None else original_order.price,
-                volume=new_volume if new_volume is not None else original_order.volume,
-                order_type=original_order.order_type,
-                comment=f"修改订单: 替代{order_id}"
-            )
-
-            new_order_id = self.submit_order(new_signal)
-            if new_order_id:
-                logger.info(f"订单已修改: {order_id} -> {new_order_id}")
-                return True
-            else:
-                logger.error(f"无法创建新订单，尝试恢复原订单: {order_id}")
-                rollback_id = self.submit_order(Signal(
-                    symbol=original_order.symbol,
-                    datetime=original_order.create_time or datetime.now(),
-                    direction=original_order.direction,
-                    price=original_order.price,
-                    volume=original_order.volume,
-                    order_type=original_order.order_type
-                ))
-                if rollback_id:
-                    logger.info(f"原订单已恢复: {order_id} -> {rollback_id}")
-                else:
-                    logger.error(f"原订单恢复失败: {order_id}")
-                return False
+            return True
 
     def place_pre_order(self, pre_order: 'PreOrder') -> str:
         """放置预埋单"""
@@ -358,7 +325,7 @@ class OrderManager:
         if trailing_pct <= 0:
             return False
 
-        if pre_order.direction == Direction.LONG:
+        if pre_order.direction == Direction.SHORT:
             best_price = getattr(pre_order, "_trail_best_price", None)
             if best_price is None or current_price > best_price:
                 pre_order._trail_best_price = current_price
@@ -390,7 +357,8 @@ class OrderManager:
             direction=pre_order.direction,
             price=pre_order.exec_price if pre_order.exec_price > 0 else pre_order.trigger_price,
             volume=pre_order.volume,
-            order_type=pre_order.order_type or OrderType.MARKET,
+            order_type=pre_order.order_type or OrderType.LIMIT,
+            offset=pre_order.offset,
             comment=f"由预埋单触发: {pre_order.type.value}"
         )
 
@@ -430,7 +398,8 @@ class PreOrder:
     volume: int
     trigger_price: float  # 触发价格
     exec_price: float = 0  # 执行价格，为0表示市价执行
-    order_type: OrderType = OrderType.MARKET
+    order_type: OrderType = OrderType.LIMIT
+    offset: Optional[OffsetFlag] = None
     trailing_percent: float = 0.0  # 移动止损百分比
     expires_at: Optional[datetime] = None  # 过期时间
     comment: str = ""
@@ -441,6 +410,13 @@ class PreOrder:
     create_time: datetime = field(default_factory=datetime.now)
     update_time: datetime = field(default_factory=datetime.now)
     related_order_id: str = ""  # 关联的实际订单ID
+
+    def __post_init__(self):
+        reducing = self.type in {PreOrderType.STOP_LOSS, PreOrderType.TAKE_PROFIT, PreOrderType.TRAILING_STOP}
+        if self.offset is None:
+            self.offset = OffsetFlag.CLOSE if reducing else OffsetFlag.OPEN
+        if reducing and self.offset == OffsetFlag.OPEN:
+            raise ValueError("Protective orders must reduce an existing position")
 
     def is_active(self) -> bool:
         """是否为活跃预埋单"""

@@ -33,6 +33,9 @@ class TradingEngine:
         self.status = TradingStatus.STOPPED
 
         self.order_manager = OrderManager(self.gateway)
+        self.order_manager.dispatch_signal = self.send_signal
+        self.trades = {}
+        self._seen_trades = set()
         self.gateway.on_order_callback = self._on_order
         self.gateway.on_trade_callback = self._on_trade
         self.gateway.on_tick_callback = self._on_tick
@@ -121,7 +124,11 @@ class TradingEngine:
             logger.error(f"停止交易引擎失败: {e}")
             self.status = TradingStatus.STOPPED
 
-    def send_signal(self, signal: 'Signal') -> str:
+    def send_signal(self, signal):
+        with self.order_manager.lock:
+            return self._send_signal_locked(signal)
+
+    def _send_signal_locked(self, signal: 'Signal') -> str:
         """发送交易信号"""
         self.last_reject_reason = ""
         if self.status not in (TradingStatus.TRADING, TradingStatus.CONNECTED):
@@ -144,7 +151,7 @@ class TradingEngine:
                 logger.warning(f"风控拒单: {risk_result.reason}")
                 return ""
 
-            order_id = self.order_manager.submit_order(signal)
+            order_id = self.order_manager._submit_validated(signal)
             if order_id:
                 self.risk_manager.record_order(signal)
                 logger.info(f"发送信号: {signal.symbol} {signal.direction.value} {signal.volume}@{signal.price}")
@@ -200,7 +207,10 @@ class TradingEngine:
             "ask_price_1": tick.ask_price_1,
             "timestamp": tick.timestamp,
         })
-        if not self.strategy:
+        if not self.strategy or self.status != TradingStatus.TRADING:
+            return
+        symbols = self.strategy.params.get("symbols") or [getattr(self.strategy, "symbol", None)]
+        if tick.symbol not in symbols:
             return
         try:
             bar = self._tick_to_bar(tick)
@@ -240,7 +250,7 @@ class TradingEngine:
             updated = bar_frame
         else:
             updated = pd.concat([existing, bar_frame])
-            updated = updated[~updated.index.duplicated(keep="last")].sort_index()
+            updated = updated[~updated.index.duplicated(keep="last")].sort_index().tail(2000)
 
         self.strategy.data[tick.symbol] = updated
         return bar
@@ -259,6 +269,8 @@ class TradingEngine:
                     "Strategy signal rejected: %s %s %s",
                     signal.symbol, signal.direction, signal.volume,
                 )
+        if len(signals) > 1000:
+            del signals[:-1000]
         self._processed_signal_count = len(signals)
 
     def _market_data_for_symbol(self, symbol: str) -> Dict[str, Any]:
@@ -313,13 +325,17 @@ class TradingEngine:
                 logger.error(f"策略订单回调失败: {e}")
 
     def _on_trade(self, trade: 'Trade'):
-        """成交回调"""
-        if self.strategy:
-            try:
+        key = (trade.account_id or self.gateway.account.account_id, trade.trading_day,
+               trade.exchange, trade.trade_id)
+        with self.order_manager.lock:
+            if not trade.trade_id or key in self._seen_trades:
+                return
+            self._seen_trades.add(key)
+            self.trades[key] = trade
+            if self.strategy:
+                self.strategy.trades.append(trade)
                 self.strategy.update_position(trade.symbol, trade)
                 self.strategy.on_trade(trade)
-            except Exception as e:
-                logger.error(f"策略成交回调失败: {e}")
 
     def _on_pre_order_status_change(self, pre_order: PreOrder):
         """预埋单状态变更回调"""

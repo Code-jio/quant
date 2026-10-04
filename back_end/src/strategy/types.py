@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Optional
+import math
 
 
 class Direction(Enum):
@@ -51,7 +52,15 @@ class Signal:
 
     def validate(self) -> bool:
         """验证信号有效性"""
-        if not self.symbol:
+        if not isinstance(self.symbol, str) or not self.symbol.strip():
+            return False
+        if not isinstance(self.direction, Direction) or self.direction == Direction.NET:
+            return False
+        if not isinstance(self.order_type, OrderType) or not isinstance(self.offset, OffsetFlag):
+            return False
+        if not isinstance(self.price, (int, float)) or not math.isfinite(self.price):
+            return False
+        if isinstance(self.volume, bool) or not isinstance(self.volume, int):
             return False
         if self.order_type != OrderType.MARKET and self.price <= 0:
             return False
@@ -100,6 +109,12 @@ class Trade:
     commission: float = 0.0
     pnl: float = 0.0
     trade_time: datetime = field(default_factory=datetime.now)
+    offset: Optional[OffsetFlag] = None  # None is reserved for legacy imported fills.
+    exchange: str = ""
+    account_id: str = ""
+    trading_day: str = ""
+    pnl_known: bool = True
+    commission_known: bool = True
 
 
 @dataclass
@@ -112,10 +127,12 @@ class Position:
     price: float = 0.0
     cost: float = 0.0
     pnl: float = 0.0
+    yd_volume: Optional[int] = None
+    exchange: str = ""
 
     def __post_init__(self):
-        if self.direction == Direction.NET:
-            self.volume = abs(self.volume)
+        if self.frozen < 0 or self.frozen > abs(self.volume):
+            raise ValueError("Frozen volume must be within position volume")
 
     @property
     def is_long(self) -> bool:

@@ -539,6 +539,9 @@ def timeout(seconds: float, error_handler: Optional[ErrorHandler] = None):
     return decorator
 
 
+with_timeout = timeout
+
+
 def handle_errors(
     default_return: Any = None,
     log_exception: bool = True,
@@ -620,7 +623,7 @@ class ExceptionHandler:
                 return request_func()
 
             # 再应用超时逻辑
-            @timeout(seconds=timeout, error_handler=self.error_handler)
+            @with_timeout(seconds=timeout, error_handler=self.error_handler)
             def timeout_wrapper():
                 return retry_wrapper()
 
@@ -688,7 +691,7 @@ class ExceptionHandler:
             def retry_wrapper():
                 return trade_func()
 
-            @timeout(seconds=timeout, error_handler=self.error_handler)
+            @with_timeout(seconds=timeout, error_handler=self.error_handler)
             def timeout_wrapper():
                 return retry_wrapper()
 
