@@ -1,0 +1,14 @@
+{
+  "backend-verified.txt": "47462865984b5aefbc8b81d5593303483b3f88121883f9a559f7dd50791e525e",
+  "backtest-offline.png": "5c5766d4306626bc3002bf8708d0b187325a93b17203c140b59238570614ba71",
+  "benchmark-verified.json": "79e32b0d6fa6ef99537c58283708031f9b66fffe51df3291d4210bec0cdf9b87",
+  "browser-e2e-verified.txt": "d86c6d688ceaf5f82e61ea4f4f09c2c1c85618b9ee6454202758f1aff1d5ebb3",
+  "cli-help-verified.txt": "f160dedf0a90dffbdf222f7b47f6da2a7c1058c330ee6cc0a2f7186c784f1fe6",
+  "coverage-verified.txt": "a66d4186eb69fad2b46b7df2b52995d5c0d84b062c9033316a6d394e544f2539",
+  "frontend-verified.txt": "cb88aa205305b3f96b4d6df04c4815f69160dc39623f18ae281781cc9d735e16",
+  "mypy-verified.txt": "dda4c9b5d4afe91534d9c20ef74d9c9ce814b17a96dcddd45fc05d5dfadf304b",
+  "npm-audit-after.json": "cf4d7139880d3acff058aec39023a18e03b5d2c6ebe521744e909c1486298c16",
+  "python-pypi-audit.json": "ab47d158e7e6e25797bd69c6973e478b84715cde91a6653dd79bec9ba527322b",
+  "ruff-verified.txt": "a4443afdcfb6d7363adb285762515ccf7cf50473b1a05c20c1a50f6bed4d26b0",
+  "watch-history.png": "d757e0f3598e4e1ae560a6808395eb1c75441bc075d9c6a5cc740ddffcfd34c8"
+}

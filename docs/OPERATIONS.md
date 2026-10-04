@@ -1,0 +1,49 @@
+# 单实例运行与恢复
+
+## 配置与启动
+
+- API 唯一入口 `src.api:create_app`；`server.py` 强制单 worker、无 reload，默认 loopback。
+- `QUANT_ENV=production` 开启生产会话 Cookie 默认 Secure，须通过 HTTPS 反向代理；不要仅改成公网监听。反向代理仅允许受控访问，支持 WebSocket，配置可信域名。
+- `QUANT_CORS_ORIGINS` 使用逗号分隔的精确前端 Origin；禁止通配符配合 Cookie。前后端同域代理优先。
+- `QUANT_BIND_HOST`、`QUANT_PORT` 控制绑定；`QUANT_INSTANCE_LOCK` 必须指向所有同账户执行进程共享的本机锁文件。不同工作目录或机器没有分布式执行锁，需要部署层保证唯一执行者。
+- `QUANT_LEDGER_PATH` 为执行账本，默认 `data/runtime/execution.db`；审计默认 `data/runtime/audit.db`。历史库 `data/historical/quotes.db`。
+- 开仓要求已验证合约乘数、最小手数、最小变动价位和保证金率。保证金率由登录参数或本地配置 `contract_margin_rates` 提供，需由柜台核实。合约 metadata 不完整时不采用猜测值。
+
+## 备份和恢复演练
+
+在 `back_end` 目录，使用 `.venv/Scripts/python`：
+
+```powershell
+.venv/Scripts/python -m src.maintenance backup data/runtime/execution.db backups/execution-20261005.db
+.venv/Scripts/python -m src.maintenance backup data/runtime/audit.db backups/audit-20261005.db
+# 停止执行服务，恢复到一个不存在的新路径，不覆盖原数据库
+.venv/Scripts/python -m src.maintenance restore backups/execution-20261005.db data/runtime/restored-execution.db
+$env:QUANT_LEDGER_PATH = 'data/runtime/restored-execution.db'
+.venv/Scripts/python server.py
+```
+
+备份使用 SQLite backup API，涵盖 WAL 已提交内容并检查完整性。恢复工具获取本机执行锁，目标必须为新文件；旧库保留可回滚。测试已覆盖账本基线的备份恢复，但没有演练真实 CTP 委托的灾难恢复。`backups/` 也必须放在受控目录；备份包含账户及成交记录。
+
+重启后会话失效，必须重新登录。历史成交按账户/交易日/交易所/成交 ID 去重；历史委托加载但未收到活动委托回放时保持阻塞。报单 intent 结果不确定时禁止自动重发。当前没有安全的自动清除未知 intent 功能；应先从柜台取得对应委托/成交凭证，再由维护者做受审计的数据修复，不可直接删除账本绕过门禁。
+
+## 非交易时段与真实环境验收
+
+休市时无法登录、无新行情、查询超时应作为环境状态记录。不能把最后回报距今当作网络 RTT，也不能凭日志文本判断就绪。真实账户验收应在合适时段依次验证：
+
+1. 连接、结算确认、合约/资金/持仓完整快照，核对可用资金、已用保证金、费用、今昨仓。
+2. MD 与 TD 独立断线、重连、空持仓查询和账户切换后旧会话失效。
+3. 在专用测试账户核对限价、撤单后迟到成交、部分成交、撤改单、平今/平昨、重复成交回放。
+4. 比较两个交易日的日内损失基线、重启后活动委托、未确认报单阻塞和急停恢复。
+5. 核验品种交易时段、夜盘归属、节假日、跨夜小时线。当前日线使用 TradingDay，但小时聚合采用时钟桶，并非完整交易所分节日历。
+
+没有执行上述真实连接/下单检查。手续费和成交实现盈亏若原始回报未提供，会显示未知，不能拿 0 代替柜台事实。
+
+## 保留策略与监测
+
+内存历史 bar 2000、策略信号 1000、近期成交 500、已完成订单 2000；活动订单不因展示窗口而丢弃。SQLite 执行和审计表目前保留全部历史，需由运维按容量做备份、离线归档；尚未实现自动分区和归档。
+
+`/health` 表示服务存活；`/risk/status`、`/trading/reconcile` 提供执行就绪信息。监控仅持久化分钟权益，尚未提供跨日正式绩效；样本不足的实时夏普显示未知。性能报告中的回放为本机单合约路径，不能推断真实高频柜台容量。
+
+## 凭据
+
+真实 JSON 配置、环境文件、CTP 流和数据库不得提交。`scripts/check_secrets.py` 只检查已跟踪配置与私钥标记，是基础门禁，不替代全面密钥扫描。历史三处授权码归属和有效性仍需所有者核实；若是有效非公开凭据，先轮换，再评估 Git 历史清理。

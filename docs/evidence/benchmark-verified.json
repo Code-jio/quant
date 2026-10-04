@@ -1,0 +1,11 @@
+{
+  "bars_replayed": 6000,
+  "retained_bars": 2000,
+  "median_ms_2000_3000": 1.626000041142106,
+  "median_ms_5000_6000": 1.5328999725170434,
+  "traced_memory_bytes_at_3000_6000": [
+    499847,
+    513836
+  ],
+  "scope": "single-symbol local pandas history path with tracemalloc, not a native feed throughput benchmark"
+}

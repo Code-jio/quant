@@ -1,146 +1,73 @@
-# 期货量化交易系统 — 项目文档
+# Quant — 期货研究与交易工作台
 
-## 一、系统架构总览
+Vue 3 + FastAPI + SQLite。支持历史数据导入、离线回测、图表和单账户 CTP 适配。当前可复现环境为 **Windows x64 / Python 3.12 / Node.js 24**。原生 CTP 接入需要独立安装与柜台验收，离线测试通过不代表实盘验收通过。
 
-┌──────────────────────────────────────────────────────────┐
-│                    期货量化交易系统                        │
-├──────────┬──────────┬───────────┬───────────┬────────────┤
-│ 数据层    │ 策略层   │ 回测层     │ 执行层     │ 监控层     │
-│          │          │           │           │            │
-│ Tick/Bar │ 因子计算  │ 历史回测   │ CTP交易网关│ 风控模块   │
-│ 合约管理  │ 信号生成  │ 绩效归因   │ 订单路由   │ 持仓监控   │
-│ 主力换月  │ 仓位计算  │ 滑点模拟   │ 模拟/实盘  │ 盈亏告警   │
-└──────────┴──────────┴───────────┴───────────┴────────────┘
+整改结果见 [整改报告](docs/REMEDIATION_RESULTS_2026-10-04.md) 和 [55 项清单](docs/IMPROVEMENT_BACKLOG_2026-10-04.csv)。原始审查保存在 [审查报告](docs/PROJECT_REVIEW_2026-10-04.md)。
 
-## 二、项目结构
+## 安装与启动
 
-quant-trading-system/
-├── config/                  # 配置文件
-│   ├── settings.yaml        # 全局配置（数据库连接、API密钥等）
-│   └── contracts.yaml       # 合约信息表（乘数、保证金率、手续费）
-├── data/
-│   ├── fetcher.py           # 数据采集（Tick / K线）
-│   ├── cleaner.py           # 数据清洗（夜盘时间归属、异常值处理）
-│   ├── storage.py           # 数据存储（时序数据库读写）
-│   └── contract_manager.py  # 主力合约换月 & 价格复权
-├── strategy/
-│   ├── base.py              # 策略基类（统一接口）
-│   ├── factors.py           # 因子计算
-│   ├── cta_strategy.py      # CTA趋势策略（均线、通道突破等）
-│   ├── spread_strategy.py   # 套利策略（跨期、跨品种）
-│   ├── ml_strategy.py       # 机器学习策略
-│   └── signals.py           # 信号生成 & 仓位计算
-├── backtest/
-│   ├── engine.py            # 回测引擎
-│   ├── analyzer.py          # 绩效分析（夏普、Calmar、最大回撤）
-│   └── visualizer.py        # 回测可视化（K线 + 信号标注 + 净值曲线）
-├── execution/
-│   ├── gateway.py           # CTP 交易网关封装
-│   ├── order_manager.py     # 订单管理（下单、撤单、状态追踪）
-│   ├── position_manager.py  # 持仓管理
-│   └── risk.py              # 风控模块
-├── monitor/
-│   ├── logger.py            # 日志记录
-│   ├── alert.py             # 告警推送（钉钉/企业微信）
-│   └── dashboard.py         # Web 仪表盘（FastAPI）
-├── notebooks/               # Jupyter 策略研究笔记
-├── tests/                   # 单元测试
-├── main.py                  # 系统入口
-└── requirements.txt         # 依赖清单
+在项目根目录运行 PowerShell：
 
-```
----
-
-## 三、技术选型与依赖库
-
-### 3.1 数据层
-
-| 用途 | 推荐方案 | 说明 |
-|------|---------|------|
-| 实时行情 | CTP 接口（`vnpy_ctp`） | 期货公司提供的标准接口，Tick 级数据 |
-| 历史数据 | `tqsdk` / `akshare` / vnpy 自带录制 | tqsdk 历史数据质量好，免费版有限制 |
-| 数据存储 | `InfluxDB` / `PostgreSQL + TimescaleDB` | Tick 数据量大，时序数据库是刚需 |
-| 内存缓存 | `Redis` | 实时行情分发、最新持仓缓存 |
-| 数据处理 | `pandas` / `polars` / `numpy` | 日常计算 |
-
-```bash
-cd back_end
-pip install -r requirements.txt
-
-# CLI 回测/实盘模式
-python main.py
-
-# 启动 API 服务器 (端口 8000)
-start.bat
-# 或
-python -m uvicorn src.api:create_app --factory --host 0.0.0.0 --port 8000
-```
-
-### 前端
-
-```bash
+```powershell
+py -3.12 -m venv back_end/.venv
+back_end/.venv/Scripts/python -m pip install -r back_end/requirements-dev.lock
+back_end/.venv/Scripts/python scripts/check_environment.py
 cd front_end
-npm install
-npm run dev     # 开发服务器 (端口 5173，代理 API 到 :8000)
+npm ci
+npm run dev
 ```
 
-### 配置
+在另一个 PowerShell 窗口启动后端：
 
-复制 `back_end/config/config_example.jsonc` 为 `config_production.jsonc`，填入真实 CTP 账户信息。
-
-## 项目结构
-
-```
-├── back_end/                     # Python 后端
-│   ├── config/                   # 配置文件（.jsonc）
-│   ├── data/historical/          # SQLite 历史行情数据库
-│   ├── src/
-│   │   ├── api/                  # FastAPI REST + WebSocket API
-│   │   │   ├── app.py            # 应用工厂
-│   │   │   ├── schemas.py        # Pydantic 模型
-│   │   │   ├── state.py          # 全局交易状态
-│   │   │   ├── deps.py           # 共享辅助函数
-│   │   │   ├── ws.py             # WebSocket 端点
-│   │   │   ├── security.py       # 会话管理
-│   │   │   └── routers/          # 路由模块
-│   │   ├── data/                 # 数据管理 (DataManager, DB, Cache, 指标)
-│   │   ├── strategy/             # 策略框架 (基类, 注册, 内置策略)
-│   │   ├── backtest/             # 回测引擎 (事件驱动)
-│   │   ├── trading/              # 交易引擎 (CTP 网关, 风控)
-│   │   ├── analysis/             # 分析模块 (风险, 绩效)
-│   │   ├── watch/                # 行情监听 (K线, 合约搜索)
-│   │   ├── common/               # 公共异常
-│   │   └── observability.py      # 可观测性 (指标, 审计)
-│   ├── tests/                    # 测试
-│   └── main.py                   # CLI 入口
-│
-└── front_end/                    # Vue 3 前端
-    ├── src/
-    │   ├── components/           # UI 组件 (K线图, 交易面板, 订单簿)
-    │   ├── composables/          # WebSocket composables
-    │   ├── views/                # 页面视图
-    │   ├── stores/               # Pinia 状态管理
-    │   ├── config/               # 网络配置
-    │   └── workers/              # Web Worker (指标计算)
-    ├── tests/                    # Vitest + Playwright 测试
-    └── package.json
+```powershell
+cd back_end
+.venv/Scripts/python server.py
 ```
 
-## 功能
+前端为 `http://localhost:5173`，后端默认仅监听 `127.0.0.1:8000`。`start.bat` 和 `start-dev.bat` 使用同一个 `.venv`，均不热重载、不启动多个 worker。仅运行研究/API 时可安装 `requirements-research.lock`；开发与 CI 安装 `requirements-dev.lock`。锁定了直接和传递依赖版本；锁适用于上述 Windows/Python 环境，尚未做全新主机安装验收。
 
-- **CTP 登录** — 连接期货公司交易/行情前置
-- **实时行情** — WebSocket 推送 tick 数据，K 线图 + 技术指标
-- **手动交易** — 开仓/平仓/撤单，支持市价/限价
-- **策略管理** — 内置 MA 交叉、RSI、突破策略，支持热更新参数
-- **回测引擎** — 事件驱动回测，返回资金曲线、交易标记、风险指标、月度热力图
-- **风险控制** — 单笔/持仓/频率限制，日内亏损熔断
-- **系统监控** — CPU/内存/网络实时监控，结构化日志
-- **仪表盘** — PnL、夏普比率、最大回撤、权益曲线
+离线访问 `/backtest` 无需 CTP 登录。在配置页显式开启“模拟数据”后才会生成带标记的临时样本；样本不会写进真实历史库。设置 `QUANT_ALLOW_SYNTHETIC_DATA=0` 可以全局禁止生成。生产环境默认关闭公开研究接口；如需独立研究服务，可在受控访问范围内显式设置 `QUANT_ALLOW_PUBLIC_RESEARCH=1`。
 
-## 内置策略
+## 历史数据与回测
 
-| 策略 | 说明 | 参数 |
-|------|------|------|
-| `ma_cross` | 双均线金叉/死叉 | fast_period, slow_period |
-| `rsi` | RSI 均值回归 | rsi_period, oversold, overbought |
-| `breakout` | N 日高低点突破 | lookback_period |
+CSV 列为 `datetime,open,high,low,close,volume`，可带 `open_interest`。时间按 Asia/Shanghai 规范化，来源必须明确。每种周期独立导入；分钟数据缺失时不会用日线拼造。
+
+```powershell
+cd back_end
+.venv/Scripts/python -m src.maintenance import-bars quotes.csv --symbol rb2610 --timeframe 1m --source your-data-provider
+Copy-Item config/config.example.json config/config_production.json
+# 编辑本地 config_production.json 的合约、日期、周期和回测参数后运行：
+.venv/Scripts/python main.py --mode backtest --config config/config_production.json
+```
+
+`rb2610` 仅示例，不意味着当前挂牌或可交易。真实可交易合约来自柜台元数据。历史合约搜索结果不保证可交易。交易日历未导入时，缺口检测只是启发式诊断，不能当作交易所日历结论。
+
+回测信号最早在下一根 bar 执行，限价需可达，同一根 bar 的成交量由多个委托共享。内置策略反手会先等已有委托完成，再平仓、开仓。成交统计按完整平仓回合汇总双方手续费；未平仓回合不计入已完成交易。无法计算的指标返回 `null` 并显示“—”。权益曾非正时，年化和收益率类风险指标不可计算。
+
+模型使用固定保证金和费率；没有模拟柜台逐日结算、强制平仓、盘口排队、各品种费率规则。模拟数据只用于功能验证，不能用来评估策略收益。
+
+## CTP 接入边界
+
+`requirements-live.in` 固定候选版本 vnpy 4.4.0 / vnpy_ctp 6.7.11.4；原生扩展及其传递依赖尚未在本机完成安装验收。请在独立环境按柜台要求安装并验证，不能将候选版本当作已验证实盘组合。
+
+服务必须完成 MD/TD 登录、结算确认、合约、账户、持仓快照才可开仓。保证金比例需要提供已核实的 `contract_margin_rates`；缺失时拒绝开仓。当前仅支持真实限价委托，快捷平仓使用新鲜买卖价。挂单预留采用保守计算，账户冻结资金已经更新时可能重复预留而拒绝部分原本可行的委托，优先避免超额开仓。
+
+停止策略保留网关以接收回报；退出账户关闭引擎并撤销会话。急停、日内基线、参数、权重、成交和订单持久化。重启不会自动启动策略；未确定报单结果或缺失活动订单回放时拒绝新增报单，需结合柜台回报核对。`GET /trading/reconcile` 是有来源状态的核对快照，不能替代柜台全量对账。
+
+## 检查与运行文档
+
+```powershell
+cd back_end
+.venv/Scripts/python -m ruff check main.py server.py src tests
+.venv/Scripts/python -m mypy
+.venv/Scripts/python -m pytest
+cd ../front_end
+npm run quality
+# 将 Python 测试解释器加入 PATH，或指定 QUANT_TEST_PYTHON
+$env:QUANT_TEST_PYTHON = (Resolve-Path ../back_end/.venv/Scripts/python.exe).Path
+npm run e2e
+```
+
+Playwright 会在 8000 端口启动临时离线 fixture 后端，禁止真实报单；运行前须停止占用该端口的正式服务。本机使用 Edge，CI 安装 Chromium。CI 配置位于 `.github/workflows/ci.yml`；提交后由远程 GitHub Actions 执行，目前仅有本地运行证据。
+
+部署、配置、备份恢复、交易时段验收见 [运行手册](docs/OPERATIONS.md)。
