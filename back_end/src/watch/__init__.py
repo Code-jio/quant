@@ -10,8 +10,7 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
-from typing import List, Optional
+from typing import Optional
 
 # ---------------------------------------------------------------------------
 # 品种目录
@@ -119,150 +118,21 @@ _ROOT_INDEX: dict[str, dict] = {p["root"].lower(): p for p in _CATALOG}
 # 合约代码生成
 # ---------------------------------------------------------------------------
 
-def _active_contract_months(product: dict, ahead_months: int = 12) -> list[str]:
-    """
-    根据今天的日期，生成未来 ahead_months 个月中属于该品种可交易月份的合约代码列表。
-    返回格式如 ["rb2501", "rb2503", ...]；
-    CZCE / CFFEX 大写品种返回 ["SR2501", ...]。
-    """
-    today    = date.today()
-    root     = product["root"]
-    valid_m  = set(product["months"])
-    upper    = product["upper"]
-    results  = []
-
-    for delta in range(1, ahead_months + 2):
-        # 逐月往后推
-        # 简单方法：加 delta 个月
-        year  = today.year + (today.month + delta - 1) // 12
-        month = (today.month + delta - 1) % 12 + 1
-        if month in valid_m:
-            tag = f"{year % 100:02d}{month:02d}"   # e.g. 2501
-            symbol = f"{root}{tag}" if not upper else f"{root}{tag}"
-            if upper:
-                symbol = root.upper() + tag
-            results.append(symbol)
-            if len(results) >= 6:   # 每品种最多返回 6 个活跃合约
-                break
-
-    return results
-
-
-# ---------------------------------------------------------------------------
-# 搜索逻辑
-# ---------------------------------------------------------------------------
-
-def search_contracts(
-    query:    str,
-    exchange: Optional[str] = None,
-    limit:    int = 50,
-) -> list[dict]:
-    """
-    搜索期货合约，支持四种匹配方式：
-
-    1. 根码前缀  — 用户输入是根码的前缀，如 "r" 匹配 rb/ru/rr，"jm" 精确匹配焦煤
-    2. 完整合约码— 输入包含数字，如 "rb2501" 精确返回该合约
-    3. 中文名称  — 输入包含在名称中，如 "螺纹" → 螺纹钢
-    4. 拼音首字母— 输入是拼音首字母的前缀，如 "lwg" → 螺纹钢，"hj" → 黄金
-    """
-    if not query:
-        return _all_main_contracts(exchange, limit)
-
-    q       = query.strip()
-    q_lower = q.lower()
-    q_upper = q.upper()
-    results: list[dict] = []
-    seen_roots: set[str] = set()
-
-    has_digits = any(c.isdigit() for c in q)
-
-    for p in _CATALOG:
-        if exchange and p["exchange"].upper() != exchange.upper():
+def search_contracts(query: str, exchange: Optional[str] = None, limit: int = 50,
+                     contracts=None) -> list[dict]:
+    """Search gateway-verified instruments or explicitly imported historical symbols."""
+    if contracts is None:
+        from ..data import DataManager
+        contracts={symbol:{'symbol':symbol,'source':'historical','tradable':False}
+                   for symbol in DataManager().db.get_available_symbols()}
+    rows=[]; query=query.strip().lower()
+    for symbol, spec in contracts.items():
+        root=''.join(c for c in symbol.split('.')[0] if c.isalpha()).lower()
+        product=_ROOT_INDEX.get(root,{})
+        row={**product,**spec,'symbol':symbol,'name':spec.get('name') or product.get('name',symbol)}
+        if exchange and str(row.get('exchange','')).upper()!=exchange.upper():
             continue
-
-        root_lower = p["root"].lower()
-        root_upper = p["root"].upper()
-        name       = p["name"]
-        pinyin     = p["pinyin"].lower()
-
-        # ── 匹配类型判断 ──────────────────────────────────────────────────────
-        # 1. 根码前缀匹配：输入长度 ≤ 根码长度，且输入是根码的前缀
-        code_prefix = (
-            len(q) <= len(p["root"])
-            and (root_lower.startswith(q_lower) or root_upper.startswith(q_upper))
-        )
-
-        # 2. 完整合约码匹配：输入含数字且以根码开头（如 rb2501）
-        code_contract = has_digits and (
-            q_lower.startswith(root_lower) or q_upper.startswith(root_upper)
-        )
-
-        # 3. 中文名称包含匹配
-        name_match = q in name
-
-        # 4. 拼音首字母前缀匹配（仅纯字母且长度 ≥ 2 时启用，避免单字母误命中）
-        pinyin_match = (
-            not has_digits
-            and len(q) >= 2
-            and pinyin.startswith(q_lower)
-        )
-
-        if not (code_prefix or code_contract or name_match or pinyin_match):
+        if query and not any(query in str(row.get(k,'')).lower() for k in ('symbol','name','pinyin')):
             continue
-
-        root_key = root_lower
-        if root_key in seen_roots:
-            continue
-        seen_roots.add(root_key)
-
-        # ── 生成合约列表 ──────────────────────────────────────────────────────
-        if code_contract:
-            # 用户明确输入了某个合约代码，返回该合约（若在活跃列表中找到）或直接构造
-            all_active = _active_contract_months(p)
-            contracts = [
-                c for c in all_active
-                if c.lower() == q_lower or c.upper() == q_upper
-            ]
-            if not contracts:
-                # 用户输入的合约不在预生成范围内，直接使用原始输入
-                contracts = [q_lower if not p["upper"] else q_upper]
-        else:
-            contracts = _active_contract_months(p)
-
-        for symbol in contracts:
-            suffix = symbol[len(p["root"]):]
-            results.append({
-                "symbol":       symbol,
-                "name":         f"{name}{suffix}",
-                "exchange":     p["exchange"],
-                "product_type": p["product_type"],
-                "root":         p["root"],
-                "pinyin":       p["pinyin"],
-            })
-            if len(results) >= limit:
-                return results
-
-    return results
-
-
-def _all_main_contracts(exchange: Optional[str], limit: int) -> list[dict]:
-    """无关键词时返回各品种主力（最近一个活跃合约）。"""
-    results = []
-    for p in _CATALOG:
-        if exchange and p["exchange"].upper() != exchange.upper():
-            continue
-        contracts = _active_contract_months(p, ahead_months=6)
-        if contracts:
-            sym    = contracts[0]
-            suffix = sym[len(p["root"]):].upper() if p["upper"] else sym[len(p["root"]):]
-            results.append({
-                "symbol":       sym,
-                "name":         f"{p['name']}{suffix}",
-                "exchange":     p["exchange"],
-                "product_type": p["product_type"],
-                "root":         p["root"],
-                "pinyin":       p["pinyin"],
-            })
-        if len(results) >= limit:
-            break
-    return results
+        rows.append(row)
+    return sorted(rows,key=lambda r:r['symbol'])[:max(1,min(limit,200))]

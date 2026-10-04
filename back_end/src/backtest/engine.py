@@ -91,7 +91,7 @@ class BacktestEngine:
                 df = self.data_manager.get_bars(
                     symbol,
                     self.config.start_date,
-                    self.config.end_date
+                    self.config.end_date, **({"timeframe":self.config.timeframe} if self.config.timeframe!="1d" else {})
                 )
                 if df is not None and not df.empty:
                     all_data[symbol] = df

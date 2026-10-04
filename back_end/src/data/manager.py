@@ -81,7 +81,7 @@ class DataManager:
             return False
 
     def generate_sample_data(self, symbol: str, days: int = 500,
-                             timeframe: str = "1d") -> pd.DataFrame:
+                             timeframe: str = "1d", end_date=None) -> pd.DataFrame:
         """生成模拟K线数据用于测试"""
         if not synthetic_data_enabled():
             logger.warning("模拟数据生成已禁用: %s %s", symbol, timeframe)
@@ -89,7 +89,11 @@ class DataManager:
 
         try:
             rng = np.random.default_rng(42)
-            dates = pd.date_range(end=datetime.now(), periods=days, freq='D')
+            from .governance import timeframe_to_pandas_freq
+            if not 2 <= days <= 10000:
+                raise ValueError('Sample count must be 2..10000')
+            dates = pd.date_range(end=end_date or datetime.now(), periods=days,
+                                 freq=timeframe_to_pandas_freq(timeframe))
 
             initial_price = 100.0
             returns = rng.standard_normal(days) * 0.02
@@ -118,7 +122,9 @@ class DataManager:
                 'open_interest': rng.integers(5000, 50000, days)
             })
 
-            self.save_bars(df, symbol, timeframe, data_source="synthetic")
+            df['data_source'] = 'synthetic'
+            df['adjustment'] = 'raw'
+            df['rollover_rule'] = 'none'
             return df
 
         except Exception as e:

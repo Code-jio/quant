@@ -2298,6 +2298,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         limit:      int           = 100,
         indicators: str           = "",
         since:      Optional[str] = None,
+        before:     Optional[str] = None,
     ):
         """
         获取 K 线数据并计算技术指标。
@@ -2327,6 +2328,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
                     limit      = min(limit, 1000),
                     indicators = indicators,
                     since      = since,
+                    before     = before,
                 ),
             )
             if result.get("code") != 0:
@@ -2421,6 +2423,10 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
                     syms  = msg.get("symbols", [])
                     chs   = msg.get("channels", ["tick"])
 
+                    valid_channels={'tick',*[f'kline_{iv}' for iv in ('1m','5m','15m','30m','1h','4h','1d','1w')]}
+                    if not isinstance(syms,list) or not isinstance(chs,list) or len(syms)>50 or len(subscriptions)+len(set(syms)-set(subscriptions))>50 or not set(chs)<=valid_channels:
+                        await ws.close(code=1008)
+                        return
                     if mtype == "subscribe" and syms:
                         engine = trading_state.primary_engine()
                         if engine is None or engine.gateway.status not in (TradingStatus.CONNECTED, TradingStatus.TRADING):
@@ -2457,6 +2463,9 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             except Exception as e:
                 logger.debug(f"[WS:watch] recv_loop 异常: {e}")
 
+        from ..trading.bars import BarAggregator
+        from types import SimpleNamespace
+        aggregators={}
         # 推送 tick 循环（每 500ms 推送一次）
         async def _push_loop():
             try:
@@ -2488,24 +2497,23 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
                         for ch in channels:
                             if not ch.startswith("kline_"):
                                 continue
-                            iv = ch[6:]  # e.g. "1m"
-                            last = float(snapshot.get("last") or 0)
-                            bar_update = {
-                                "type":     "kline_update",
-                                "symbol":   symbol,
-                                "interval": iv,
-                                "bar": {
-                                    "time":   datetime.now().strftime("%Y-%m-%d %H:%M"),
-                                    "open":   snapshot.get("open") or last,
-                                    "high":   max(float(snapshot.get("high") or last), last),
-                                    "low":    min(float(snapshot.get("low") or last), last),
-                                    "close":  last,
-                                    "volume": snapshot.get("volume") or 0,
-                                },
-                            }
-                            await ws.send_text(
-                                _json.dumps(bar_update, ensure_ascii=False, default=str)
-                            )
+                            iv = ch[6:]
+                            key=(symbol,iv)
+                            agg=aggregators.setdefault(key,BarAggregator(iv))
+                            raw_ts=snapshot.get('timestamp') or snapshot.get('time')
+                            if not raw_ts:
+                                continue
+                            ts=datetime.fromisoformat(str(raw_ts))
+                            if agg.last_timestamp is not None and ts<=agg.last_timestamp:
+                                continue
+                            agg.update(SimpleNamespace(symbol=symbol,timestamp=ts,
+                                last_price=float(snapshot.get('last') or 0),
+                                volume=int(snapshot.get('volume') or 0),
+                                trading_day=snapshot.get('trading_day','')))
+                            if agg.current:
+                                await asyncio.wait_for(ws.send_text(_json.dumps({
+                                    'type':'kline_update','symbol':symbol,'interval':iv,
+                                    'partial':True,'bar':agg.current},default=str)),timeout=1)
             except WebSocketDisconnect:
                 pass
             except Exception as e:
@@ -2542,7 +2550,9 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         """
         from ..watch import search_contracts
         try:
-            data = search_contracts(query=query, exchange=exchange, limit=min(limit, 200))
+            engine=trading_state.primary_engine()
+            specs=getattr(engine.gateway,'contract_specs',None) if engine else None
+            data = search_contracts(query=query, exchange=exchange, limit=min(limit, 200), contracts=specs)
             return JSONResponse({"code": 0, "data": data, "total": len(data)})
         except Exception as exc:
             logger.error(f"[watch/search] 搜索失败: {exc}")

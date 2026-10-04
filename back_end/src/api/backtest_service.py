@@ -12,6 +12,7 @@ from ..backtest import BacktestConfig, BacktestEngine
 from ..data import DataManager
 from ..settings import synthetic_data_enabled
 from ..strategy import create_strategy
+from ..data.governance import data_provenance, validate_bars
 
 
 STRATEGY_CATALOG = [
@@ -70,11 +71,15 @@ def run_backtest_sync(body: Any, cancel_event=None) -> Dict[str, Any]:
     dm = DataManager()
     symbol = (body.strategy_params or {}).get("symbol", "IF9999")
     synthetic_data_used = False
-    existing = dm.get_bars(symbol, body.start_date, body.end_date)
+    existing = dm.get_bars(symbol, body.start_date, body.end_date, bt_cfg.timeframe)
     if existing is None or existing.empty:
         if body.allow_synthetic_data and synthetic_data_enabled():
-            generated = dm.generate_sample_data(symbol, days=body.sample_days)
-            synthetic_data_used = not generated.empty
+            existing = dm.generate_sample_data(symbol, days=body.sample_days, timeframe=bt_cfg.timeframe,
+                                               end_date=body.end_date)
+            if not existing.empty:
+                existing=existing.set_index('datetime')
+                existing=existing.loc[existing.index >= pd.Timestamp(body.start_date)]
+            synthetic_data_used = not existing.empty
         else:
             return {
                 "success": False,
@@ -83,8 +88,15 @@ def run_backtest_sync(body: Any, cancel_event=None) -> Dict[str, Any]:
                 "synthetic_data_used": False,
             }
 
+    provenance=data_provenance(existing)
+    if provenance['synthetic_data_used'] and not body.allow_synthetic_data:
+        return {'success':False,'error':'历史中含模拟数据；请显式允许演示数据或重新导入',**provenance}
+    validate_bars(existing)
+    class ResearchData:
+        def get_bars(self, *_args, **_kwargs):
+            return existing.copy()
     engine = BacktestEngine(bt_cfg)
-    engine.set_data_manager(dm)
+    engine.set_data_manager(ResearchData())
     engine.set_strategy(strategy)
     engine.cancel_event = cancel_event
     engine.run()
@@ -124,29 +136,12 @@ def run_backtest_sync(body: Any, cancel_event=None) -> Dict[str, Any]:
         heatmap_data.append([dt.month - 1, yr_idx_map[str(dt.year)], round(ret * 100, 3)])
 
     cap_map = {item["date"]: item["capital"] for item in equity_curve_out}
-    pos_tracker: dict[str, str | None] = {}
     trade_markers = []
-
     for trade in sorted(engine.result.trades, key=lambda x: x.trade_time):
         symbol = trade.symbol
-        direction = trade.direction.value
-        current_position = pos_tracker.get(symbol)
-
-        if direction == "long":
-            if current_position == "short":
-                marker_type = "cover_close"
-                pos_tracker[symbol] = None
-            else:
-                marker_type = "buy_open"
-                pos_tracker[symbol] = "long"
-        else:
-            if current_position == "long":
-                marker_type = "sell_close"
-                pos_tracker[symbol] = None
-            else:
-                marker_type = "short_open"
-                pos_tracker[symbol] = "short"
-
+        opening=trade.offset.value=='open'
+        marker_type=('buy_open' if trade.direction.value=='long' else 'short_open') if opening else (
+            'cover_close' if trade.direction.value=='long' else 'sell_close')
         timestamp = trade.trade_time
         date_str = timestamp.strftime("%Y-%m-%d") if hasattr(timestamp, "strftime") else str(timestamp)[:10]
         trade_markers.append(
@@ -207,8 +202,8 @@ def run_backtest_sync(body: Any, cancel_event=None) -> Dict[str, Any]:
             "contract_multiplier": body.contract_multiplier,
             "max_errors": body.max_errors,
         },
-        "data_source": "synthetic" if synthetic_data_used else "historical",
-        "synthetic_data_used": synthetic_data_used,
+        **provenance,
+        "timeframe": bt_cfg.timeframe,
         "metrics": metrics,
         "equity_curve": equity_curve_out,
         "daily_returns": daily_ret_pct,
