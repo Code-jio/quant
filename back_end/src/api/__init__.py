@@ -48,7 +48,7 @@ import psutil
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from ..strategy import Direction, StrategyBase
 from ..trading import AccountInfo, TradingEngine, TradingStatus
@@ -205,8 +205,19 @@ class BacktestRunRequest(BaseModel):
     margin_rate:     float          = 0.12
     contract_multiplier: float      = 1.0
     max_errors:      int            = 100
-    sample_days:     int            = 700   # 模拟数据天数
+    sample_days:     int            = Field(default=700, ge=2, le=10000)   # 模拟数据天数
     allow_synthetic_data: bool      = False
+
+
+    @model_validator(mode='after')
+    def valid_backtest(self):
+        from ..backtest import BacktestConfig
+        from ..strategy import create_strategy
+        BacktestConfig(start_date=self.start_date,end_date=self.end_date,initial_capital=self.initial_capital,
+            commission_rate=self.commission_rate,slip_rate=self.slip_rate,margin_rate=self.margin_rate,
+            contract_multiplier=self.contract_multiplier,max_errors=self.max_errors)
+        create_strategy(self.strategy_name,self.strategy_params).on_init()
+        return self
 
 
 class ManualOrderRequest(BaseModel):
@@ -2254,21 +2265,29 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         """返回可用策略列表及默认参数。"""
         return JSONResponse({"strategies": STRATEGY_CATALOG})
 
+    backtest_slots = asyncio.Semaphore(2)
+
     @app.post("/backtest/run")
     async def bt_run(body: BacktestRunRequest, request: Request):
-        """运行回测，返回完整结果（资金曲线、交易标记、指标、热力图数据）。"""
-        loop = asyncio.get_event_loop()
-        try:
-            result = await asyncio.wait_for(
-                loop.run_in_executor(None, run_backtest_sync, body),
-                timeout=120,
-            )
-        except asyncio.TimeoutError:
-            return JSONResponse({"success": False, "error": "回测超时（>120s），请缩短日期范围"}, status_code=504)
-        except Exception as exc:
-            logger.error(f"[backtest] 运行失败: {exc}\n{traceback.format_exc()}")
-            return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
-        return JSONResponse(result)
+        if backtest_slots.locked():
+            raise HTTPException(429, '回测并发数已达上限')
+        async with backtest_slots:
+            cancelled = threading.Event()
+            task = asyncio.create_task(asyncio.to_thread(run_backtest_sync, body, cancelled))
+            try:
+                result = await asyncio.wait_for(asyncio.shield(task), timeout=120)
+                return JSONResponse(result)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                cancelled.set()
+                # Keep the slot occupied until cooperative cancellation reaches the engine.
+                try:
+                    await asyncio.shield(task)
+                except Exception:
+                    logger.exception('回测取消失败')
+                raise HTTPException(504, '回测已取消或超时')
+            except Exception:
+                logger.exception('回测失败')
+                raise HTTPException(500, '回测失败，请查看带请求 ID 的日志')
 
     # ── K线数据 ───────────────────────────────────────────────────────────────
     @app.get("/watch/kline", summary="K线数据 + 技术指标", tags=["行情"])

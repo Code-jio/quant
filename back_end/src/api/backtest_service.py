@@ -7,6 +7,7 @@ from typing import Any, Dict
 import pandas as pd
 
 from ..analysis import Analyzer
+from ..analysis.round_trips import finite_json
 from ..backtest import BacktestConfig, BacktestEngine
 from ..data import DataManager
 from ..settings import synthetic_data_enabled
@@ -50,7 +51,7 @@ STRATEGY_CATALOG = [
 ]
 
 
-def run_backtest_sync(body: Any) -> Dict[str, Any]:
+def run_backtest_sync(body: Any, cancel_event=None) -> Dict[str, Any]:
     """Run a backtest in a worker thread and return JSON-serializable data."""
     bt_cfg = BacktestConfig(
         start_date=body.start_date,
@@ -61,6 +62,7 @@ def run_backtest_sync(body: Any) -> Dict[str, Any]:
         margin_rate=body.margin_rate,
         contract_multiplier=body.contract_multiplier,
         max_errors=body.max_errors,
+        timeframe=(body.strategy_params or {}).get("timeframe", "1d"),
     )
 
     strategy = create_strategy(body.strategy_name, body.strategy_params or {})
@@ -84,7 +86,11 @@ def run_backtest_sync(body: Any) -> Dict[str, Any]:
     engine = BacktestEngine(bt_cfg)
     engine.set_data_manager(dm)
     engine.set_strategy(strategy)
+    engine.cancel_event = cancel_event
     engine.run()
+    if engine.result.status != 'completed':
+        return {'success':False, 'status':engine.result.status, 'errors':engine.result.errors,
+            'error':'回测未完整完成', 'processed_bars':engine.result.processed_bars}
 
     equity_list = sorted(engine.equity_curve.values(), key=lambda x: x["date"])
     if not equity_list:
@@ -159,7 +165,7 @@ def run_backtest_sync(body: Any) -> Dict[str, Any]:
     analyzer = Analyzer(bt_cfg.initial_capital)
     analyzer.set_data(list(engine.equity_curve.values()), engine.result.trades)
     raw = analyzer.analyze().to_dict()
-    risk = raw.get("risk", {}) if raw else {}
+    risk = {k: (float("nan") if v is None else v) for k,v in raw.get("risk", {}).items()} if raw else {}
     performance = raw.get("performance", {}) if raw else {}
 
     metrics = {
@@ -186,8 +192,10 @@ def run_backtest_sync(body: Any) -> Dict[str, Any]:
         "kurtosis": round(risk.get("kurtosis", 0), 4),
     }
 
-    return {
+    return finite_json({
         "success": True,
+        "status": "completed",
+        "metric_notes": "Undefined or insufficient-sample metrics are null",
         "config": {
             "strategy_name": strategy.name,
             "start_date": body.start_date,
@@ -206,4 +214,4 @@ def run_backtest_sync(body: Any) -> Dict[str, Any]:
         "daily_returns": daily_ret_pct,
         "monthly_heatmap": {"years": years_list, "data": heatmap_data},
         "trade_markers": trade_markers,
-    }
+    })

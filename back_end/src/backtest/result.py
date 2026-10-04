@@ -12,6 +12,9 @@ if TYPE_CHECKING:
 @dataclass
 class BacktestResult:
     """回测结果"""
+    status: str = "pending"
+    errors: List[str] = field(default_factory=list)
+    processed_bars: int = 0
     total_return: float = 0.0
     annual_return: float = 0.0
     sharpe_ratio: float = 0.0

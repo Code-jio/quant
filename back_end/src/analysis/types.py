@@ -70,7 +70,8 @@ class AnalysisResult:
     performance: PerformanceMetrics
 
     def to_dict(self) -> dict:
-        return {
+        from .round_trips import finite_json
+        return finite_json({
             'risk': {
                 'volatility': self.risk.volatility,
                 'var_95': self.risk.var_95,
@@ -98,4 +99,4 @@ class AnalysisResult:
                 'max_consecutive_wins': self.performance.max_consecutive_wins,
                 'max_consecutive_losses': self.performance.max_consecutive_losses,
             }
-        }
+        })

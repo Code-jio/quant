@@ -4,6 +4,9 @@
 
 from __future__ import annotations
 
+from ..strategy import OffsetFlag
+from ..analysis.round_trips import completed_trades
+
 import logging
 import traceback
 from datetime import datetime
@@ -42,6 +45,10 @@ class BacktestEngine:
         self.order_id_counter = 0
         self.trade_id_counter = 0
 
+        self._pending_signals = {}
+        self._fill_order_id = ''
+        self.cancel_event = None
+        self._has_run = False
         self._current_date = None
         self._error_count = 0
         self._max_errors = max(1, int(getattr(config, "max_errors", 100)))
@@ -59,9 +66,17 @@ class BacktestEngine:
         self.strategy = strategy
         self.strategy.initial_capital = self.config.initial_capital
         self.strategy.current_capital = self.config.initial_capital
+        self.strategy.set_position_source(self.positions)
+        symbol = self.strategy.params.get('symbol','IF9999')
+        self.strategy.contract_specs = {symbol: {'size':self.config.contract_multiplier,
+            'margin_rate':self.config.margin_rate, 'min_volume':1}}
 
     def run(self) -> BacktestResult:
         """运行回测"""
+        if self._has_run:
+            raise BacktestError('Create a new engine for each run')
+        self._has_run = True
+        self.result.status = 'running'
         try:
             logger.info(f"开始回测: {self.config.start_date} ~ {self.config.end_date}")
             logger.info(f"初始资金: {self.config.initial_capital:.2f}")
@@ -83,6 +98,8 @@ class BacktestEngine:
 
             if not all_data:
                 logger.warning("没有加载到数据，回测结束")
+                self.result.status = "failed"
+                self.result.errors.append("No data in requested range")
                 return self.result
 
             common_dates = None
@@ -94,11 +111,16 @@ class BacktestEngine:
 
             if not common_dates:
                 logger.warning("没有共同的交易日期")
+                self.result.status = "failed"
+                self.result.errors.append("No data in requested range")
                 return self.result
 
             sorted_dates = sorted(list(common_dates))
 
             for date in sorted_dates:
+                if self.cancel_event is not None and self.cancel_event.is_set():
+                    self.result.status = 'cancelled'
+                    break
                 try:
                     self._current_date = date
 
@@ -112,15 +134,21 @@ class BacktestEngine:
                         if date in df.index:
                             bar[symbol] = df.loc[date]
 
+                    # Only orders created by earlier bars can execute now.
+                    self._match_pending(bar)
                     for symbol, series in bar.items():
                         self.strategy.on_bar(series)
 
                     self._process_signals()
                     self._update_positions(bar)
                     self._record_equity(date, bar)
+                    self.strategy.current_capital = self.equity_curve[date]['capital']
+                    self.result.processed_bars += 1
 
                 except Exception as e:
                     self._error_count += 1
+                    self.result.errors.append(f'{date}: {e}')
+                    self.result.status = 'partial' if self.equity_curve else 'failed'
                     logger.error(f"处理日期 {date} 时发生错误: {e}")
                     if self._error_count >= self._max_errors:
                         logger.error(f"错误次数过多 ({self._error_count}), 停止回测")
@@ -128,7 +156,14 @@ class BacktestEngine:
                     continue
 
             self.strategy.on_stop()
-            self._calculate_result(sorted_dates)
+            self._calculate_result(list(self.equity_curve))
+            if self.result.status == 'running':
+                self.result.status = 'completed'
+            for order in self.orders.values():
+                if order.is_active():
+                    order.status = OrderStatus.CANCELLED
+                    order.error_msg = 'End of data'
+                    self.strategy.on_order(order)
 
             logger.info(f"回测完成: 总收益={self.result.total_return:.2%}, "
                        f"夏普={self.result.sharpe_ratio:.2f}, "
@@ -148,13 +183,14 @@ class BacktestEngine:
         for signal in signals:
             try:
                 order = self._create_order(signal)
-                self._execute_order(order, signal)
+                self._pending_signals[order.order_id] = signal
             except Exception as e:
-                logger.error(f"处理信号失败: {e}")
-                continue
+                raise BacktestError(f"Invalid strategy signal: {e}") from e
 
     def _create_order(self, signal):
         """创建订单"""
+        if not signal.validate():
+            raise ValueError('Invalid signal')
         self.order_id_counter += 1
         order = Order(
             order_id=f"ORDER_{self.order_id_counter}",
@@ -188,156 +224,126 @@ class BacktestEngine:
             return price * (1 - self.config.slip_rate)
         return price
 
-    def _execute_order(self, order, signal):
-        """执行订单"""
-        if order.status != OrderStatus.SUBMITTED:
+    def _match_pending(self, bars):
+        for oid, signal in list(self._pending_signals.items()):
+            order = self.orders[oid]
+            bar = bars.get(order.symbol)
+            if bar is None:
+                continue
+            self._execute_order(order, signal, bar)
+            if not order.is_active():
+                self._pending_signals.pop(oid, None)
+
+    def _execute_order(self, order, signal, bar=None):
+        if not order.is_active() or bar is None:
             return
-
-        try:
-            exec_price = order.price
-            if order.order_type == OrderType.MARKET:
-                exec_price = self._apply_slippage(order.price, order.direction)
-
-            pos = self.positions.get(order.symbol)
-            remaining_volume = order.volume
-
+        opening = float(bar['open'])
+        if order.order_type == OrderType.LIMIT:
             if order.direction == Direction.LONG:
-                if pos and pos.is_short:
-                    needed_close = min(remaining_volume, abs(pos.volume))
-                    self._close_position(order.symbol, exec_price, needed_close, Direction.SHORT)
-                    remaining_volume -= needed_close
-
-                if getattr(order.offset, "value", order.offset) == "open" and remaining_volume > 0:
-                    per_lot_cost = self._margin_required(exec_price, 1) + self._commission(exec_price, 1)
-                    can_open = int((self.available_capital * 0.95) / per_lot_cost) if per_lot_cost > 0 else 0
-                    open_volume = min(remaining_volume, can_open)
-
-                    if open_volume > 0:
-                        self._open_position(order.symbol, exec_price, open_volume, Direction.LONG)
-
-            elif order.direction == Direction.SHORT:
-                if pos and pos.is_long:
-                    needed_close = min(remaining_volume, pos.volume)
-                    self._close_position(order.symbol, exec_price, needed_close, Direction.LONG)
-                    remaining_volume -= needed_close
-
-                if getattr(order.offset, "value", order.offset) == "open" and remaining_volume > 0:
-                    per_lot_cost = self._margin_required(exec_price, 1) + self._commission(exec_price, 1)
-                    can_open = int((self.available_capital * 0.95) / per_lot_cost) if per_lot_cost > 0 else 0
-                    open_volume = min(remaining_volume, can_open)
-
-                    if open_volume > 0:
-                        self._open_position(order.symbol, exec_price, open_volume, Direction.SHORT)
-
-        except Exception as e:
-            logger.error(f"执行订单失败: {e}")
-            order.status = OrderStatus.REJECTED
-            order.error_msg = str(e)
-
-    def _open_position(self, symbol, price, volume, direction):
-        """开仓"""
-        margin = self._margin_required(price, volume)
-        commission = self._commission(price, volume)
-
-        self.available_capital -= margin + commission
-        self.position_margins[symbol] = self.position_margins.get(symbol, 0.0) + margin
-
-        trade = self._create_trade(symbol, price, volume, direction, commission)
-        self.trades.append(trade)
-
-        if symbol not in self.positions:
-            self.positions[symbol] = Position(symbol=symbol, direction=Direction.NET, volume=0)
-
-        pos = self.positions[symbol]
-        old_volume = abs(pos.volume)
-        new_volume = old_volume + volume
-        avg_price = (
-            ((pos.price or 0) * old_volume + price * volume) / new_volume
-            if new_volume > 0 else price
-        )
-        if direction == Direction.LONG:
-            if pos.is_short:
-                pos.volume += volume
-                if pos.volume > 0:
-                    pos.direction = Direction.LONG
-                else:
-                    pos.direction = Direction.SHORT
+                if bar['low'] > order.price:
+                    return
+                price = min(opening, order.price)
             else:
-                pos.direction = Direction.LONG
-                pos.volume += volume
+                if bar['high'] < order.price:
+                    return
+                price = max(opening, order.price)
+        elif order.order_type == OrderType.STOP:
+            trigger = signal.stop_price or order.price
+            if order.direction == Direction.LONG:
+                if bar['high'] < trigger:
+                    return
+                opening = max(opening, trigger)
+            else:
+                if bar['low'] > trigger:
+                    return
+                opening = min(opening, trigger)
+            price = self._apply_slippage(opening, order.direction)
         else:
-            if pos.is_long:
-                pos.volume -= volume
-                if pos.volume < 0:
-                    pos.direction = Direction.SHORT
-                else:
-                    pos.direction = Direction.LONG
-            else:
-                pos.direction = Direction.SHORT
-                pos.volume -= volume
-
-        pos.price = avg_price
-        pos.cost = avg_price
-        if self.strategy:
-            self.strategy.trades.append(trade)
-
-        logger.debug(f"开仓: {symbol} {direction.value} {volume}@{price}")
-
-    def _close_position(self, symbol, price, volume, direction):
-        """平仓"""
+            price = self._apply_slippage(opening, order.direction)
+        volume = min(order.volume - order.traded_volume, max(0, int(bar.get('volume',0))))
         if volume <= 0:
             return
-
-        commission = self._commission(price, volume)
-
-        pos = self.positions.get(symbol)
-        entry_price = pos.price if pos else price
-        pos_volume_before = abs(pos.volume) if pos else 0
-        held_margin = self.position_margins.get(symbol, 0.0)
-        margin_released = (
-            held_margin * min(1.0, volume / pos_volume_before)
-            if pos_volume_before > 0 else 0.0
-        )
-
-        gross_pnl = 0.0
-        multiplier = max(1.0, float(self.config.contract_multiplier))
-        if direction == Direction.LONG:
-            gross_pnl = (price - entry_price) * volume * multiplier
-        else:
-            gross_pnl = (entry_price - price) * volume * multiplier
-
-        self.available_capital += margin_released + gross_pnl - commission
-        self.position_margins[symbol] = max(0.0, held_margin - margin_released)
-
-        close_direction = Direction.SHORT if direction == Direction.LONG else Direction.LONG
-        trade = self._create_trade(symbol, price, volume, close_direction, commission)
-        trade.pnl = gross_pnl - commission
-
-        self.trades.append(trade)
-
-        if pos:
-            if direction == Direction.LONG:
-                pos.volume -= volume
+        self._fill_order_id = order.order_id
+        if order.offset == OffsetFlag.OPEN:
+            cost = self._margin_required(price,1) + self._commission(price,1)
+            volume = min(volume, max(0,int(self.available_capital / cost)))
+            if not volume:
+                order.status=OrderStatus.REJECTED
+                order.error_msg='Insufficient margin'
             else:
-                pos.volume += volume
+                self._open_position(order.symbol,price,volume,order.direction)
+        else:
+            side = Direction.SHORT if order.direction == Direction.LONG else Direction.LONG
+            _, pos = self._position_side(order.symbol,side)
+            if pos is None or abs(pos.volume) < volume:
+                order.status=OrderStatus.REJECTED
+                order.error_msg='Insufficient position to close'
+                volume=0
+            else:
+                self._close_position(order.symbol,price,volume,side)
+        if volume:
+            order.traded_volume += volume
+            order.status = OrderStatus.FILLED if order.traded_volume == order.volume else OrderStatus.PARTFILLED
+        order.update_time=self._current_date
+        if self.strategy:
+            self.strategy.on_order(order)
+        self._fill_order_id=''
 
-            if pos.volume == 0:
-                pos.direction = Direction.NET
-                pos.price = 0
-                pos.cost = 0
-                pos.pnl = 0
+    def _position_side(self, symbol, direction):
+        for key,pos in self.positions.items():
+            if pos.symbol == symbol and pos.direction == direction and not pos.is_empty:
+                return key,pos
+        return None,None
 
+    def _open_position(self, symbol, price, volume, direction):
+        margin=self._margin_required(price,volume)
+        commission=self._commission(price,volume)
+        self.available_capital -= margin + commission
+        key,pos=self._position_side(symbol,direction)
+        if pos is None:
+            key = symbol if symbol not in self.positions or self.positions[symbol].is_empty else f'{symbol}_{direction.value}'
+            pos=Position(symbol,direction,0)
+            self.positions[key]=pos
+        old=abs(pos.volume)
+        pos.cost=pos.price=(pos.price*old+price*volume)/(old+volume)
+        pos.volume=(old+volume)*(1 if direction==Direction.LONG else -1)
+        self.position_margins[key]=self.position_margins.get(key,0)+margin
+        trade=self._create_trade(symbol,price,volume,direction,commission)
+        trade.offset=OffsetFlag.OPEN
+        self._emit_trade(trade)
+
+    def _close_position(self, symbol, price, volume, direction):
+        key,pos=self._position_side(symbol,direction)
+        if pos is None or volume <= 0 or volume > abs(pos.volume):
+            raise BacktestError('Insufficient position to close')
+        commission=self._commission(price,volume)
+        held=self.position_margins.get(key,0)
+        released=held*volume/abs(pos.volume)
+        gross=(price-pos.price)*volume*self.config.contract_multiplier*(1 if direction==Direction.LONG else -1)
+        self.available_capital += released+gross-commission
+        self.position_margins[key]=max(0,held-released)
+        pos.volume += -volume if direction==Direction.LONG else volume
+        if pos.is_empty:
+            pos.price=pos.cost=pos.pnl=0
+        close_side=Direction.SHORT if direction==Direction.LONG else Direction.LONG
+        trade=self._create_trade(symbol,price,volume,close_side,commission)
+        trade.offset=OffsetFlag.CLOSE
+        trade.pnl=gross-commission
+        self._emit_trade(trade)
+
+    def _emit_trade(self, trade):
+        self.trades.append(trade)
         if self.strategy:
             self.strategy.trades.append(trade)
-
-        logger.debug(f"平仓: {symbol} {close_direction.value} {volume}@{price}")
+            self.strategy.current_capital += trade.pnl if trade.offset != OffsetFlag.OPEN else -trade.commission
+            self.strategy.on_trade(trade)
 
     def _create_trade(self, symbol, price, volume, direction, commission):
         """创建成交记录"""
         self.trade_id_counter += 1
         return Trade(
             trade_id=f"TRADE_{self.trade_id_counter}",
-            order_id="",
+            order_id=self._fill_order_id,
             symbol=symbol,
             direction=direction,
             price=price,
@@ -353,8 +359,8 @@ class BacktestEngine:
                 continue
 
             try:
-                if symbol in bars:
-                    current_price = bars[symbol]['close']
+                if pos.symbol in bars:
+                    current_price = bars[pos.symbol]['close']
                     multiplier = max(1.0, float(self.config.contract_multiplier))
                     if pos.is_long:
                         pnl = (current_price - pos.price) * abs(pos.volume) * multiplier
@@ -373,7 +379,7 @@ class BacktestEngine:
             total_unrealized_pnl = 0.0
 
             for symbol, pos in self.positions.items():
-                if not pos.is_empty and symbol in bars:
+                if not pos.is_empty:
                     margin = self.position_margins.get(symbol, 0.0)
                     total_margin += margin
                     total_unrealized_pnl += pos.pnl
@@ -418,24 +424,7 @@ class BacktestEngine:
 
             self.result.trades = self.trades
 
-            pnl_list = []
-            in_position = False
-            entry_direction = None
-
-            for trade in self.trades:
-                if trade.direction == Direction.LONG and not in_position:
-                    entry_direction = Direction.LONG
-                    in_position = True
-                elif trade.direction == Direction.SHORT and not in_position:
-                    entry_direction = Direction.SHORT
-                    in_position = True
-                elif in_position:
-                    if entry_direction == Direction.LONG and trade.direction == Direction.SHORT:
-                        pnl_list.append(float(getattr(trade, "pnl", 0.0)))
-                        in_position = False
-                    elif entry_direction == Direction.SHORT and trade.direction == Direction.LONG:
-                        pnl_list.append(float(getattr(trade, "pnl", 0.0)))
-                        in_position = False
+            pnl_list = [t['pnl'] for t in completed_trades(self.trades)]
 
             self.result.total_trades = len(pnl_list)
             self.result.winning_trades = sum(1 for pnl in pnl_list if pnl > 0)

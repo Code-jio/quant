@@ -8,6 +8,7 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 
+from .round_trips import completed_trades
 from .types import RiskMetrics, PerformanceMetrics, AnalysisResult, ITrade
 from .report import IReportFormatter, TextReportFormatter, JsonReportFormatter
 
@@ -48,7 +49,7 @@ class RiskAnalyzer:
     @staticmethod
     def calculate_sharpe_ratio(returns: pd.Series, risk_free_rate: float = 0.0) -> float:
         """计算夏普比率"""
-        if len(returns) == 0 or returns.std() == 0:
+        if len(returns) < 2 or returns.std() == 0:
             return 0.0
         excess_returns = returns - risk_free_rate / 252
         return np.sqrt(252) * excess_returns.mean() / returns.std()
@@ -62,7 +63,7 @@ class RiskAnalyzer:
         excess_returns = returns - risk_free_rate / 252
         downside_returns = returns[returns < 0]
 
-        if len(downside_returns) == 0 or downside_returns.std() == 0:
+        if len(downside_returns) < 2 or downside_returns.std() == 0:
             return 0.0
 
         return np.sqrt(252) * excess_returns.mean() / downside_returns.std()
@@ -84,7 +85,7 @@ class RiskAnalyzer:
         metrics.cvar_95 = RiskAnalyzer.calculate_cvar(returns, 0.95)
 
         metrics.max_drawdown, _, _ = RiskAnalyzer.calculate_max_drawdown(equity_curve)
-        metrics.max_drawdown_pct = metrics.max_drawdown * 100
+        metrics.max_drawdown_pct = metrics.max_drawdown
 
         metrics.sharpe_ratio = RiskAnalyzer.calculate_sharpe_ratio(returns)
         metrics.sortino_ratio = RiskAnalyzer.calculate_sortino_ratio(returns)
@@ -221,6 +222,7 @@ class Analyzer:
                         'price': trade.price,
                         'volume': trade.volume,
                         'pnl': getattr(trade, 'pnl', 0),
+                        'offset': getattr(getattr(trade, 'offset', None), 'value', None),
                         'commission': trade.commission
                     })
                 else:
@@ -230,6 +232,7 @@ class Analyzer:
                         'price': trade.get('price', 0),
                         'volume': trade.get('volume', 0),
                         'pnl': trade.get('pnl', 0),
+                        'offset': trade.get('offset'),
                         'commission': trade.get('commission', 0)
                     })
 
@@ -242,7 +245,7 @@ class Analyzer:
             )
 
         risk_metrics = RiskAnalyzer.analyze(self.returns, self.equity_curve)
-        perf_metrics = PerformanceAnalyzer.analyze(self.equity_curve, self.trades)
+        perf_metrics = PerformanceAnalyzer.analyze(self.equity_curve, completed_trades(self.trades))
 
         return AnalysisResult(risk=risk_metrics, performance=perf_metrics)
 
