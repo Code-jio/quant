@@ -1,0 +1,4 @@
+# Candidate native stack; compile/install and broker acceptance required on the target host.
+-r requirements-research.lock
+vnpy==4.4.0
+vnpy_ctp==6.7.11.4

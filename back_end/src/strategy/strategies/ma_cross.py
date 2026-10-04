@@ -6,6 +6,7 @@ import logging
 
 import pandas as pd
 from ..base import StrategyBase
+from ..types import Direction
 from ..errors import StrategyError
 
 logger = logging.getLogger(__name__)
@@ -16,10 +17,10 @@ class MACrossStrategy(StrategyBase):
 
     def on_init(self):
         try:
-            self.symbol = self.params.get('symbol', 'IF9999')
-            self.fast_period = self.params.get('fast_period', 10)
-            self.slow_period = self.params.get('slow_period', 20)
-            self.position_ratio = self.params.get('position_ratio', 0.8)
+            self.symbol = self.params.get("symbol", "IF9999")
+            self.fast_period = self.params.get("fast_period", 10)
+            self.slow_period = self.params.get("slow_period", 20)
+            self.position_ratio = self.params.get("position_ratio", 0.8)
 
             if self.fast_period >= self.slow_period:
                 raise StrategyError(f"fast_period ({self.fast_period}) 必须小于 slow_period ({self.slow_period})")
@@ -43,8 +44,8 @@ class MACrossStrategy(StrategyBase):
             if current_idx < self.slow_period:
                 return
 
-            fast_ma = df['close'].rolling(window=self.fast_period).mean()
-            slow_ma = df['close'].rolling(window=self.slow_period).mean()
+            fast_ma = df["close"].rolling(window=self.fast_period).mean()
+            slow_ma = df["close"].rolling(window=self.slow_period).mean()
 
             prev_fast = fast_ma.iloc[current_idx - 1]
             prev_slow = slow_ma.iloc[current_idx - 1]
@@ -54,23 +55,12 @@ class MACrossStrategy(StrategyBase):
             if pd.isna(prev_fast) or pd.isna(prev_slow) or pd.isna(curr_fast) or pd.isna(curr_slow):
                 return
 
-            pos = self.get_position(symbol)
-
+            target = None
             if prev_fast <= prev_slow and curr_fast > curr_slow:
-                if pos.is_short or pos.is_empty:
-                    volume = self.order_volume(symbol, float(bar['close']))
-                    if volume > 0:
-                        if pos.volume != 0:
-                            self.cover(symbol, bar['close'], abs(pos.volume))
-                        self.buy(symbol, bar['close'], volume)
-
+                target = Direction.LONG
             elif prev_fast >= prev_slow and curr_fast < curr_slow:
-                if pos.is_long or pos.is_empty:
-                    volume = self.order_volume(symbol, float(bar['close']))
-                    if volume > 0:
-                        if pos.volume != 0:
-                            self.sell(symbol, bar['close'], abs(pos.volume))
-                        self.short(symbol, bar['close'], volume)
+                target = Direction.SHORT
+            self.rebalance_target(symbol, bar["close"], target)
 
         except Exception as e:
             self.on_error(e, "on_bar")

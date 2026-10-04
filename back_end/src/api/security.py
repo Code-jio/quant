@@ -80,6 +80,7 @@ class SessionStore:
                 return False
             if datetime.now() > expires_at:
                 self._sessions.pop(token, None)
+                self._identities.pop(token, None)
                 return False
             return True
 
@@ -99,11 +100,13 @@ class SessionStore:
             expired = [token for token, expires_at in self._sessions.items() if now > expires_at]
             for token in expired:
                 self._sessions.pop(token, None)
+                self._identities.pop(token, None)
 
 
 def is_open_path(path: str) -> bool:
     if path == "/backtest/run":
         from ..settings import env_bool, is_production_env
+
         return env_bool("QUANT_ALLOW_PUBLIC_RESEARCH", not is_production_env())
     return path in OPEN_PATHS
 

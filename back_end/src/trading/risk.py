@@ -44,16 +44,26 @@ class RiskConfig:
         for key in ("enabled", "allow_market_orders", "require_account"):
             if key in raw and not isinstance(raw[key], bool):
                 raise ValueError(f"{key} must be a boolean")
-        numeric = ("max_order_volume", "max_position_volume", "max_active_orders", "max_orders_per_minute",
-            "max_daily_loss_ratio", "max_order_value", "max_position_value", "max_price_deviation",
-            "max_market_data_age_seconds", "duplicate_signal_window_seconds", "default_contract_multiplier")
+        numeric = (
+            "max_order_volume",
+            "max_position_volume",
+            "max_active_orders",
+            "max_orders_per_minute",
+            "max_daily_loss_ratio",
+            "max_order_value",
+            "max_position_value",
+            "max_price_deviation",
+            "max_market_data_age_seconds",
+            "duplicate_signal_window_seconds",
+            "default_contract_multiplier",
+        )
         for key in numeric:
             if key in raw and (isinstance(raw[key], bool) or not math.isfinite(float(raw[key])) or float(raw[key]) < 0):
                 raise ValueError(f"{key} must be finite and non-negative")
         for key in ("max_order_volume", "max_position_volume", "max_active_orders", "max_orders_per_minute"):
             if key in raw and (int(raw[key]) != float(raw[key]) or int(raw[key]) <= 0):
                 raise ValueError(f"{key} must be a positive integer")
-        if float(raw.get("max_daily_loss_ratio", .1)) > 1:
+        if float(raw.get("max_daily_loss_ratio", 0.1)) > 1:
             raise ValueError("max_daily_loss_ratio must be within [0, 1]")
         if any(not math.isfinite(float(v)) or float(v) <= 0 for v in (raw.get("contract_multipliers") or {}).values()):
             raise ValueError("Invalid contract multiplier")
@@ -199,8 +209,11 @@ class RiskManager:
             return RiskCheckResult(False, f"Order value {round(order_value, 2)} exceeds limit {cfg.max_order_value}")
 
         if signal.offset == OffsetFlag.OPEN:
-            pending = sum(max(0, o.volume - o.traded_volume) for o in active_orders
-                          if o.symbol == symbol and o.offset == OffsetFlag.OPEN)
+            pending = sum(
+                max(0, o.volume - o.traded_volume)
+                for o in active_orders
+                if o.symbol == symbol and o.offset == OffsetFlag.OPEN
+            )
             projected = abs(current_volume) + pending + signal.volume
             if projected > cfg.max_position_volume:
                 return RiskCheckResult(
@@ -244,8 +257,13 @@ class RiskManager:
         self._order_timestamps = [ts for ts in self._order_timestamps if ts >= cutoff]
 
     def _check_daily_loss(self, account: Optional[AccountInfo]) -> RiskCheckResult:
-        if self.config.require_account and (account is None or account.error_msg or
-                not math.isfinite(account.balance) or account.balance <= 0 or self.day_open_balance <= 0):
+        if self.config.require_account and (
+            account is None
+            or account.error_msg
+            or not math.isfinite(account.balance)
+            or account.balance <= 0
+            or self.day_open_balance <= 0
+        ):
             return RiskCheckResult(False, "Account or trading-day baseline is unavailable")
         if account is not None and (not math.isfinite(account.balance) or account.balance <= 0):
             return RiskCheckResult(False, "Account balance is unavailable or exhausted")
@@ -253,7 +271,9 @@ class RiskManager:
             return RiskCheckResult(True)
         loss_ratio = (self.day_open_balance - account.balance) / self.day_open_balance
         if loss_ratio >= self.config.max_daily_loss_ratio:
-            return RiskCheckResult(False, f"Daily loss {loss_ratio:.1%} exceeds limit {self.config.max_daily_loss_ratio:.1%}")
+            return RiskCheckResult(
+                False, f"Daily loss {loss_ratio:.1%} exceeds limit {self.config.max_daily_loss_ratio:.1%}"
+            )
         return RiskCheckResult(True)
 
     @staticmethod
@@ -275,7 +295,12 @@ class RiskManager:
             frozen += p.frozen
         acknowledged = unacknowledged = 0
         for o in active_orders or ():
-            if o.is_active() and o.symbol == signal.symbol and o.direction == signal.direction and o.offset != OffsetFlag.OPEN:
+            if (
+                o.is_active()
+                and o.symbol == signal.symbol
+                and o.direction == signal.direction
+                and o.offset != OffsetFlag.OPEN
+            ):
                 remaining = max(0, o.volume - o.traded_volume)
                 if o.status.value == "submitting":
                     unacknowledged += remaining
@@ -320,9 +345,7 @@ class RiskManager:
             return RiskCheckResult(True)
         now = time.monotonic()
         cutoff = now - window
-        self._recent_signal_timestamps = {
-            key: ts for key, ts in self._recent_signal_timestamps.items() if ts >= cutoff
-        }
+        self._recent_signal_timestamps = {key: ts for key, ts in self._recent_signal_timestamps.items() if ts >= cutoff}
         last_ts = self._recent_signal_timestamps.get(self._signal_key(signal))
         if last_ts is not None and now - last_ts < window:
             return RiskCheckResult(False, f"Duplicate signal within {round(window, 2)}s window")

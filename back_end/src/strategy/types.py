@@ -40,6 +40,7 @@ class OrderStatus(Enum):
 @dataclass
 class Signal:
     """交易信号"""
+
     symbol: str
     datetime: datetime
     direction: Direction
@@ -67,9 +68,12 @@ class Signal:
         if self.volume <= 0:
             return False
         return True
+
+
 @dataclass
 class Order:
     """订单"""
+
     order_id: str
     symbol: str
     direction: Direction
@@ -100,6 +104,7 @@ class Order:
 @dataclass
 class Trade:
     """成交记录"""
+
     trade_id: str
     order_id: str
     symbol: str
@@ -120,6 +125,7 @@ class Trade:
 @dataclass
 class Position:
     """持仓"""
+
     symbol: str
     direction: Direction
     volume: int

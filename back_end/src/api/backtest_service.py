@@ -71,14 +71,17 @@ def run_backtest_sync(body: Any, cancel_event=None) -> Dict[str, Any]:
     dm = DataManager()
     symbol = (body.strategy_params or {}).get("symbol", "IF9999")
     synthetic_data_used = False
-    existing = dm.get_bars(symbol, body.start_date, body.end_date, bt_cfg.timeframe)
+    existing = dm.db.load_bars(symbol, body.start_date, body.end_date, bt_cfg.timeframe, limit=10001)
+    if len(existing) > 10000:
+        return {"success": False, "error": "单次回测最多 10000 根 bar，请缩短日期范围"}
     if existing is None or existing.empty:
         if body.allow_synthetic_data and synthetic_data_enabled():
-            existing = dm.generate_sample_data(symbol, days=body.sample_days, timeframe=bt_cfg.timeframe,
-                                               end_date=body.end_date)
+            existing = dm.generate_sample_data(
+                symbol, days=body.sample_days, timeframe=bt_cfg.timeframe, end_date=body.end_date
+            )
             if not existing.empty:
-                existing=existing.set_index('datetime')
-                existing=existing.loc[existing.index >= pd.Timestamp(body.start_date)]
+                existing = existing.set_index("datetime")
+                existing = existing.loc[existing.index >= pd.Timestamp(body.start_date)]
             synthetic_data_used = not existing.empty
         else:
             return {
@@ -88,21 +91,28 @@ def run_backtest_sync(body: Any, cancel_event=None) -> Dict[str, Any]:
                 "synthetic_data_used": False,
             }
 
-    provenance=data_provenance(existing)
-    if provenance['synthetic_data_used'] and not body.allow_synthetic_data:
-        return {'success':False,'error':'历史中含模拟数据；请显式允许演示数据或重新导入',**provenance}
+    provenance = data_provenance(existing)
+    if provenance["synthetic_data_used"] and not body.allow_synthetic_data:
+        return {"success": False, "error": "历史中含模拟数据；请显式允许演示数据或重新导入", **provenance}
     validate_bars(existing)
+
     class ResearchData:
         def get_bars(self, *_args, **_kwargs):
             return existing.copy()
+
     engine = BacktestEngine(bt_cfg)
     engine.set_data_manager(ResearchData())
     engine.set_strategy(strategy)
     engine.cancel_event = cancel_event
     engine.run()
-    if engine.result.status != 'completed':
-        return {'success':False, 'status':engine.result.status, 'errors':engine.result.errors,
-            'error':'回测未完整完成', 'processed_bars':engine.result.processed_bars}
+    if engine.result.status != "completed":
+        return {
+            "success": False,
+            "status": engine.result.status,
+            "errors": engine.result.errors,
+            "error": "回测未完整完成",
+            "processed_bars": engine.result.processed_bars,
+        }
 
     equity_list = sorted(engine.equity_curve.values(), key=lambda x: x["date"])
     if not equity_list:
@@ -116,7 +126,7 @@ def run_backtest_sync(body: Any, cancel_event=None) -> Dict[str, Any]:
 
     equity_curve_out = [
         {
-            "date": str(idx.date()),
+            "date": idx.isoformat(),
             "capital": round(row["capital"], 2),
             "dd_pct": round(row["dd_pct"], 4),
             "cash": round(row.get("cash", 0), 2),
@@ -126,7 +136,7 @@ def run_backtest_sync(body: Any, cancel_event=None) -> Dict[str, Any]:
         for idx, row in eq_df.iterrows()
     ]
 
-    daily_ret_pct = (eq_df["capital"].pct_change().dropna() * 100).round(4).tolist()
+    daily_ret_pct = (eq_df["capital"].resample("B").last().dropna().pct_change().dropna() * 100).round(4).tolist()
 
     monthly_ret = eq_df["capital"].resample("ME").last().pct_change().dropna()
     years_list = sorted({str(dt.year) for dt in monthly_ret.index})
@@ -139,11 +149,14 @@ def run_backtest_sync(body: Any, cancel_event=None) -> Dict[str, Any]:
     trade_markers = []
     for trade in sorted(engine.result.trades, key=lambda x: x.trade_time):
         symbol = trade.symbol
-        opening=trade.offset.value=='open'
-        marker_type=('buy_open' if trade.direction.value=='long' else 'short_open') if opening else (
-            'cover_close' if trade.direction.value=='long' else 'sell_close')
+        opening = trade.offset.value == "open"
+        marker_type = (
+            ("buy_open" if trade.direction.value == "long" else "short_open")
+            if opening
+            else ("cover_close" if trade.direction.value == "long" else "sell_close")
+        )
         timestamp = trade.trade_time
-        date_str = timestamp.strftime("%Y-%m-%d") if hasattr(timestamp, "strftime") else str(timestamp)[:10]
+        date_str = timestamp.isoformat() if hasattr(timestamp, "isoformat") else str(timestamp)
         trade_markers.append(
             {
                 "date": date_str,
@@ -160,8 +173,8 @@ def run_backtest_sync(body: Any, cancel_event=None) -> Dict[str, Any]:
     analyzer = Analyzer(bt_cfg.initial_capital)
     analyzer.set_data(list(engine.equity_curve.values()), engine.result.trades)
     raw = analyzer.analyze().to_dict()
-    risk = {k: (float("nan") if v is None else v) for k,v in raw.get("risk", {}).items()} if raw else {}
-    performance = raw.get("performance", {}) if raw else {}
+    risk = {k: (float("nan") if v is None else v) for k, v in raw.get("risk", {}).items()} if raw else {}
+    performance = {k: (float("nan") if v is None else v) for k, v in raw.get("performance", {}).items()} if raw else {}
 
     metrics = {
         "total_return": round(performance.get("total_return", 0) * 100, 3),
@@ -187,26 +200,33 @@ def run_backtest_sync(body: Any, cancel_event=None) -> Dict[str, Any]:
         "kurtosis": round(risk.get("kurtosis", 0), 4),
     }
 
-    return finite_json({
-        "success": True,
-        "status": "completed",
-        "metric_notes": "Undefined or insufficient-sample metrics are null",
-        "config": {
-            "strategy_name": strategy.name,
-            "start_date": body.start_date,
-            "end_date": body.end_date,
-            "initial_capital": body.initial_capital,
-            "commission_rate": body.commission_rate,
-            "slip_rate": body.slip_rate,
-            "margin_rate": body.margin_rate,
-            "contract_multiplier": body.contract_multiplier,
-            "max_errors": body.max_errors,
-        },
-        **provenance,
-        "timeframe": bt_cfg.timeframe,
-        "metrics": metrics,
-        "equity_curve": equity_curve_out,
-        "daily_returns": daily_ret_pct,
-        "monthly_heatmap": {"years": years_list, "data": heatmap_data},
-        "trade_markers": trade_markers,
-    })
+    warnings = []
+    if (eq_df["capital"] <= 0).any():
+        warnings.append("回测期间权益曾非正；收益率类风险指标不可计算，本模型未模拟柜台强制平仓。")
+    return finite_json(
+        {
+            "success": True,
+            "status": "completed",
+            "metric_notes": "Undefined or insufficient-sample metrics are null",
+            "warnings": warnings,
+            "model_notes": "固定保证金和费率的 bar 撮合模型；未模拟逐日结算、强制平仓和盘口队列。",
+            "config": {
+                "strategy_name": strategy.name,
+                "start_date": body.start_date,
+                "end_date": body.end_date,
+                "initial_capital": body.initial_capital,
+                "commission_rate": body.commission_rate,
+                "slip_rate": body.slip_rate,
+                "margin_rate": body.margin_rate,
+                "contract_multiplier": body.contract_multiplier,
+                "max_errors": body.max_errors,
+            },
+            **provenance,
+            "timeframe": bt_cfg.timeframe,
+            "metrics": metrics,
+            "equity_curve": equity_curve_out,
+            "daily_returns": daily_ret_pct,
+            "monthly_heatmap": {"years": years_list, "data": heatmap_data},
+            "trade_markers": trade_markers,
+        }
+    )

@@ -156,9 +156,13 @@ class RiskManagerTest(unittest.TestCase):
         manager = RiskManager({"duplicate_signal_window_seconds": 60})
         signal = self._signal(price=100.0, order_type=OrderType.LIMIT)
 
-        first = manager.check_signal(signal, positions={}, market_data={"last_price": 100.0, "timestamp": datetime.now()})
+        first = manager.check_signal(
+            signal, positions={}, market_data={"last_price": 100.0, "timestamp": datetime.now()}
+        )
         manager.record_order(signal)
-        second = manager.check_signal(signal, positions={}, market_data={"last_price": 100.0, "timestamp": datetime.now()})
+        second = manager.check_signal(
+            signal, positions={}, market_data={"last_price": 100.0, "timestamp": datetime.now()}
+        )
 
         self.assertTrue(first.allowed)
         self.assertFalse(second.allowed)

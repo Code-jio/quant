@@ -35,17 +35,18 @@ class StrategyBase(ABC):
         self._max_errors = int(self.params.get("max_errors", 10))
         self.contract_specs = {}
         self.allocation_weight = 1.0
+        self._target_direction = None
 
     def order_volume(self, symbol: str, price: float) -> int:
         spec = self.contract_specs.get(symbol)
         if not spec or not math.isfinite(price) or price <= 0:
             return 0
-        size = float(spec.get('size') or 0)
-        margin = float(spec.get('margin_rate') or 0)
-        unit = int(spec.get('min_volume') or 1)
+        size = float(spec.get("size") or 0)
+        margin = float(spec.get("margin_rate") or 0)
+        unit = int(spec.get("min_volume") or 1)
         if not math.isfinite(size * margin) or size <= 0 or not 0 < margin <= 1 or unit < 1:
             return 0
-        budget = max(0, self.current_capital) * self.params.get('position_ratio', .8) * self.allocation_weight
+        budget = max(0, self.current_capital) * self.params.get("position_ratio", 0.8) * self.allocation_weight
         return int(budget / (price * size * margin) / unit) * unit
 
     @abstractmethod
@@ -68,7 +69,32 @@ class StrategyBase(ABC):
 
     def on_order(self, order: Order):
         """订单更新回调"""
-        pass
+        if order.is_active():
+            self.orders[order.order_id] = order
+        else:
+            self.orders.pop(order.order_id, None)
+
+    def rebalance_target(self, symbol, price, target=None):
+        """Serialize built-in reversals: settle pending orders, close, then open."""
+        if target is not None:
+            self._target_direction = target
+        target = self._target_direction
+        if target is None or any(o.symbol == symbol and o.is_active() for o in self.orders.values()):
+            return
+        pos = self.get_position(symbol)
+        close_volume = max(0, abs(pos.volume) - pos.frozen)
+        if target == Direction.LONG and pos.is_short:
+            if close_volume:
+                self.cover(symbol, price, close_volume)
+            return
+        if target == Direction.SHORT and pos.is_long:
+            if close_volume:
+                self.sell(symbol, price, close_volume)
+            return
+        if pos.is_empty:
+            volume = self.order_volume(symbol, float(price))
+            if volume:
+                (self.buy if target == Direction.LONG else self.short)(symbol, price, volume)
 
     def on_trade(self, trade: Trade):
         """成交回调"""
@@ -83,8 +109,7 @@ class StrategyBase(ABC):
             raise StrategyError(f"策略 {self.name} 错误次数超限 ({self._error_count}/{self._max_errors})") from error
         return True
 
-    def buy(self, symbol: str, price: float, volume: int,
-            order_type: OrderType = OrderType.LIMIT) -> Optional[Signal]:
+    def buy(self, symbol: str, price: float, volume: int, order_type: OrderType = OrderType.LIMIT) -> Optional[Signal]:
         """买入开多"""
         try:
             if volume <= 0:
@@ -98,7 +123,7 @@ class StrategyBase(ABC):
                 price=price,
                 volume=volume,
                 order_type=order_type,
-                comment="buy_open"
+                comment="buy_open",
             )
 
             if not signal.validate():
@@ -112,8 +137,7 @@ class StrategyBase(ABC):
             self.on_error(e, "buy")
             return None
 
-    def sell(self, symbol: str, price: float, volume: int,
-             order_type: OrderType = OrderType.LIMIT) -> Optional[Signal]:
+    def sell(self, symbol: str, price: float, volume: int, order_type: OrderType = OrderType.LIMIT) -> Optional[Signal]:
         """卖出平多"""
         try:
             if volume <= 0:
@@ -128,7 +152,7 @@ class StrategyBase(ABC):
                 volume=volume,
                 order_type=order_type,
                 offset=OffsetFlag.CLOSE,
-                comment="sell_close"
+                comment="sell_close",
             )
 
             if not signal.validate():
@@ -142,8 +166,9 @@ class StrategyBase(ABC):
             self.on_error(e, "sell")
             return None
 
-    def short(self, symbol: str, price: float, volume: int,
-              order_type: OrderType = OrderType.LIMIT) -> Optional[Signal]:
+    def short(
+        self, symbol: str, price: float, volume: int, order_type: OrderType = OrderType.LIMIT
+    ) -> Optional[Signal]:
         """卖出开空"""
         try:
             if volume <= 0:
@@ -157,7 +182,7 @@ class StrategyBase(ABC):
                 price=price,
                 volume=volume,
                 order_type=order_type,
-                comment="short_open"
+                comment="short_open",
             )
 
             if not signal.validate():
@@ -171,8 +196,9 @@ class StrategyBase(ABC):
             self.on_error(e, "short")
             return None
 
-    def cover(self, symbol: str, price: float, volume: int,
-              order_type: OrderType = OrderType.LIMIT) -> Optional[Signal]:
+    def cover(
+        self, symbol: str, price: float, volume: int, order_type: OrderType = OrderType.LIMIT
+    ) -> Optional[Signal]:
         """买入平空"""
         try:
             if volume <= 0:
@@ -187,7 +213,7 @@ class StrategyBase(ABC):
                 volume=volume,
                 order_type=order_type,
                 offset=OffsetFlag.CLOSE,
-                comment="cover_close"
+                comment="cover_close",
             )
 
             if not signal.validate():
@@ -206,13 +232,13 @@ class StrategyBase(ABC):
         source_position = self._get_position_from_source(symbol)
         if source_position is not None:
             return source_position
-        if any(p.symbol==symbol for p in self.positions.values()) and symbol not in self.positions:
-            saved=self._position_source
+        if any(p.symbol == symbol for p in self.positions.values()) and symbol not in self.positions:
+            saved = self._position_source
             try:
-                self._position_source=self.positions
+                self._position_source = self.positions
                 return self._get_position_from_source(symbol)
             finally:
-                self._position_source=saved
+                self._position_source = saved
         return self.positions.get(symbol, Position(symbol=symbol, direction=Direction.NET, volume=0))
 
     def set_position_source(self, positions: Optional[Mapping[str, Position]]) -> None:
@@ -224,11 +250,10 @@ class StrategyBase(ABC):
             return None
 
         matches = [
-            pos for key, pos in self._position_source.items()
-            if key == symbol or getattr(pos, "symbol", "") == symbol
+            pos for key, pos in self._position_source.items() if key == symbol or getattr(pos, "symbol", "") == symbol
         ]
         if not matches:
-            return Position(symbol=symbol,direction=Direction.NET,volume=0)
+            return Position(symbol=symbol, direction=Direction.NET, volume=0)
 
         signed_volume = 0
         weighted_cost = 0.0
@@ -266,7 +291,7 @@ class StrategyBase(ABC):
             symbol=symbol,
             direction=direction,
             volume=signed_volume,
-            frozen=min(frozen,abs(signed_volume)),
+            frozen=min(frozen, abs(signed_volume)),
             price=weighted_price / total_abs_volume if total_abs_volume else 0.0,
             cost=weighted_cost / total_abs_volume if total_abs_volume else 0.0,
             pnl=pnl,
@@ -276,25 +301,29 @@ class StrategyBase(ABC):
         """获取历史数据"""
         return self.data.get(symbol)
 
-    def update_position(self, symbol: str, trade: 'Trade'):
+    def update_position(self, symbol: str, trade: "Trade"):
         """更新持仓"""
         try:
             if trade.offset is not None:
-                side=trade.direction if trade.offset==OffsetFlag.OPEN else (Direction.SHORT if trade.direction==Direction.LONG else Direction.LONG)
-                key=f'{symbol}_{side.value}'
-                pos=self.positions.get(key,Position(symbol,side,0))
-                if trade.offset==OffsetFlag.OPEN:
-                    total=abs(pos.volume)+trade.volume
-                    pos.cost=(pos.cost*abs(pos.volume)+trade.price*trade.volume)/total
-                    pos.price=pos.cost
-                    pos.volume=total
+                side = (
+                    trade.direction
+                    if trade.offset == OffsetFlag.OPEN
+                    else (Direction.SHORT if trade.direction == Direction.LONG else Direction.LONG)
+                )
+                key = f"{symbol}_{side.value}"
+                pos = self.positions.get(key, Position(symbol, side, 0))
+                if trade.offset == OffsetFlag.OPEN:
+                    total = abs(pos.volume) + trade.volume
+                    pos.cost = (pos.cost * abs(pos.volume) + trade.price * trade.volume) / total
+                    pos.price = pos.cost
+                    pos.volume = total
                 else:
-                    if trade.volume>abs(pos.volume):
+                    if trade.volume > abs(pos.volume):
                         # External position snapshots remain authoritative for inherited holdings.
                         if self._position_source is None:
-                            raise ValueError('Close exceeds local position')
-                    pos.volume=max(0,abs(pos.volume)-trade.volume)
-                self.positions[key]=pos
+                            raise ValueError("Close exceeds local position")
+                    pos.volume = max(0, abs(pos.volume) - trade.volume)
+                self.positions[key] = pos
                 return
             if symbol not in self.positions:
                 self.positions[symbol] = Position(symbol=symbol, direction=Direction.NET, volume=0)
@@ -308,10 +337,7 @@ class StrategyBase(ABC):
             if old_volume == 0 or old_volume * delta > 0:
                 old_abs = abs(old_volume)
                 new_abs = abs(new_volume)
-                pos.cost = (
-                    (old_cost * old_abs + float(trade.price) * abs(delta)) / new_abs
-                    if new_abs else 0.0
-                )
+                pos.cost = (old_cost * old_abs + float(trade.price) * abs(delta)) / new_abs if new_abs else 0.0
             elif new_volume == 0:
                 pos.cost = 0
             elif old_volume * new_volume > 0:

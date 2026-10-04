@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 class PreOrderType(Enum):
     """预埋单类型"""
+
     STOP_ENTRY = "stop_entry"  # 触发入场
     LIMIT_ENTRY = "limit_entry"  # 限价入场
     STOP_LOSS = "stop_loss"  # 止损
@@ -27,10 +28,12 @@ class PreOrderType(Enum):
 
 class PreOrderStatus(Enum):
     """预埋单状态"""
+
     PENDING = "pending"  # 待触发
     TRIGGERED = "triggered"  # 已触发
     CANCELLED = "cancelled"  # 已取消
     EXPIRED = "expired"  # 已过期
+    REJECTED = "rejected"  # 触发后被风控或柜台拒绝
 
 
 class OrderManager:
@@ -47,8 +50,8 @@ class OrderManager:
         self.completed_orders: Dict[str, Order] = {}  # 已完成订单
 
         # 预埋单存储
-        self.pre_orders: Dict[str, 'PreOrder'] = {}  # 预埋单
-        self.active_pre_orders: Dict[str, 'PreOrder'] = {}  # 激活的预埋单
+        self.pre_orders: Dict[str, "PreOrder"] = {}  # 预埋单
+        self.active_pre_orders: Dict[str, "PreOrder"] = {}  # 激活的预埋单
 
         # 回调函数
         self.on_order_callback: Optional[Callable] = None
@@ -98,7 +101,7 @@ class OrderManager:
                     price=signal.price,
                     volume=signal.volume,
                     status=OrderStatus.SUBMITTING,
-                    offset=getattr(signal, 'offset', OffsetFlag.OPEN),
+                    offset=getattr(signal, "offset", OffsetFlag.OPEN),
                 )
                 # A synchronous broker callback may already have delivered a newer state.
                 order = self.gateway.orders.get(order_id, order)
@@ -107,7 +110,9 @@ class OrderManager:
                 # 更新网关中的订单
                 self.gateway.orders[order_id] = order
 
-                logger.info(f"普通订单已提交: {order_id} - {signal.symbol} {signal.direction.value} {signal.volume}@{signal.price}")
+                logger.info(
+                    f"普通订单已提交: {order_id} - {signal.symbol} {signal.direction.value} {signal.volume}@{signal.price}"
+                )
             return order_id
 
     def cancel_order(self, order_id: str) -> bool:
@@ -131,8 +136,16 @@ class OrderManager:
                     price, total = change
                     remaining = max(0, total - order.traded_volume)
                     if remaining:
-                        replacement = Signal(order.symbol, datetime.now(), order.direction, price,
-                            remaining, order.order_type, order.offset, comment=f"replace:{order.order_id}")
+                        replacement = Signal(
+                            order.symbol,
+                            datetime.now(),
+                            order.direction,
+                            price,
+                            remaining,
+                            order.order_type,
+                            order.offset,
+                            comment=f"replace:{order.order_id}",
+                        )
             self.gateway.orders[order.order_id] = order
             while len(self.completed_orders) > 2000:
                 self.completed_orders.pop(next(iter(self.completed_orders)))
@@ -172,7 +185,7 @@ class OrderManager:
                 return False
             return True
 
-    def place_pre_order(self, pre_order: 'PreOrder') -> str:
+    def place_pre_order(self, pre_order: "PreOrder") -> str:
         """放置预埋单"""
         with self.lock:
             # 生成预埋单ID
@@ -183,7 +196,9 @@ class OrderManager:
             self.pre_orders[pre_order_id] = pre_order
             self.active_pre_orders[pre_order_id] = pre_order
 
-            logger.info(f"预埋单已放置: {pre_order_id} - 类型:{pre_order.type.value} {pre_order.symbol} {pre_order.direction.value} {pre_order.volume}@{pre_order.trigger_price}")
+            logger.info(
+                f"预埋单已放置: {pre_order_id} - 类型:{pre_order.type.value} {pre_order.symbol} {pre_order.direction.value} {pre_order.volume}@{pre_order.trigger_price}"
+            )
 
             return pre_order_id
 
@@ -220,7 +235,7 @@ class OrderManager:
         with self.lock:
             return self.active_orders.get(order_id) or self.completed_orders.get(order_id)
 
-    def get_pre_order(self, pre_order_id: str) -> Optional['PreOrder']:
+    def get_pre_order(self, pre_order_id: str) -> Optional["PreOrder"]:
         """获取预埋单"""
         with self.lock:
             return self.pre_orders.get(pre_order_id)
@@ -235,7 +250,7 @@ class OrderManager:
         with self.lock:
             return list(self.completed_orders.values())
 
-    def get_active_pre_orders(self) -> List['PreOrder']:
+    def get_active_pre_orders(self) -> List["PreOrder"]:
         """获取活跃预埋单"""
         with self.lock:
             return list(self.active_pre_orders.values())
@@ -263,7 +278,7 @@ class OrderManager:
             return
 
         market = self.market_data[symbol]
-        current_price = market.get('last_price', 0)
+        current_price = market.get("last_price", 0)
 
         with self.lock:
             # 遍历活跃预埋单
@@ -281,7 +296,7 @@ class OrderManager:
                 pre_order = self.active_pre_orders[pre_order_id]
                 self._trigger_pre_order(pre_order)
 
-    def _should_trigger(self, pre_order: 'PreOrder', current_price: float) -> bool:
+    def _should_trigger(self, pre_order: "PreOrder", current_price: float) -> bool:
         """判断预埋单是否应被触发"""
         if pre_order.expires_at and datetime.now() > pre_order.expires_at:
             pre_order.status = PreOrderStatus.EXPIRED
@@ -316,7 +331,7 @@ class OrderManager:
 
         return False
 
-    def _check_trailing_stop_trigger(self, pre_order: 'PreOrder', current_price: float) -> bool:
+    def _check_trailing_stop_trigger(self, pre_order: "PreOrder", current_price: float) -> bool:
         """检查移动止损预埋单触发条件。
 
         移动止损会随价格朝有利方向移动而收紧止损线，但不会向不利方向回退。
@@ -340,7 +355,7 @@ class OrderManager:
                 return False
             return current_price >= pre_order.trigger_price
 
-    def _trigger_pre_order(self, pre_order: 'PreOrder'):
+    def _trigger_pre_order(self, pre_order: "PreOrder"):
         """触发预埋单"""
         # 更新状态
         pre_order.status = PreOrderStatus.TRIGGERED
@@ -359,12 +374,17 @@ class OrderManager:
             volume=pre_order.volume,
             order_type=pre_order.order_type or OrderType.LIMIT,
             offset=pre_order.offset,
-            comment=f"由预埋单触发: {pre_order.type.value}"
+            comment=f"由预埋单触发: {pre_order.type.value}",
         )
 
         # 提交订单
         order_id = self.submit_order(signal)
         pre_order.related_order_id = order_id
+        if not order_id:
+            pre_order.status = PreOrderStatus.REJECTED
+        completed = [key for key in self.pre_orders if key not in self.active_pre_orders]
+        for key in completed[:-2000]:
+            self.pre_orders.pop(key, None)
 
         logger.info(f"预埋单已触发: {pre_order.pre_order_id} -> 订单{order_id}")
 
@@ -392,6 +412,7 @@ class OrderManager:
 @dataclass
 class PreOrder:
     """预埋单定义"""
+
     type: PreOrderType
     symbol: str
     direction: Direction

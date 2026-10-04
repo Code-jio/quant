@@ -20,17 +20,19 @@ logger = logging.getLogger(__name__)
 
 class ErrorType(Enum):
     """错误类型"""
-    NETWORK = "network"           # 网络错误
-    TIMEOUT = "timeout"           # 超时错误
-    AUTH = "auth"               # 认证错误
-    BUSINESS = "business"         # 业务错误
-    SYSTEM = "system"           # 系统错误
-    UNKNOWN = "unknown"          # 未知错误
+
+    NETWORK = "network"  # 网络错误
+    TIMEOUT = "timeout"  # 超时错误
+    AUTH = "auth"  # 认证错误
+    BUSINESS = "business"  # 业务错误
+    SYSTEM = "system"  # 系统错误
+    UNKNOWN = "unknown"  # 未知错误
 
 
 @dataclass
 class ErrorInfo:
     """错误信息"""
+
     error_type: ErrorType
     message: str
     exception: Optional[Exception] = None
@@ -56,7 +58,7 @@ class ErrorInfo:
             "timestamp": self.timestamp.isoformat(),
             "retry_count": self.retry_count,
             "operation": self.operation,
-            "details": self.details
+            "details": self.details,
         }
 
 
@@ -135,7 +137,7 @@ class RetryPolicy:
         max_delay: float = 10.0,
         backoff_factor: float = 2.0,
         retry_on: tuple = (Exception,),
-        circuit_breaker: Optional[CircuitBreaker] = None
+        circuit_breaker: Optional[CircuitBreaker] = None,
     ):
         """
         初始化重试策略
@@ -180,7 +182,7 @@ class ErrorReporter:
             ErrorType.AUTH: 3,
             ErrorType.BUSINESS: 10,
             ErrorType.SYSTEM: 3,
-            ErrorType.UNKNOWN: 5
+            ErrorType.UNKNOWN: 5,
         }
         self.threshold_counts = {error_type: 0 for error_type in ErrorType}
 
@@ -192,11 +194,7 @@ class ErrorReporter:
         # 更新统计
         error_type = error_info.error_type.value
         if error_type not in self.error_stats:
-            self.error_stats[error_type] = {
-                "count": 0,
-                "last_time": None,
-                "first_time": error_info.timestamp
-            }
+            self.error_stats[error_type] = {"count": 0, "last_time": None, "first_time": error_info.timestamp}
         self.error_stats[error_type]["count"] += 1
         self.error_stats[error_type]["last_time"] = error_info.timestamp
 
@@ -206,7 +204,7 @@ class ErrorReporter:
         # 写入日志文件
         if self.log_file:
             try:
-                with open(self.log_file, 'a', encoding='utf-8') as f:
+                with open(self.log_file, "a", encoding="utf-8") as f:
                     f.write(f"[{error_info.timestamp}] {error_info.to_dict()}\n")
             except Exception as e:
                 logger.error(f"写入错误日志文件失败: {e}")
@@ -234,13 +232,8 @@ class ErrorReporter:
             "total_errors": len(self.error_history),
             "by_type": self.error_stats,
             "threshold_counts": {k.value: v for k, v in self.threshold_counts.items()},
-            "threshold_exceeded": {
-                k.value: v >= self.error_thresholds[k]
-                for k, v in self.threshold_counts.items()
-            },
-            "recent_errors": [
-                e.to_dict() for e in list(self.error_history)[-10:]
-            ]
+            "threshold_exceeded": {k.value: v >= self.error_thresholds[k] for k, v in self.threshold_counts.items()},
+            "recent_errors": [e.to_dict() for e in list(self.error_history)[-10:]],
         }
 
     def get_report(self, hours: int = 24) -> dict:
@@ -253,10 +246,7 @@ class ErrorReporter:
             错误报告字典
         """
         cutoff_time = datetime.now() - timedelta(hours=hours)
-        recent_errors = [
-            e for e in self.error_history
-            if e.timestamp >= cutoff_time
-        ]
+        recent_errors = [e for e in self.error_history if e.timestamp >= cutoff_time]
 
         report = {
             "period_hours": hours,
@@ -269,8 +259,8 @@ class ErrorReporter:
             "summary": {
                 "critical_errors": 0,  # 高频错误
                 "unique_errors": len(set(e.message for e in recent_errors)),
-                "avg_errors_per_hour": len(recent_errors) / hours if hours > 0 else 0
-            }
+                "avg_errors_per_hour": len(recent_errors) / hours if hours > 0 else 0,
+            },
         }
 
         # 按错误类型统计
@@ -291,12 +281,14 @@ class ErrorReporter:
 
         # 时间线
         for error in recent_errors[-50:]:  # 最近50个错误
-            report["error_timeline"].append({
-                "timestamp": error.timestamp.isoformat(),
-                "operation": error.operation,
-                "error_type": error.error_type.value,
-                "message": error.message[:100]  # 截断长消息
-            })
+            report["error_timeline"].append(
+                {
+                    "timestamp": error.timestamp.isoformat(),
+                    "operation": error.operation,
+                    "error_type": error.error_type.value,
+                    "message": error.message[:100],  # 截断长消息
+                }
+            )
 
         # 总结关键指标
         report["summary"]["critical_errors"] = sum(1 for count in type_counts.values() if count > 10)
@@ -311,9 +303,11 @@ class ErrorReporter:
 
     def _send_alert(self, error_info: ErrorInfo):
         """发送警报"""
-        alert_msg = f"严重错误警告: {error_info.error_type.value} 类型错误超过阈值 " \
-                   f"({self.threshold_counts[error_info.error_type]}/{self.error_thresholds[error_info.error_type]}) " \
-                   f"- 操作: {error_info.operation} - {error_info.message}"
+        alert_msg = (
+            f"严重错误警告: {error_info.error_type.value} 类型错误超过阈值 "
+            f"({self.threshold_counts[error_info.error_type]}/{self.error_thresholds[error_info.error_type]}) "
+            f"- 操作: {error_info.operation} - {error_info.message}"
+        )
 
         logger.critical(alert_msg)
 
@@ -324,7 +318,7 @@ class ErrorReporter:
         """导出错误报告到JSON文件"""
         try:
             report = self.get_report(hours)
-            with open(filepath, 'w', encoding='utf-8') as f:
+            with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(report, f, ensure_ascii=False, indent=2, default=str)
             logger.info(f"错误报告已导出到: {filepath}")
             return True
@@ -365,13 +359,7 @@ class ErrorHandler:
         else:
             return ErrorType.UNKNOWN
 
-    def handle_error(
-        self,
-        operation: str,
-        exception: Exception,
-        retry_count: int = 0,
-        details: dict = None
-    ):
+    def handle_error(self, operation: str, exception: Exception, retry_count: int = 0, details: dict = None):
         """处理错误"""
         error_type = self.classify_error(exception)
 
@@ -382,7 +370,7 @@ class ErrorHandler:
             traceback=traceback.format_exc(),
             operation=operation,
             retry_count=retry_count,
-            details=details or {}
+            details=details or {},
         )
 
         # 记录错误
@@ -403,7 +391,7 @@ def retry(
     retry_on: tuple = (Exception,),
     on_retry: Optional[Callable] = None,
     error_handler: Optional[ErrorHandler] = None,
-    condition: Optional[Callable[[Exception], bool]] = None
+    condition: Optional[Callable[[Exception], bool]] = None,
 ):
     """
     重试装饰器
@@ -427,6 +415,7 @@ def retry(
             # 可能失败的操作
             pass
     """
+
     def decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
@@ -460,18 +449,14 @@ def retry(
 
                     # 处理错误
                     if error_handler:
-                        error_handler.handle_error(
-                            operation=func.__name__,
-                            exception=e,
-                            retry_count=attempt
-                        )
+                        error_handler.handle_error(operation=func.__name__, exception=e, retry_count=attempt)
 
                     # 执行重试回调
                     if on_retry:
                         on_retry(attempt + 1, e)
 
                     # 计算延迟时间
-                    delay = min(initial_delay * (backoff_factor ** attempt), max_delay)
+                    delay = min(initial_delay * (backoff_factor**attempt), max_delay)
                     logger.warning(f"{func.__name__} 失败，{delay}秒后重试 ({attempt + 1}/{max_retries})")
                     time.sleep(delay)
 
@@ -479,6 +464,7 @@ def retry(
             raise last_exception
 
         return wrapper
+
     return decorator
 
 
@@ -498,6 +484,7 @@ def timeout(seconds: float, error_handler: Optional[ErrorHandler] = None):
         def slow_operation():
             time.sleep(10)  # 这会超时
     """
+
     def decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
@@ -524,10 +511,7 @@ def timeout(seconds: float, error_handler: Optional[ErrorHandler] = None):
                 # 超时
                 timeout_error = TimeoutError(f"{func.__name__} 执行超时 ({seconds}秒)")
                 if error_handler:
-                    error_handler.handle_error(
-                        operation=func.__name__,
-                        exception=timeout_error
-                    )
+                    error_handler.handle_error(operation=func.__name__, exception=timeout_error)
                 raise timeout_error
 
             if exception[0]:
@@ -536,17 +520,14 @@ def timeout(seconds: float, error_handler: Optional[ErrorHandler] = None):
             return result[0]
 
         return wrapper
+
     return decorator
 
 
 with_timeout = timeout
 
 
-def handle_errors(
-    default_return: Any = None,
-    log_exception: bool = True,
-    error_handler: Optional[ErrorHandler] = None
-):
+def handle_errors(default_return: Any = None, log_exception: bool = True, error_handler: Optional[ErrorHandler] = None):
     """
     异常捕获装饰器
 
@@ -564,6 +545,7 @@ def handle_errors(
             # 可能失败的操作
             pass
     """
+
     def decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
@@ -574,14 +556,12 @@ def handle_errors(
                     logger.error(f"{func.__name__} 发生异常: {e}")
 
                 if error_handler:
-                    error_handler.handle_error(
-                        operation=func.__name__,
-                        exception=e
-                    )
+                    error_handler.handle_error(operation=func.__name__, exception=e)
 
                 return default_return
 
         return wrapper
+
     return decorator
 
 
@@ -591,11 +571,13 @@ class ExceptionHandler:
     def __init__(self, log_file: Optional[str] = None, enable_circuit_breaker: bool = True):
         self.error_handler = ErrorHandler(log_file, enable_circuit_breaker)
 
-    def handle_network_request(self,
-                              request_func: Callable,
-                              max_retries: int = 3,
-                              timeout: float = 10.0,
-                              retry_conditions: Optional[dict] = None) -> Any:
+    def handle_network_request(
+        self,
+        request_func: Callable,
+        max_retries: int = 3,
+        timeout: float = 10.0,
+        retry_conditions: Optional[dict] = None,
+    ) -> Any:
         """
         处理网络请求，包含重试和超时逻辑
 
@@ -608,6 +590,7 @@ class ExceptionHandler:
         Returns:
             请求结果或None
         """
+
         # 创建包装函数以应用多重装饰器
         def wrapped_func():
             # 先应用重试逻辑
@@ -617,7 +600,7 @@ class ExceptionHandler:
                 backoff_factor=2.0,
                 retry_on=(ConnectionError, TimeoutError, IOError),
                 error_handler=self.error_handler,
-                condition=lambda e: retry_conditions.get(type(e).__name__, True) if retry_conditions else True
+                condition=lambda e: retry_conditions.get(type(e).__name__, True) if retry_conditions else True,
             )
             def retry_wrapper():
                 return request_func()
@@ -635,9 +618,7 @@ class ExceptionHandler:
             logger.error(f"网络请求最终失败: {e}")
             return None
 
-    def handle_database_operation(self,
-                                 db_func: Callable,
-                                 max_retries: int = 3) -> Any:
+    def handle_database_operation(self, db_func: Callable, max_retries: int = 3) -> Any:
         """
         处理数据库操作，包含重试逻辑
 
@@ -648,12 +629,13 @@ class ExceptionHandler:
         Returns:
             操作结果或None
         """
+
         @retry(
             max_retries=max_retries,
             initial_delay=0.5,
             backoff_factor=1.5,
             retry_on=(Exception,),  # 捕获所有数据库异常
-            error_handler=self.error_handler
+            error_handler=self.error_handler,
         )
         def db_operation_with_retry():
             return db_func()
@@ -664,14 +646,15 @@ class ExceptionHandler:
             logger.error(f"数据库操作最终失败: {e}")
             return None
 
-    def handle_trading_operation(self, trade_func: Callable, max_retries: int = 0,
-                                 timeout: float = 5.0) -> Any:
+    def handle_trading_operation(self, trade_func: Callable, max_retries: int = 0, timeout: float = 5.0) -> Any:
         """Never retry an unknown broker outcome. Reconcile in the execution engine."""
         if max_retries:
-            raise ValueError('Automatic trading retries are prohibited; reconcile by order ID')
+            raise ValueError("Automatic trading retries are prohibited; reconcile by order ID")
+
         @with_timeout(seconds=timeout, error_handler=self.error_handler)
         def invoke():
             return trade_func()
+
         return invoke()
 
     def get_error_summary(self) -> dict:

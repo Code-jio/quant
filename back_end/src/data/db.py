@@ -29,8 +29,7 @@ def _validate_identifier(name: str) -> None:
 class DatabaseManager:
     """数据库管理器"""
 
-    def __init__(self, db_path: str = "data/historical/quotes.db",
-                 max_retries: int = 3, timeout: float = 30.0):
+    def __init__(self, db_path: str = "data/historical/quotes.db", max_retries: int = 3, timeout: float = 30.0):
         self.db_path = db_path
         self.max_retries = max_retries
         self.timeout = timeout
@@ -40,7 +39,7 @@ class DatabaseManager:
     def _init_database(self):
         """初始化数据库"""
         try:
-            os.makedirs(os.path.dirname(self.db_path) or '.', exist_ok=True)
+            os.makedirs(os.path.dirname(self.db_path) or ".", exist_ok=True)
             conn = sqlite3.connect(self.db_path, timeout=self.timeout)
             cursor = conn.cursor()
             cursor.execute("""
@@ -160,21 +159,31 @@ class DatabaseManager:
                 adjustment=adjustment,
                 rollover_rule=rollover_rule,
             )
-            df['symbol'] = symbol
-            df['timeframe'] = timeframe
-            times = pd.DatetimeIndex(pd.to_datetime(df['datetime']))
+            df["symbol"] = symbol
+            df["timeframe"] = timeframe
+            times = pd.DatetimeIndex(pd.to_datetime(df["datetime"]))
             if times.tz is not None:
-                times = times.tz_convert('Asia/Shanghai').tz_localize(None)
-            df['datetime'] = times.strftime('%Y-%m-%d %H:%M:%S.%f')
-            df['data_source'] = metadata.data_source
-            df['adjustment'] = metadata.adjustment
-            df['rollover_rule'] = metadata.rollover_rule
-            df['ingested_at'] = metadata.ingested_at
+                times = times.tz_convert("Asia/Shanghai").tz_localize(None)
+            df["datetime"] = times.strftime("%Y-%m-%d %H:%M:%S.%f")
+            df["data_source"] = metadata.data_source
+            df["adjustment"] = metadata.adjustment
+            df["rollover_rule"] = metadata.rollover_rule
+            df["ingested_at"] = metadata.ingested_at
 
             columns = [
-                "symbol", "timeframe", "datetime",
-                "open", "high", "low", "close", "volume", "open_interest",
-                "data_source", "adjustment", "rollover_rule", "ingested_at",
+                "symbol",
+                "timeframe",
+                "datetime",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "open_interest",
+                "data_source",
+                "adjustment",
+                "rollover_rule",
+                "ingested_at",
             ]
             for col in columns:
                 if col not in df.columns:
@@ -219,11 +228,18 @@ class DatabaseManager:
         if row is None:
             return
         first_dt, last_dt, row_count = row
+
         def aggregate(column):
             _validate_identifier(column)
-            values = [r[0] for r in conn.execute('SELECT DISTINCT '+column+' FROM bars WHERE symbol=? AND timeframe=?',
-                (metadata.symbol, metadata.timeframe))]
-            return values[0] if len(values)==1 else 'mixed'
+            values = [
+                r[0]
+                for r in conn.execute(
+                    "SELECT DISTINCT " + column + " FROM bars WHERE symbol=? AND timeframe=?",
+                    (metadata.symbol, metadata.timeframe),
+                )
+            ]
+            return values[0] if len(values) == 1 else "mixed"
+
         cursor.execute(
             """
             INSERT INTO bar_metadata (
@@ -242,9 +258,9 @@ class DatabaseManager:
             (
                 metadata.symbol,
                 metadata.timeframe,
-                aggregate('data_source'),
-                aggregate('adjustment'),
-                aggregate('rollover_rule'),
+                aggregate("data_source"),
+                aggregate("adjustment"),
+                aggregate("rollover_rule"),
                 first_dt,
                 last_dt,
                 int(row_count or 0),
@@ -253,8 +269,9 @@ class DatabaseManager:
         )
 
     @retry(max_retries=3, initial_delay=0.5, backoff_factor=1.5)
-    def load_bars(self, symbol: str, start_date: str, end_date: str,
-                  timeframe: str = "1d") -> pd.DataFrame:
+    def load_bars(
+        self, symbol: str, start_date: str, end_date: str, timeframe: str = "1d", limit: int = -1
+    ) -> pd.DataFrame:
         """加载K线数据"""
         try:
             conn = sqlite3.connect(self.db_path, timeout=self.timeout)
@@ -263,18 +280,31 @@ class DatabaseManager:
                        data_source, adjustment, rollover_rule, ingested_at
                 FROM bars
                 WHERE symbol = ? AND timeframe = ? AND datetime >= ? AND datetime < ?
-                ORDER BY datetime
+                ORDER BY datetime LIMIT ?
             """
             start = pd.Timestamp(start_date)
             end = pd.Timestamp(end_date)
-            end += pd.Timedelta(days=1) if len(str(end_date))==10 else pd.Timedelta(microseconds=1)
-            df = pd.read_sql_query(query, conn, params=(symbol, timeframe,
-                start.strftime('%Y-%m-%d %H:%M:%S.%f'), end.strftime('%Y-%m-%d %H:%M:%S.%f')))
+            end += pd.Timedelta(days=1) if len(str(end_date)) == 10 else pd.Timedelta(microseconds=1)
+            df = pd.read_sql_query(
+                query,
+                conn,
+                params=(
+                    symbol,
+                    timeframe,
+                    (
+                        start.strftime("%Y-%m-%d")
+                        if len(str(start_date)) == 10
+                        else start.strftime("%Y-%m-%d %H:%M:%S.%f")
+                    ),
+                    end.strftime("%Y-%m-%d %H:%M:%S.%f"),
+                    limit,
+                ),
+            )
             conn.close()
 
             if not df.empty:
-                df['datetime'] = pd.to_datetime(df['datetime'])
-                df.set_index('datetime', inplace=True)
+                df["datetime"] = pd.to_datetime(df["datetime"])
+                df.set_index("datetime", inplace=True)
 
             logger.debug(f"加载 {symbol} {timeframe} 数据 {len(df)} 条")
             return df
@@ -286,19 +316,23 @@ class DatabaseManager:
             logger.error(f"加载数据异常: {e}")
             raise DatabaseError(f"加载数据异常: {e}")
 
-    def load_recent_bars(self, symbol, timeframe='1d', limit=100, before=None, since=None):
-        clauses=['symbol=?', 'timeframe=?']; params=[symbol, timeframe]
-        for cursor, operator in ((before,'<'),(since,'>')):
+    def load_recent_bars(self, symbol, timeframe="1d", limit=100, before=None, since=None):
+        clauses = ["symbol=?", "timeframe=?"]
+        params = [symbol, timeframe]
+        for cursor, operator in ((before, "<"), (since, ">")):
             if cursor:
-                clauses.append('datetime '+operator+' ?')
-                params.append(pd.Timestamp(cursor).strftime('%Y-%m-%d %H:%M:%S.%f'))
-        params.append(max(1,min(int(limit),5000)))
-        with sqlite3.connect(self.db_path,timeout=self.timeout) as conn:
-            df=pd.read_sql_query('SELECT * FROM bars WHERE '+' AND '.join(clauses)+
-                ' ORDER BY datetime DESC LIMIT ?',conn,params=params)
+                clauses.append("datetime " + operator + " ?")
+                params.append(pd.Timestamp(cursor).strftime("%Y-%m-%d %H:%M:%S.%f"))
+        params.append(max(1, min(int(limit), 5000)))
+        with sqlite3.connect(self.db_path, timeout=self.timeout) as conn:
+            df = pd.read_sql_query(
+                "SELECT * FROM bars WHERE " + " AND ".join(clauses) + " ORDER BY datetime DESC LIMIT ?",
+                conn,
+                params=params,
+            )
         if not df.empty:
-            df['datetime']=pd.to_datetime(df['datetime'])
-            df=df.set_index('datetime').sort_index().drop(columns=['id','symbol','timeframe'])
+            df["datetime"] = pd.to_datetime(df["datetime"])
+            df = df.set_index("datetime").sort_index().drop(columns=["id", "symbol", "timeframe"])
         return df
 
     @retry(max_retries=3, initial_delay=0.5, backoff_factor=1.5)

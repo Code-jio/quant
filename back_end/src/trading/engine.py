@@ -40,6 +40,7 @@ class TradingEngine:
         self.order_manager.dispatch_signal = self.send_signal
         self.trades = {}
         self._seen_trades = set()
+        self.missing_order_replays = set()
         self.ledger = None
         self._bars = {}
         self.gateway.on_order_callback = self._on_order
@@ -68,20 +69,33 @@ class TradingEngine:
         """Configure pre-order risk controls."""
         config = config or {}
         self.risk_manager.configure(config)
-        if hasattr(self.gateway,'ready'):
-            self.risk_manager.config.require_account=True
+        if hasattr(self.gateway, "ready"):
+            self.risk_manager.config.require_account = True
         account = self.gateway.account
         if self.ledger is None and account.account_id:
-            default_path = ':memory:' if os.getenv('QUANT_ENV') == 'test' else 'data/runtime/execution.db'
-            self.ledger = ExecutionLedger(os.getenv('QUANT_LEDGER_PATH', default_path),
-                f"{config.get('broker_id', '')}:{account.account_id}")
+            default_path = ":memory:" if os.getenv("QUANT_ENV") == "test" else "data/runtime/execution.db"
+            self.ledger = ExecutionLedger(
+                os.getenv("QUANT_LEDGER_PATH", default_path), f"{config.get('broker_id', '')}:{account.account_id}"
+            )
+            saved_risk = self.ledger.load_setting("risk")
+            if saved_risk:
+                self.risk_manager.configure({"risk": saved_risk})
+            emergency = self.ledger.load_setting("emergency_stop", {})
+            if emergency.get("enabled"):
+                self.risk_manager.set_emergency_stop(True, emergency.get("reason", "Restored operator stop"))
             for trade in self.trades.values():
                 self.ledger.record_trade(trade)
+            for order in self.ledger.orders():
+                if order.order_id not in self.gateway.orders:
+                    self.gateway.orders[order.order_id] = order
+                    self.order_manager.update_order(order)
+                    if order.is_active():
+                        self.missing_order_replays.add(order.order_id)
             if self.ledger.unresolved():
-                self.risk_manager.set_emergency_stop(True, 'Unresolved execution intent; reconcile before resuming')
+                self.risk_manager.set_emergency_stop(True, "Unresolved execution intent; reconcile before resuming")
         if config.get("initial_capital"):
             balance = float(config.get("initial_capital") or 0.0)
-            day = account.trading_day or (datetime.now().strftime('%Y%m%d') if os.getenv('QUANT_ENV') == 'test' else '')
+            day = account.trading_day or (datetime.now().strftime("%Y%m%d") if os.getenv("QUANT_ENV") == "test" else "")
             baseline = self.ledger.day_baseline(day, balance) if self.ledger else balance
             self.risk_manager.set_day_open_balance(baseline)
 
@@ -103,6 +117,7 @@ class TradingEngine:
                     self.status = TradingStatus.ERROR
                     return False
 
+            self.configure_risk(config)
             self.order_manager.start()
 
             if self.strategy:
@@ -154,7 +169,7 @@ class TradingEngine:
         with self.order_manager.lock:
             return self._send_signal_locked(signal)
 
-    def _send_signal_locked(self, signal: 'Signal') -> str:
+    def _send_signal_locked(self, signal: "Signal") -> str:
         """发送交易信号"""
         self.last_reject_reason = ""
         if self.status not in (TradingStatus.TRADING, TradingStatus.CONNECTED):
@@ -167,28 +182,33 @@ class TradingEngine:
         try:
             account = self.gateway.account
             if self.ledger and account.trading_day:
-                self.risk_manager.set_day_open_balance(self.ledger.day_baseline(account.trading_day,account.balance))
-            specs=getattr(self.gateway,'contract_specs',None)
+                self.risk_manager.set_day_open_balance(self.ledger.day_baseline(account.trading_day, account.balance))
+            specs = getattr(self.gateway, "contract_specs", None)
             if specs is not None:
-                spec=specs.get(signal.symbol,{})
-                if not spec or not spec.get('size'):
-                    self.last_reject_reason='Contract metadata is unavailable'
-                    return ''
-                self.risk_manager.config.contract_multipliers[signal.symbol]=spec['size']
-                if signal.offset.value=='open':
-                    margin=spec.get('margin_rate')
+                spec = specs.get(signal.symbol, {})
+                if not spec or not spec.get("size"):
+                    self.last_reject_reason = "Contract metadata is unavailable"
+                    return ""
+                self.risk_manager.config.contract_multipliers[signal.symbol] = spec["size"]
+                if signal.offset.value == "open":
+                    margin = spec.get("margin_rate")
                     if not margin or not account.fields_known:
-                        self.last_reject_reason='Broker margin rate/account fields must be verified before opening'
-                        return ''
-                    pending=sum(max(0,o.volume-o.traded_volume)*o.price*specs.get(o.symbol,{}).get('size',0)*
-                        (specs.get(o.symbol,{}).get('margin_rate') or 1) for o in self.gateway.orders.values()
-                        if o.is_active() and o.offset.value=='open' and o.status.value=='submitting')
-                    if signal.price*signal.volume*spec['size']*margin+pending>account.available:
-                        self.last_reject_reason='Insufficient available margin after reservations'
-                        return ''
-            if self.ledger and self.ledger.unresolved():
-                self.last_reject_reason='Unresolved execution intent requires reconciliation'
-                return ''
+                        self.last_reject_reason = "Broker margin rate/account fields must be verified before opening"
+                        return ""
+                    pending = sum(
+                        max(0, o.volume - o.traded_volume)
+                        * o.price
+                        * specs.get(o.symbol, {}).get("size", 0)
+                        * (specs.get(o.symbol, {}).get("margin_rate") or 1)
+                        for o in self.gateway.orders.values()
+                        if o.is_active() and o.offset.value == "open"
+                    )
+                    if signal.price * signal.volume * spec["size"] * margin + pending > account.available:
+                        self.last_reject_reason = "Insufficient available margin after reservations"
+                        return ""
+            if self.missing_order_replays or (self.ledger and self.ledger.unresolved()):
+                self.last_reject_reason = "Unresolved execution intent requires reconciliation"
+                return ""
             risk_result = self.risk_manager.check_signal(
                 signal,
                 positions=self.gateway.positions,
@@ -201,9 +221,9 @@ class TradingEngine:
                 logger.warning(f"风控拒单: {risk_result.reason}")
                 return ""
 
-            if hasattr(self.gateway, 'ready') and not self.gateway.ready:
-                self.last_reject_reason = 'Gateway snapshot is not ready'
-                return ''
+            if hasattr(self.gateway, "ready") and not self.gateway.ready:
+                self.last_reject_reason = "Gateway snapshot is not ready"
+                return ""
             identity = self.ledger.begin_intent(signal) if self.ledger else None
             order_id = self.order_manager._submit_validated(signal)
             if self.ledger:
@@ -211,11 +231,13 @@ class TradingEngine:
                 if order_id:
                     self.ledger.record_order(self.gateway.orders[order_id])
             if order_id:
+                if self.strategy:
+                    self.strategy.on_order(self.gateway.orders[order_id])
                 self.risk_manager.record_order(signal)
                 logger.info(f"发送信号: {signal.symbol} {signal.direction.value} {signal.volume}@{signal.price}")
             return order_id
         except Exception as e:
-            self.risk_manager.set_emergency_stop(True, 'Submission outcome unknown; reconcile before retry')
+            self.risk_manager.set_emergency_stop(True, "Submission outcome unknown; reconcile before retry")
             self._error_count += 1
             logger.error(f"发送信号失败: {e}")
             if self._error_count >= self._max_errors:
@@ -230,6 +252,12 @@ class TradingEngine:
         except Exception as e:
             logger.error(f"撤销订单失败: {e}")
             return False
+
+    def set_emergency_stop(self, enabled, reason=""):
+        with self.order_manager.lock:
+            self.risk_manager.set_emergency_stop(enabled, reason)
+            if self.ledger:
+                self.ledger.save_setting("emergency_stop", {"enabled": enabled, "reason": reason})
 
     def place_pre_order(self, pre_order: PreOrder) -> str:
         """放置预埋单"""
@@ -260,20 +288,23 @@ class TradingEngine:
 
     def _on_tick(self, tick: MarketData):
         """行情推送内部处理，同时更新预埋单市场数据"""
-        self.order_manager.update_market_data(tick.symbol, {
-            "last_price": tick.last_price,
-            "bid_price_1": tick.bid_price_1,
-            "ask_price_1": tick.ask_price_1,
-            "timestamp": tick.timestamp,
-        })
+        self.order_manager.update_market_data(
+            tick.symbol,
+            {
+                "last_price": tick.last_price,
+                "bid_price_1": tick.bid_price_1,
+                "ask_price_1": tick.ask_price_1,
+                "timestamp": tick.timestamp,
+            },
+        )
         if not self.strategy or self.status != TradingStatus.TRADING:
             return
         symbols = self.strategy.params.get("symbols") or [getattr(self.strategy, "symbol", None)]
         if tick.symbol not in symbols:
             return
         try:
-            interval = self.strategy.params.get('timeframe', '1d')
-            if interval == 'tick':  # Explicit custom tick strategies only; built-ins use bars.
+            interval = self.strategy.params.get("timeframe", "1d")
+            if interval == "tick":  # Explicit custom tick strategies only; built-ins use bars.
                 bar = self._tick_to_bar(tick)
             else:
                 aggregate = self._bars.setdefault((tick.symbol, interval), BarAggregator(interval))
@@ -281,9 +312,10 @@ class TradingEngine:
                 if completed is None:
                     return
                 import pandas as pd
+
                 bar = pd.Series(completed)
-            self.strategy.current_date = bar['datetime']
-            self.strategy.contract_specs = getattr(self.gateway, 'contract_specs', {})
+            self.strategy.current_date = bar["datetime"]
+            self.strategy.contract_specs = getattr(self.gateway, "contract_specs", {})
             self.strategy.current_capital = max(0, self.gateway.account.available)
             self.strategy.on_bar(bar)
             self._dispatch_strategy_signals()
@@ -295,17 +327,19 @@ class TradingEngine:
         """Convert a live tick into the bar passed to strategy.on_bar."""
         import pandas as pd
 
-        return pd.Series({
-            "symbol": tick.symbol,
-            "datetime": tick.timestamp,
-            "open": tick.last_price,
-            "high": tick.last_price,
-            "low": tick.last_price,
-            "close": tick.last_price,
-            "volume": tick.volume,
-            "bid": tick.bid_price_1,
-            "ask": tick.ask_price_1,
-        })
+        return pd.Series(
+            {
+                "symbol": tick.symbol,
+                "datetime": tick.timestamp,
+                "open": tick.last_price,
+                "high": tick.last_price,
+                "low": tick.last_price,
+                "close": tick.last_price,
+                "volume": tick.volume,
+                "bid": tick.bid_price_1,
+                "ask": tick.ask_price_1,
+            }
+        )
 
     def _append_live_bar(self, tick: MarketData, bar=None):
         """Append the processed tick to rolling live data after strategy.on_bar."""
@@ -331,13 +365,15 @@ class TradingEngine:
         if self._processed_signal_count > len(signals):
             self._processed_signal_count = len(signals)
 
-        new_signals = signals[self._processed_signal_count:]
+        new_signals = signals[self._processed_signal_count :]
         for signal in new_signals:
             order_id = self.send_signal(signal)
             if not order_id:
                 logger.warning(
                     "Strategy signal rejected: %s %s %s",
-                    signal.symbol, signal.direction, signal.volume,
+                    signal.symbol,
+                    signal.direction,
+                    signal.volume,
                 )
         if len(signals) > 1000:
             del signals[:-1000]
@@ -373,11 +409,11 @@ class TradingEngine:
             logger.error(f"获取账户信息失败: {e}")
             return AccountInfo(error_msg=str(e))
 
-    def get_positions(self) -> Dict[str, 'Position']:
+    def get_positions(self) -> Dict[str, "Position"]:
         """获取持仓"""
         return self.gateway.positions
 
-    def get_orders(self) -> Dict[str, 'Order']:
+    def get_orders(self) -> Dict[str, "Order"]:
         """获取订单"""
         return self.order_manager.active_orders
 
@@ -385,8 +421,9 @@ class TradingEngine:
         """获取预埋单"""
         return self.order_manager.pre_orders
 
-    def _on_order(self, order: 'Order'):
+    def _on_order(self, order: "Order"):
         """订单回调"""
+        self.missing_order_replays.discard(order.order_id)
         self.order_manager.update_order(order)
         if self.ledger:
             self.ledger.record_order(order)
@@ -396,9 +433,8 @@ class TradingEngine:
             except Exception as e:
                 logger.error(f"策略订单回调失败: {e}")
 
-    def _on_trade(self, trade: 'Trade'):
-        key = (trade.account_id or self.gateway.account.account_id, trade.trading_day,
-               trade.exchange, trade.trade_id)
+    def _on_trade(self, trade: "Trade"):
+        key = (trade.account_id or self.gateway.account.account_id, trade.trading_day, trade.exchange, trade.trade_id)
         with self.order_manager.lock:
             if not trade.trade_id:
                 return

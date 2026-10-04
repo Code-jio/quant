@@ -22,14 +22,19 @@ logger = logging.getLogger(__name__)
 class DataManager:
     """数据管理器 - 统一数据访问接口"""
 
-    def __init__(self, db_path: str = "data/historical/quotes.db",
-                 max_retries: int = 3, max_cache_size: int = 10,
-                 cache_ttl_seconds: int = 300):
+    def __init__(
+        self,
+        db_path: str = "data/historical/quotes.db",
+        max_retries: int = 3,
+        max_cache_size: int = 10,
+        cache_ttl_seconds: int = 300,
+    ):
         self.db = DatabaseManager(db_path, max_retries=max_retries)
         self.cache = DataCache(max_cache_size=max_cache_size, ttl_seconds=cache_ttl_seconds)
 
-    def get_bars(self, symbol: str, start_date: str, end_date: str,
-                 timeframe: str = "1d", use_cache: bool = True) -> pd.DataFrame:
+    def get_bars(
+        self, symbol: str, start_date: str, end_date: str, timeframe: str = "1d", use_cache: bool = True
+    ) -> pd.DataFrame:
         """获取K线数据"""
         cache_key = f"{symbol}_{timeframe}_{start_date}_{end_date}"
 
@@ -80,8 +85,7 @@ class DataManager:
             logger.error(f"保存数据失败: {e}")
             return False
 
-    def generate_sample_data(self, symbol: str, days: int = 500,
-                             timeframe: str = "1d", end_date=None) -> pd.DataFrame:
+    def generate_sample_data(self, symbol: str, days: int = 500, timeframe: str = "1d", end_date=None) -> pd.DataFrame:
         """生成模拟K线数据用于测试"""
         if not synthetic_data_enabled():
             logger.warning("模拟数据生成已禁用: %s %s", symbol, timeframe)
@@ -90,10 +94,12 @@ class DataManager:
         try:
             rng = np.random.default_rng(42)
             from .governance import timeframe_to_pandas_freq
+
             if not 2 <= days <= 10000:
-                raise ValueError('Sample count must be 2..10000')
-            dates = pd.date_range(end=end_date or datetime.now(), periods=days,
-                                 freq=timeframe_to_pandas_freq(timeframe))
+                raise ValueError("Sample count must be 2..10000")
+            dates = pd.date_range(
+                end=end_date or datetime.now(), periods=days, freq=timeframe_to_pandas_freq(timeframe)
+            )
 
             initial_price = 100.0
             returns = rng.standard_normal(days) * 0.02
@@ -109,22 +115,24 @@ class DataManager:
 
             high_prices = np.maximum(high_prices, np.maximum(open_prices, close_prices))
             low_prices = np.minimum(low_prices, np.minimum(open_prices, close_prices))
-            same_mask = (open_prices == close_prices)
+            same_mask = open_prices == close_prices
             open_prices[same_mask] *= 1.001
 
-            df = pd.DataFrame({
-                'datetime': dates,
-                'open': open_prices,
-                'high': high_prices,
-                'low': low_prices,
-                'close': close_prices,
-                'volume': rng.integers(1000, 10000, days),
-                'open_interest': rng.integers(5000, 50000, days)
-            })
+            df = pd.DataFrame(
+                {
+                    "datetime": dates,
+                    "open": open_prices,
+                    "high": high_prices,
+                    "low": low_prices,
+                    "close": close_prices,
+                    "volume": rng.integers(1000, 10000, days),
+                    "open_interest": rng.integers(5000, 50000, days),
+                }
+            )
 
-            df['data_source'] = 'synthetic'
-            df['adjustment'] = 'raw'
-            df['rollover_rule'] = 'none'
+            df["data_source"] = "synthetic"
+            df["adjustment"] = "raw"
+            df["rollover_rule"] = "none"
             return df
 
         except Exception as e:
@@ -139,8 +147,7 @@ class DataManager:
         """验证数据质量"""
         return validate_data(df)
 
-    def inspect_data_quality(self, symbol: str, start_date: str, end_date: str,
-                             timeframe: str = "1d") -> Dict:
+    def inspect_data_quality(self, symbol: str, start_date: str, end_date: str, timeframe: str = "1d") -> Dict:
         """返回回测前可读的数据治理报告。"""
         df = self.get_bars(symbol, start_date, end_date, timeframe, use_cache=False)
         gap_report = detect_bar_gaps(df, timeframe)

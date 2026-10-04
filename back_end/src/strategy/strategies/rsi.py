@@ -6,6 +6,7 @@ import logging
 
 import pandas as pd
 from ..base import StrategyBase
+from ..types import Direction
 from ..errors import StrategyError
 
 logger = logging.getLogger(__name__)
@@ -16,16 +17,18 @@ class RSIStrategy(StrategyBase):
 
     def on_init(self):
         try:
-            self.symbol = self.params.get('symbol', 'IF9999')
-            self.rsi_period = self.params.get('rsi_period', 14)
-            self.oversold = self.params.get('oversold', 30)
-            self.overbought = self.params.get('overbought', 70)
-            self.position_ratio = self.params.get('position_ratio', 0.8)
+            self.symbol = self.params.get("symbol", "IF9999")
+            self.rsi_period = self.params.get("rsi_period", 14)
+            self.oversold = self.params.get("oversold", 30)
+            self.overbought = self.params.get("overbought", 70)
+            self.position_ratio = self.params.get("position_ratio", 0.8)
 
             if self.oversold >= self.overbought:
                 raise StrategyError(f"oversold ({self.oversold}) 必须小于 overbought ({self.overbought})")
 
-            logger.info(f"RSI策略初始化: period={self.rsi_period}, oversold={self.oversold}, overbought={self.overbought}")
+            logger.info(
+                f"RSI策略初始化: period={self.rsi_period}, oversold={self.oversold}, overbought={self.overbought}"
+            )
             self._initialized = True
 
         except Exception as e:
@@ -44,7 +47,7 @@ class RSIStrategy(StrategyBase):
             if current_idx < self.rsi_period + 1:
                 return
 
-            delta = df['close'].diff()
+            delta = df["close"].diff()
             gain = (delta.where(delta > 0, 0)).rolling(window=self.rsi_period).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_period).mean()
             rs = gain / loss
@@ -55,23 +58,12 @@ class RSIStrategy(StrategyBase):
             if pd.isna(current_rsi):
                 return
 
-            pos = self.get_position(symbol)
-
+            target = None
             if current_rsi < self.oversold:
-                if pos.is_short or pos.is_empty:
-                    volume = self.order_volume(symbol, float(bar['close']))
-                    if volume > 0:
-                        if pos.volume != 0:
-                            self.cover(symbol, bar['close'], abs(pos.volume))
-                        self.buy(symbol, bar['close'], volume)
-
+                target = Direction.LONG
             elif current_rsi > self.overbought:
-                if pos.is_long or pos.is_empty:
-                    volume = self.order_volume(symbol, float(bar['close']))
-                    if volume > 0:
-                        if pos.volume != 0:
-                            self.sell(symbol, bar['close'], abs(pos.volume))
-                        self.short(symbol, bar['close'], volume)
+                target = Direction.SHORT
+            self.rebalance_target(symbol, bar["close"], target)
 
         except Exception as e:
             self.on_error(e, "on_bar")

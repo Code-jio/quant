@@ -62,10 +62,10 @@ class GatewayBase(ABC):
 
     def on_order(self, order: Order) -> None:
         """Order callback entrypoint."""
-        previous=self.orders.get(order.order_id)
+        previous = self.orders.get(order.order_id)
         if previous and not previous.is_active() and order.is_active():
             return
-        if previous and order.traded_volume<previous.traded_volume:
+        if previous and order.traded_volume < previous.traded_volume:
             return
         self.orders[order.order_id] = order
         if self.on_order_callback:
@@ -74,11 +74,11 @@ class GatewayBase(ABC):
             except Exception as exc:
                 logger.error("Order callback failed: %s", exc)
 
-        completed=[key for key,value in self.orders.items() if not value.is_active()]
+        completed = [key for key, value in self.orders.items() if not value.is_active()]
         for key in completed[:-2000]:
-            self.orders.pop(key,None)
-            getattr(self,'_vn_orders',{}).pop(key,None)
-            getattr(self,'_order_meta',{}).pop(key,None)
+            self.orders.pop(key, None)
+            getattr(self, "_vn_orders", {}).pop(key, None)
+            getattr(self, "_order_meta", {}).pop(key, None)
 
     def on_trade(self, trade: Trade) -> None:
         """Trade callback entrypoint."""
