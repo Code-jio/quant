@@ -13,7 +13,7 @@ class FakeWebSocket {
   open() { this.readyState=1;this.onopen?.() }
 }
 beforeEach(()=>{vi.resetModules();sockets=[];sessionStorage.clear();vi.stubGlobal('WebSocket',FakeWebSocket);snapshot.mockReset()})
-afterEach(()=>vi.unstubAllGlobals())
+afterEach(()=>{vi.unstubAllGlobals();vi.useRealTimers()})
 
 test('watch import creates no sockets; consumer release preserves shared subscription',async()=>{
   const {useWatchWs}=await import('@/composables/useWatchWs.js')
@@ -78,4 +78,45 @@ test('stream revisions cannot roll back positions and trade identity includes tr
   send(0,{type:'trade_event',revision:7,trade_id:'T1',trading_day:'20261009'})
   expect(book.trades).toHaveLength(2)
   wrapper.unmount()
+})
+
+test('failed snapshot replays received terminal events and retries to recover freshness',async()=>{
+  vi.useFakeTimers()
+  const {useOrderBookWs}=await import('@/composables/useOrderBookWs.js')
+  sessionStorage.setItem('quant_session_active','1')
+  snapshot.mockResolvedValueOnce({revision:1,orders:[{order_id:'O1',status:'submitted',traded_volume:0}],trades:[],positions:[]})
+  let book
+  const wrapper=mount(defineComponent({setup(){book=useOrderBookWs();return()=>null}}))
+  try {
+    await flushPromises()
+    let reject
+    snapshot.mockImplementationOnce(()=>new Promise((_,r)=>{reject=r}))
+    const pending=book.reload()
+    sockets[0].onmessage({data:JSON.stringify({type:'order_update',revision:2,order_id:'O1',status:'filled',traded_volume:1})})
+    sockets[0].onmessage({data:JSON.stringify({type:'trade_event',revision:3,trade_id:'T1'})})
+    sockets[1].onmessage({data:JSON.stringify({type:'positions_update',revision:4,positions:[{symbol:'A',volume:1}]})})
+    reject(new Error('timeout'));await pending
+    expect(book.ordersArray.value[0].status).toBe('filled')
+    expect(book.trades).toHaveLength(1)
+    expect(book.positions[0].volume).toBe(1)
+    expect(book.stale.value).toBe(true)
+    snapshot.mockResolvedValueOnce({revision:5,orders:[{order_id:'O1',status:'filled',traded_volume:1}],trades:[{trade_id:'T1'}],positions:[{symbol:'A',volume:1}]})
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(book.stale.value).toBe(false)
+    expect(book.trades).toHaveLength(1)
+  } finally {wrapper.unmount()}
+})
+
+test('failed snapshot retries are bounded and disposal cancels pending retries',async()=>{
+  vi.useFakeTimers()
+  const {useOrderBookWs}=await import('@/composables/useOrderBookWs.js')
+  sessionStorage.setItem('quant_session_active','1')
+  snapshot.mockRejectedValue(new Error('offline'))
+  const wrapper=mount(defineComponent({setup(){useOrderBookWs();return()=>null}}))
+  await flushPromises()
+  await vi.advanceTimersByTimeAsync(20000)
+  expect(snapshot).toHaveBeenCalledTimes(4)
+  wrapper.unmount()
+  await vi.advanceTimersByTimeAsync(20000)
+  expect(snapshot).toHaveBeenCalledTimes(4)
 })

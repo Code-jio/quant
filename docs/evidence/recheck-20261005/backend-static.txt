@@ -1,0 +1,7 @@
+Fresh checks executed 2026-10-05 in D:/mine/quant/back_end.
+PYTHONPATH=D:/mine/quant-audit-20261004/python-deps
+python -m ruff check main.py server.py src tests
+Observed: All checks passed!
+python -m mypy
+Observed: Success: no issues found in 29 source files
+Both commands returned successfully. This file transcribes the observed tool output.

@@ -1,0 +1,40 @@
+{
+  "margin_missing_from_browser_login": {
+    "contract_margin_rate": null,
+    "order_id": "",
+    "rejection": "Broker margin rate/account fields must be verified before opening",
+    "fake_gateway_submit_count": 0,
+    "positive_control_order_id_with_verified_rate": "ORDER_1"
+  },
+  "breakout_excludes_latest_completed_bar": {
+    "previous_two_bar_high": 200.0,
+    "current_close": 150,
+    "actual_signal_directions": [
+      "long"
+    ],
+    "expected_signal_directions": []
+  },
+  "moving_average_uses_previous_bar_cross": {
+    "signals_at_actual_upward_cross": 0,
+    "next_bar_price": 90.0,
+    "next_bar_signal_directions": [
+      "long"
+    ]
+  },
+  "server_rsi": {
+    "uptrend_last": 50.0,
+    "mixed_last": 58.023800423088666,
+    "uptrend_expected": 100
+  },
+  "cross_account_equity_after_logout": {
+    "status": 200,
+    "account_id": "B",
+    "old_account_pnl_in_new_curve": true,
+    "max_drawdown_pct": 90.0,
+    "new_account_actual_pnl": 0
+  },
+  "invalid_risk_config_response": {
+    "http_status": 500,
+    "body": "Internal Server Error"
+  }
+}

@@ -1,0 +1,30 @@
+import {expect,test} from '@playwright/test'
+
+test('login accepts explicit contract margin percentages and rejects incomplete rows',async({page})=>{
+  const errors=[]
+  page.on('pageerror',error=>errors.push(error.message))
+  await page.goto('/login')
+  await page.getByPlaceholder('账号',{exact:true}).fill('E2E_ONLY')
+  await page.getByPlaceholder('密码',{exact:true}).fill('fixture')
+  await page.getByPlaceholder('如 2071').fill('fixture')
+  await page.getByPlaceholder('tcp://host:port').nth(0).fill('tcp://127.0.0.1:1')
+  await page.getByPlaceholder('tcp://host:port').nth(1).fill('tcp://127.0.0.1:1')
+  await page.getByRole('textbox',{name:'保证金合约 1',exact:true}).fill('E2E2026')
+  await page.getByRole('button',{name:'连接交易账户',exact:true}).click()
+  await expect(page.locator('.error-banner')).toContainText('保证金率必须大于 0')
+  await page.getByRole('spinbutton').fill('12')
+  await page.getByRole('spinbutton').blur()
+  await page.screenshot({path:'test-results/login-margin-desktop.png',fullPage:true})
+  await page.setViewportSize({width:390,height:844})
+  await expect(page.getByRole('spinbutton')).toBeVisible()
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true)
+  await page.screenshot({path:'test-results/login-margin-mobile.png',fullPage:true})
+  const finished=page.waitForResponse(r=>r.url().endsWith('/api/auth/login'))
+  await page.getByRole('button',{name:'连接交易账户',exact:true}).click()
+  const response=await finished
+  expect(response.request().postDataJSON().contract_margin_rates).toEqual({E2E2026:.12})
+  expect(response.status()).toBe(200)
+  await expect(page).toHaveURL(/\/$/)
+  expect((await page.request.post('/api/auth/logout')).status()).toBe(200)
+  expect(errors).toEqual([])
+})

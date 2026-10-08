@@ -1,0 +1,88 @@
+
+ RUN  v4.1.11 D:/mine/quant/front_end
+
+ ❯ tests/unit/review-ws.spec.js (7 tests | 2 failed) 142ms
+   × failed snapshot replays received terminal events and retries to recover freshness 8ms
+   × failed snapshot retries are bounded and disposal cancels pending retries 3ms
+ ❯ tests/unit/recheck-indicators.spec.js (6 tests | 4 failed) 6ms
+   × Wilder RSI matches shared fixture: 'rising' 3ms
+   × Wilder RSI matches shared fixture: 'flat' 0ms
+   × Wilder RSI matches shared fixture: 'reversal' 0ms
+   × Wilder RSI matches shared fixture: 'period_one' 0ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 6 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/unit/recheck-indicators.spec.js > Wilder RSI matches shared fixture: 'rising'
+ FAIL  tests/unit/recheck-indicators.spec.js > Wilder RSI matches shared fixture: 'reversal'
+AssertionError: expected 99.99999996666666 to be close to 100, received difference is 3.33333360913457e-8, but expected 5e-11
+ ❯ tests/unit/recheck-indicators.spec.js:10:28
+      8|   expected.forEach((value,i)=>{
+      9|     if(value===null) expect(actual[i]).toBeNull()
+     10|     else expect(actual[i]).toBeCloseTo(value,10)
+       |                            ^
+     11|   })
+     12| })
+ ❯ tests/unit/recheck-indicators.spec.js:8:12
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/6]⎯
+
+ FAIL  tests/unit/recheck-indicators.spec.js > Wilder RSI matches shared fixture: 'flat'
+AssertionError: expected +0 to be close to 50, received difference is 50, but expected 5e-11
+ ❯ tests/unit/recheck-indicators.spec.js:10:28
+      8|   expected.forEach((value,i)=>{
+      9|     if(value===null) expect(actual[i]).toBeNull()
+     10|     else expect(actual[i]).toBeCloseTo(value,10)
+       |                            ^
+     11|   })
+     12| })
+ ❯ tests/unit/recheck-indicators.spec.js:8:12
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/6]⎯
+
+ FAIL  tests/unit/recheck-indicators.spec.js > Wilder RSI matches shared fixture: 'period_one'
+AssertionError: expected 99.9999999 to be close to 100, received difference is 9.999999406318238e-8, but expected 5e-11
+ ❯ tests/unit/recheck-indicators.spec.js:10:28
+      8|   expected.forEach((value,i)=>{
+      9|     if(value===null) expect(actual[i]).toBeNull()
+     10|     else expect(actual[i]).toBeCloseTo(value,10)
+       |                            ^
+     11|   })
+     12| })
+ ❯ tests/unit/recheck-indicators.spec.js:8:12
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/6]⎯
+
+ FAIL  tests/unit/review-ws.spec.js > failed snapshot replays received terminal events and retries to recover freshness
+AssertionError: expected 'submitted' to be 'filled' // Object.is equality
+
+Expected: "filled"
+Received: "submitted"
+
+ ❯ tests/unit/review-ws.spec.js:99:46
+     97|     sockets[1].onmessage({data:JSON.stringify({type:'positions_update'…
+     98|     reject(new Error('timeout'));await pending
+     99|     expect(book.ordersArray.value[0].status).toBe('filled')
+       |                                              ^
+    100|     expect(book.trades).toHaveLength(1)
+    101|     expect(book.positions[0].volume).toBe(1)
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/6]⎯
+
+ FAIL  tests/unit/review-ws.spec.js > failed snapshot retries are bounded and disposal cancels pending retries
+AssertionError: expected "vi.fn()" to be called 4 times, but got 1 times
+ ❯ tests/unit/review-ws.spec.js:118:20
+    116|   await flushPromises()
+    117|   await vi.advanceTimersByTimeAsync(20000)
+    118|   expect(snapshot).toHaveBeenCalledTimes(4)
+       |                    ^
+    119|   wrapper.unmount()
+    120|   await vi.advanceTimersByTimeAsync(20000)
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/6]⎯
+
+
+ Test Files  2 failed | 2 passed (4)
+      Tests  6 failed | 13 passed (19)
+   Start at  11:39:21
+   Duration  15.33s (transform 169ms, setup 0ms, import 685ms, tests 157ms, environment 13.66s)
+

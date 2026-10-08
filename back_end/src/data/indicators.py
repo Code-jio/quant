@@ -7,6 +7,7 @@ from typing import Tuple, List
 
 import pandas as pd
 import numpy as np
+from ..common.indicators import wilder_rsi
 
 logger = logging.getLogger(__name__)
 
@@ -23,11 +24,7 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
         df['sma_20'] = df['close'].rolling(window=20).mean()
         df['sma_60'] = df['close'].rolling(window=60).mean()
 
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss
-        df['rsi'] = 100 - (100 / (1 + rs))
+        df['rsi'] = wilder_rsi(df['close'])
 
         df['ema_12'] = df['close'].ewm(span=12, adjust=False).mean()
         df['ema_26'] = df['close'].ewm(span=26, adjust=False).mean()

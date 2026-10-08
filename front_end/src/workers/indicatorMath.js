@@ -4,7 +4,7 @@
  * 支持的计算类型（type 字段）：
  *   calc_ma    — 多周期移动平均线
  *   calc_macd  — MACD（EMA 差离 / 信号线 / 柱状图）
- *   calc_rsi   — RSI（简单平均法）
+ *   calc_rsi   — RSI（Wilder 平滑）
  *   calc_kdj   — KDJ（随机指标）
  *   calc_all   — 一次性计算上述全部指标
  *
@@ -56,18 +56,26 @@ function calcMACD(closes, fast = 12, slow = 26, signal = 9) {
   return { diff, dea, hist }
 }
 
-/** RSI — 简单平均法（Wilder 平滑） */
+/** RSI — first N changes seed the Wilder average; flat windows are neutral. */
 function calcRSI(closes, period = 14) {
+  if (!Number.isInteger(period) || period < 1) throw new Error('RSI 周期必须为正整数')
   const result = new Array(closes.length).fill(null)
+  if (closes.length <= period) return result
+  let gains = 0, losses = 0
+  for (let i = 1; i <= period; i++) {
+    const change = closes[i] - closes[i - 1]
+    gains += Math.max(change, 0)
+    losses += Math.max(-change, 0)
+  }
+  gains /= period
+  losses /= period
   for (let i = period; i < closes.length; i++) {
-    let gains = 0, losses = 0
-    for (let j = i - period + 1; j <= i; j++) {
-      const chg = closes[j] - closes[j - 1]
-      if (chg > 0) gains  += chg
-      else         losses -= chg
+    if (i > period) {
+      const change = closes[i] - closes[i - 1]
+      gains = (gains * (period - 1) + Math.max(change, 0)) / period
+      losses = (losses * (period - 1) + Math.max(-change, 0)) / period
     }
-    const rs = gains / (losses || 1e-9)
-    result[i] = 100 - 100 / (1 + rs)
+    result[i] = gains + losses ? 100 * gains / (gains + losses) : 50
   }
   return result
 }

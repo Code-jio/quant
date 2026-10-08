@@ -8,6 +8,7 @@ import pandas as pd
 from ..base import StrategyBase
 from ..types import Direction
 from ..errors import StrategyError
+from ...common.indicators import wilder_rsi
 
 logger = logging.getLogger(__name__)
 
@@ -40,20 +41,10 @@ class RSIStrategy(StrategyBase):
             symbol = self.symbol
             df = self.get_data(symbol)
 
-            if df is None or len(df) < self.rsi_period + 1:
+            if df is None or len(df) < self.rsi_period:
                 return
-
-            current_idx = df.index.get_loc(self.current_date) if self.current_date in df.index else len(df) - 1
-            if current_idx < self.rsi_period + 1:
-                return
-
-            delta = df["close"].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=self.rsi_period).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_period).mean()
-            rs = gain / loss
-            rsi = 100 - (100 / (1 + rs))
-
-            current_rsi = rsi.iloc[current_idx]
+            closes = pd.concat([df["close"], pd.Series([float(bar["close"])])], ignore_index=True)
+            current_rsi = wilder_rsi(closes, self.rsi_period).iloc[-1]
 
             if pd.isna(current_rsi):
                 return
@@ -63,7 +54,7 @@ class RSIStrategy(StrategyBase):
                 target = Direction.LONG
             elif current_rsi > self.overbought:
                 target = Direction.SHORT
-            self.rebalance_target(symbol, bar["close"], target)
+            self.rebalance_target(symbol, float(bar["close"]), target)
 
         except Exception as e:
             self.on_error(e, "on_bar")

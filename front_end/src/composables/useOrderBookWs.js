@@ -78,6 +78,8 @@ export function useOrderBookWs() {
   let requestVersion=0
   let disposed=false
   let buffered=[]
+  let retryTimer=null
+  let retryAttempts=0
   const lastOrderTime    = ref('')
   const lastPositionTime = ref('')
 
@@ -89,7 +91,18 @@ export function useOrderBookWs() {
   )
 
   // ── 初始数据加载 ───────────────────────────────────────────────────────────
-  async function loadAll() {
+  function replayBuffered() {
+    const pending=buffered; buffered=[]
+    for (const message of pending) {
+      if (message.type==='positions_update') handlePosMsg(message)
+      else handleOrderMsg(message)
+    }
+  }
+
+  async function loadAll(retrying=false) {
+    if (disposed) return
+    clearTimeout(retryTimer)
+    if (retrying!==true) retryAttempts=0
     const version=++requestVersion
     loading.value=true
     try {
@@ -103,14 +116,20 @@ export function useOrderBookWs() {
       trades.splice(0,trades.length,...snapshot.trades.slice(0,MAX_TRADES))
       positions.splice(0,positions.length,...snapshot.positions)
       loading.value=false
-      const pending=buffered; buffered=[]
-      for (const message of pending) {
-        if (message.type==='positions_update') handlePosMsg(message)
-        else handleOrderMsg(message)
-      }
+      replayBuffered()
+      retryAttempts=0
       stale.value=false; error.value=''
     } catch (e) {
-      if (version===requestVersion) { stale.value=true; error.value=e.message ?? '账户数据刷新失败' }
+      if (!disposed && version===requestVersion) {
+        // The last successful revision is still authoritative after a failed refresh.
+        loading.value=false
+        replayBuffered()
+        stale.value=true; error.value=e.message ?? '账户数据刷新失败'
+        if (retryAttempts<3 && sessionStorage.getItem('quant_session_active')==='1') {
+          const delay=1000 * 2 ** retryAttempts++
+          retryTimer=setTimeout(()=>loadAll(true),delay)
+        }
+      }
     } finally {
       if (version===requestVersion) loading.value=false
     }
@@ -184,6 +203,7 @@ export function useOrderBookWs() {
 
   loadAll()
   function dispose() {
+    clearTimeout(retryTimer)
     disposed=true; requestVersion++; disposeOrders(); disposePos()
     ordersMap.clear();orderRevisions.clear();trades.splice(0);positions.splice(0);buffered=[]
   }

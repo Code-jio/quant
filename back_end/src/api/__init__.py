@@ -48,7 +48,7 @@ import psutil
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ..strategy import Direction, StrategyBase
 from ..trading import AccountInfo, TradingEngine, TradingStatus
@@ -96,6 +96,20 @@ class LoginRequest(BaseModel):
     strategy_params: Dict[str, Any] = Field(default_factory=dict)
     risk: Dict[str, Any] = Field(default_factory=dict)
     contract_margin_rates: Dict[str, float] = Field(default_factory=dict)
+
+    @field_validator("contract_margin_rates", mode="before")
+    @classmethod
+    def validate_margin_rates(cls, value):
+        import math
+
+        if not isinstance(value, dict):
+            raise ValueError("保证金率必须按合约填写")
+        for symbol, rate in value.items():
+            if not isinstance(symbol, str) or not symbol.strip() or symbol != symbol.strip():
+                raise ValueError("保证金率需要有效的合约代码")
+            if isinstance(rate, bool) or not isinstance(rate, (int, float)) or not math.isfinite(rate) or not 0 < rate <= 1:
+                raise ValueError(f"{symbol} 保证金比例必须在 (0,1]")
+        return value
 
 
 class LoginResponse(BaseModel):
@@ -259,6 +273,16 @@ class RiskConfigRequest(BaseModel):
 
     risk: Dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def validate_risk(self):
+        from ..trading.risk import RiskConfig
+
+        try:
+            RiskConfig.from_mapping({**_DEFAULT_RUNTIME_RISK, **self.risk})
+        except (TypeError, OverflowError) as exc:
+            raise ValueError(f"无效风控参数: {exc}") from exc
+        return self
+
 
 _MANUAL_DIRECTION_MAP = {"long": Direction.LONG, "short": Direction.SHORT}
 _MANUAL_OFFSET_MAP = {
@@ -404,12 +428,17 @@ class ConnectionManager:
             metrics.record_ws_disconnect(self.channel)
             logger.info(f"[WS:{self.channel}] 连接断开，剩余: {len(self._connections)} 条")
 
-    async def broadcast(self, payload: dict):
+    async def broadcast(self, payload: dict, *, generation=None):
+        generation = trading_state.generation if generation is None else generation
+        if generation != trading_state.generation:
+            return
         payload = {"revision": time.monotonic_ns() // 1000, **payload}
         text = _json.dumps(payload, ensure_ascii=False, default=str)
 
         async def send(ws):
             try:
+                if generation != trading_state.generation:
+                    return 1
                 if not session_store.is_valid(_websocket_session_token(ws)):
                     await ws.close(code=1008)
                     self.disconnect(ws)
@@ -423,13 +452,14 @@ class ConnectionManager:
         dropped = await asyncio.gather(*(send(ws) for ws in list(self._connections)))
         metrics.record_ws_broadcast(self.channel, dropped=sum(dropped))
 
-    def broadcast_sync(self, payload: dict, loop: asyncio.AbstractEventLoop):
+    def broadcast_sync(self, payload: dict, loop: asyncio.AbstractEventLoop, *, generation=None):
         if loop and not loop.is_closed():
             if len(self._pending) >= 100:
                 metrics.record_ws_broadcast(self.channel, dropped=1)
                 return
             payload = {"revision": time.monotonic_ns() // 1000, **payload}
-            future = asyncio.run_coroutine_threadsafe(self.broadcast(payload), loop)
+            generation = trading_state.generation if generation is None else generation
+            future = asyncio.run_coroutine_threadsafe(self.broadcast(payload, generation=generation), loop)
             self._pending.add(future)
             future.add_done_callback(self._pending.discard)
 
@@ -514,10 +544,27 @@ class TradingState:
         self._day_open_balance: float = 0.0
         self._weights: Dict[str, float] = {}  # strategy_id → 0.0~1.0
         self._last_gw_callback_ts: float = 0.0  # time.monotonic() 上次网关回调时间
+        self._generation = 0
+
+    @property
+    def generation(self) -> int:
+        # Immutable epoch reads must not acquire the state lock inside gateway callbacks,
+        # which may already hold the execution lock. Writers are serialized by _lock.
+        return self._generation
+
+    def _reset_account_state(self):
+        """Called with _lock held. Invalidate snapshots produced by a previous account."""
+        self._generation += 1
+        self._equity_curve.clear()
+        self._day_open_balance = 0.0
+        self._last_gw_callback_ts = 0.0
+        self._connect_log.clear()
 
     # ── 主引擎（登录产生的 CTP 引擎）────────────────────────────────────────
     def set_main_engine(self, engine: TradingEngine, config: Dict[str, Any] = None):
         with self._lock:
+            if engine is not self._main_engine:
+                self._reset_account_state()
             self._main_engine = engine
             self._main_config = config or {}
         # 安装订单广播钩子
@@ -533,6 +580,7 @@ class TradingState:
             self._main_config = {}
             self._entries.clear()
             self._weights.clear()
+            self._reset_account_state()
         if engine:
             try:
                 engine.close()
@@ -591,17 +639,22 @@ class TradingState:
             return {sid: w for sid in ids}
 
     # ── 权益曲线历史 ──────────────────────────────────────────────────────────
-    def push_equity(self, pnl: float, balance: float):
+    def push_equity(self, pnl: float, balance: float, *, generation=None) -> bool:
         """记录一个权益快照（每秒由广播循环调用）。"""
         ts = datetime.now().isoformat(timespec="seconds")
         with self._lock:
+            if generation is not None and generation != self._generation:
+                return False
+            engine = self.primary_engine()
+            if engine is None:
+                return False
             self._equity_curve.append({"ts": ts, "p": round(pnl, 2), "b": round(balance, 2)})
-            engine = self._main_engine
             if engine and engine.ledger and balance > 0:
                 engine.ledger.record_equity(ts, balance, pnl, engine.gateway.account.trading_day)
             # 记录当天首次有效余额作为日内基准
             if self._day_open_balance == 0.0 and balance > 0:
                 self._day_open_balance = balance
+            return True
 
     def get_equity_data(self) -> list:
         with self._lock:
@@ -772,15 +825,18 @@ def _install_hook_on_engine(engine: TradingEngine):
 
     # ── 订单钩子 ────────────────────────────────────────────────────────────
     _orig_order = gw.on_order_callback
+    generation = trading_state.generation
 
     def _order_chained(order):
+        if generation != trading_state.generation:
+            return
         trading_state._last_gw_callback_ts = time.monotonic()
         _record_audit("order", "gateway_order_update", "received", resource=getattr(order, "order_id", ""))
         if _orig_order:
             _orig_order(order)
         loop = _event_loop
         if loop and not loop.is_closed():
-            orders_manager.broadcast_sync(_order_to_dict(order), loop)
+            orders_manager.broadcast_sync(_order_to_dict(order), loop, generation=generation)
 
     gw.on_order_callback = _order_chained
 
@@ -788,13 +844,15 @@ def _install_hook_on_engine(engine: TradingEngine):
     _orig_trade = gw.on_trade_callback
 
     def _trade_chained(trade):
+        if generation != trading_state.generation:
+            return
         trading_state._last_gw_callback_ts = time.monotonic()
         _record_audit("trade", "gateway_trade_update", "received", resource=getattr(trade, "trade_id", ""))
         if _orig_trade:
             _orig_trade(trade)
         loop = _event_loop
         if loop and not loop.is_closed():
-            orders_manager.broadcast_sync(_trade_to_dict(trade), loop)
+            orders_manager.broadcast_sync(_trade_to_dict(trade), loop, generation=generation)
 
     gw.on_trade_callback = _trade_chained
     setattr(gw, "_quant_api_hooks_installed", True)
@@ -1029,11 +1087,12 @@ def _build_system_snapshot() -> dict:
 async def _system_broadcast_loop():
     while True:
         try:
+            generation = trading_state.generation
             snapshot = _build_system_snapshot()
             # 同步记录到权益历史（夏普/回撤计算用）
-            trading_state.push_equity(snapshot["total_pnl"], snapshot["balance"])
-            if system_manager.count > 0:
-                await system_manager.broadcast(snapshot)
+            recorded = trading_state.push_equity(snapshot["total_pnl"], snapshot["balance"], generation=generation)
+            if recorded and system_manager.count > 0:
+                await system_manager.broadcast(snapshot, generation=generation)
         except Exception as exc:
             logger.warning(f"[WS:system] 广播异常: {exc}")
         await asyncio.sleep(1)
@@ -1141,7 +1200,8 @@ async def _dashboard_broadcast_loop():
     while True:
         try:
             if dashboard_manager.count > 0:
-                await dashboard_manager.broadcast(_build_dashboard_metrics())
+                generation = trading_state.generation
+                await dashboard_manager.broadcast(_build_dashboard_metrics(), generation=generation)
         except Exception as exc:
             logger.warning(f"[WS:dashboard] 广播异常: {exc}")
         await asyncio.sleep(2)
@@ -1279,7 +1339,8 @@ async def _positions_broadcast_loop():
     while True:
         try:
             if positions_manager.count > 0:
-                await positions_manager.broadcast(_build_positions_snapshot())
+                generation = trading_state.generation
+                await positions_manager.broadcast(_build_positions_snapshot(), generation=generation)
         except Exception as exc:
             logger.warning(f"[WS:positions] 广播异常: {exc}")
         await asyncio.sleep(2)
@@ -1919,9 +1980,10 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             raise HTTPException(status_code=503, detail="交易引擎未连接")
         merged = {**_DEFAULT_RUNTIME_RISK, **dict(body.risk or {})}
         for engine in engines:
-            engine.configure_risk({"risk": merged})
-            if engine.ledger:
-                engine.ledger.save_setting("risk", merged)
+            with engine.order_manager.lock:
+                engine.configure_risk({"risk": merged})
+                if engine.ledger:
+                    engine.ledger.save_setting("risk", merged)
         if trading_state._main_config is not None:
             trading_state._main_config["risk"] = merged
         _record_audit("risk", "update_config", "success", request=request, detail={"risk": merged})

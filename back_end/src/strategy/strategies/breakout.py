@@ -36,12 +36,8 @@ class BreakoutStrategy(StrategyBase):
             if df is None or len(df) < self.lookback_period:
                 return
 
-            current_idx = df.index.get_loc(self.current_date) if self.current_date in df.index else len(df) - 1
-            if current_idx < self.lookback_period:
-                return
-
-            recent_high = df["high"].rolling(window=self.lookback_period).max().iloc[current_idx - 1]
-            recent_low = df["low"].rolling(window=self.lookback_period).min().iloc[current_idx - 1]
+            recent_high = df["high"].iloc[-self.lookback_period:].max()
+            recent_low = df["low"].iloc[-self.lookback_period:].min()
 
             if pd.isna(recent_high) or pd.isna(recent_low):
                 return
@@ -51,7 +47,7 @@ class BreakoutStrategy(StrategyBase):
                 target = Direction.LONG
             elif bar["close"] < recent_low:
                 target = Direction.SHORT
-            self.rebalance_target(symbol, bar["close"], target)
+            self.rebalance_target(symbol, float(bar["close"]), target)
 
         except Exception as e:
             self.on_error(e, "on_bar")

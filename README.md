@@ -4,6 +4,8 @@ Vue 3 + FastAPI + SQLite。支持历史数据导入、离线回测、图表和�
 
 整改结果见 [整改报告](docs/REMEDIATION_RESULTS_2026-10-04.md) 和 [55 项清单](docs/IMPROVEMENT_BACKLOG_2026-10-04.csv)。原始审查保存在 [审查报告](docs/PROJECT_REVIEW_2026-10-04.md)。
 
+第二轮复查的 6 项问题已完成代码修复及离线回归，见 [2026-10-08 修复结果](docs/RECHECK_FIXES_2026-10-08.md)、[复查清单](docs/RECHECK_BACKLOG_2026-10-05.csv)。当前回归为后端 145 项、前端 28 项、浏览器 5 项。
+
 ## 安装与启动
 
 在项目根目录运行 PowerShell：
@@ -26,6 +28,8 @@ cd back_end
 
 前端为 `http://localhost:5173`，后端默认仅监听 `127.0.0.1:8000`。`start.bat` 和 `start-dev.bat` 使用同一个 `.venv`，均不热重载、不启动多个 worker。仅运行研究/API 时可安装 `requirements-research.lock`；开发与 CI 安装 `requirements-dev.lock`。锁定了直接和传递依赖版本；锁适用于上述 Windows/Python 环境，尚未做全新主机安装验收。
 
+5173 被其他项目占用时，可在 `front_end` 使用 `npm run dev -- --host 127.0.0.1 --port 5174 --strictPort`；默认 CORS 已允许 5174。应确认 `/api/health` 返回本项目的 JSON，避免把其他项目的首页当作 API 响应。
+
 离线访问 `/backtest` 无需 CTP 登录。在配置页显式开启“模拟数据”后才会生成带标记的临时样本；样本不会写进真实历史库。设置 `QUANT_ALLOW_SYNTHETIC_DATA=0` 可以全局禁止生成。生产环境默认关闭公开研究接口；如需独立研究服务，可在受控访问范围内显式设置 `QUANT_ALLOW_PUBLIC_RESEARCH=1`。
 
 ## 历史数据与回测
@@ -44,6 +48,8 @@ Copy-Item config/config.example.json config/config_production.json
 
 回测信号最早在下一根 bar 执行，限价需可达，同一根 bar 的成交量由多个委托共享。内置策略反手会先等已有委托完成，再平仓、开仓。成交统计按完整平仓回合汇总双方手续费；未平仓回合不计入已完成交易。无法计算的指标返回 `null` 并显示“—”。权益曾非正时，年化和收益率类风险指标不可计算。
 
+策略历史只包含当前回调之前的 bar；内置 MA/RSI 将本次完成 bar 纳入指标，突破策略使用此前最后 N 根。服务端、Worker 与策略的 RSI 统一为 Wilder 平滑，以首 N 个变化的平均涨跌初始化；预热不足为未知，横盘为 50。时点和 RSI 修正会改变旧版本的信号与回测结果，需要重新计算旧结果。
+
 模型使用固定保证金和费率；没有模拟柜台逐日结算、强制平仓、盘口排队、各品种费率规则。模拟数据只用于功能验证，不能用来评估策略收益。
 
 ## CTP 接入边界
@@ -51,6 +57,8 @@ Copy-Item config/config.example.json config/config_production.json
 `requirements-live.in` 固定候选版本 vnpy 4.4.0 / vnpy_ctp 6.7.11.4；原生扩展及其传递依赖尚未在本机完成安装验收。请在独立环境按柜台要求安装并验证，不能将候选版本当作已验证实盘组合。
 
 服务必须完成 MD/TD 登录、结算确认、合约、账户、持仓快照才可开仓。保证金比例需要提供已核实的 `contract_margin_rates`；缺失时拒绝开仓。当前仅支持真实限价委托，快捷平仓使用新鲜买卖价。挂单预留采用保守计算，账户冻结资金已经更新时可能重复预留而拒绝部分原本可行的委托，优先避免超额开仓。
+
+网页登录页的“开仓保证金”可逐合约输入柜台确认的百分比，例如填 12 表示请求中的 0.12。每次登录显式填写，不自动沿用之前账户或交易日的比例；留空仍可登录看盘，但对应合约不能开仓。直接 API 调用使用 `contract_margin_rates` 映射；CLI 才使用本地交易配置文件，Web 登录不会读取该文件。
 
 停止策略保留网关以接收回报；退出账户关闭引擎并撤销会话。急停、日内基线、参数、权重、成交和订单持久化。重启不会自动启动策略；未确定报单结果或缺失活动订单回放时拒绝新增报单，需结合柜台回报核对。`GET /trading/reconcile` 是有来源状态的核对快照，不能替代柜台全量对账。
 

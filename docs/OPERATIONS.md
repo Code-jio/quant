@@ -7,7 +7,7 @@
 - `QUANT_CORS_ORIGINS` 使用逗号分隔的精确前端 Origin；禁止通配符配合 Cookie。前后端同域代理优先。
 - `QUANT_BIND_HOST`、`QUANT_PORT` 控制绑定；`QUANT_INSTANCE_LOCK` 必须指向所有同账户执行进程共享的本机锁文件。不同工作目录或机器没有分布式执行锁，需要部署层保证唯一执行者。
 - `QUANT_LEDGER_PATH` 为执行账本，默认 `data/runtime/execution.db`；审计默认 `data/runtime/audit.db`。历史库 `data/historical/quotes.db`。
-- 开仓要求已验证合约乘数、最小手数、最小变动价位和保证金率。保证金率由登录参数或本地配置 `contract_margin_rates` 提供，需由柜台核实。合约 metadata 不完整时不采用猜测值。
+- 开仓要求已验证合约乘数、最小手数、最小变动价位和保证金率。Web 登录页逐合约填写柜台确认的百分比，并转换为 API 的 `contract_margin_rates` 比例映射；每次登录显式填写，空值不允许开仓。CLI 可通过本地交易配置提供该映射，Web/API 不读取 CLI 配置文件。合约 metadata 不完整时不采用猜测值。
 
 ## 备份和恢复演练
 
@@ -43,6 +43,8 @@ $env:QUANT_LEDGER_PATH = 'data/runtime/restored-execution.db'
 内存历史 bar 2000、策略信号 1000、近期成交 500、已完成订单 2000；活动订单不因展示窗口而丢弃。SQLite 执行和审计表目前保留全部历史，需由运维按容量做备份、离线归档；尚未实现自动分区和归档。
 
 `/health` 表示服务存活；`/risk/status`、`/trading/reconcile` 提供执行就绪信息。监控仅持久化分钟权益，尚未提供跨日正式绩效；样本不足的实时夏普显示未知。性能报告中的回放为本机单合约路径，不能推断真实高频柜台容量。
+
+账户切换会清空内存权益窗口并丢弃旧账户代次的快照和排队广播。订单页面快照失败时会继续应用已收到的增量，保留过期标记，并按 1/2/4 秒最多重试 3 次；仍失败时需检查连接并手动刷新。无效风控参数返回 422，当前配置和持久配置保持不变。
 
 ## 凭据
 

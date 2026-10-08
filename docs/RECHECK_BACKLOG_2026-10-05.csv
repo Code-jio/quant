@@ -1,0 +1,7 @@
+编号,优先级,范围,问题,验证方式,状态,关联历史事项,修复日期,验证证据
+R01,P1,账户隔离,切换账户后权益历史残留并产生虚假回撤,真实API路径加FakeGateway,已修复（离线验证）,Q04/Q52,2026-10-08,test_recheck_regressions.py：切换/注销/迟到快照和广播
+R02,P1,前后端集成,网页登录缺少经核实保证金率配置通路,登录请求静态核查及合约适配加派单正反对照,已修复（离线验证）；真实柜台仍待验收,Q18/Q19,2026-10-08,test_recheck_regressions.py；recheck-margin.spec.js；recheck.spec.js
+R03,P1,策略与回测,已完成bar窗口错位导致错误或延迟信号,固定行情逐bar信号验证,已修复（离线验证）,Q09既有剩余问题,2026-10-08,test_recheck_regressions.py：固定样本和三策略分钟回放/回测一致性
+R04,P2,前端实时数据,快照失败后已收到的成交推送未重放,Vue组件加FakeWebSocket定向失败断言,已修复（离线验证）,Q44,2026-10-08,review-ws.spec.js：失败后重放/重试/销毁
+R05,P2,技术指标,RSI单边行情和横盘边界错误且前后端不一致,同一收盘序列调用真实Python和Worker函数,已修复（离线验证）,新增,2026-10-08,共享 rsi_cases.json；Python 与 Worker 参数化回归
+R06,P2,后端API,无效风控配置返回500而非参数校验错误,登录后PUT风控配置,已修复（离线验证）,Q14校验反馈补充,2026-10-08,test_recheck_regressions.py：六类无效输入返回422且配置不变

@@ -41,6 +41,16 @@ class RiskConfig:
     @classmethod
     def from_mapping(cls, raw: Optional[Mapping[str, Any]]) -> "RiskConfig":
         raw = raw or {}
+        if not isinstance(raw, Mapping):
+            raise ValueError("Risk configuration must be an object")
+        if "contract_multipliers" in raw and not isinstance(raw["contract_multipliers"], Mapping):
+            raise ValueError("contract_multipliers must be an object")
+        for key in ("allowed_symbols", "blocked_symbols"):
+            if key in raw and (
+                not isinstance(raw[key], (list, tuple, set, frozenset))
+                or any(not isinstance(symbol, str) or not symbol.strip() for symbol in raw[key])
+            ):
+                raise ValueError(f"{key} must be a collection of non-empty symbols")
         for key in ("enabled", "allow_market_orders", "require_account"):
             if key in raw and not isinstance(raw[key], bool):
                 raise ValueError(f"{key} must be a boolean")

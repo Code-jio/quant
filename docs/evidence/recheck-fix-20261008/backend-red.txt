@@ -1,0 +1,1051 @@
+FFFFFFFFF...FFFFFFFFFFF                                                  [100%]
+================================== FAILURES ===================================
+_____________ test_account_transition_discards_old_equity[False] ______________
+
+client = <starlette.testclient.TestClient object at 0x000000003942D220>
+logout = False
+
+    @pytest.mark.parametrize('logout', [False, True])
+    def test_account_transition_discards_old_equity(client, logout):
+        assert login(client).status_code == 200
+        for _ in range(10):
+            api.trading_state.push_equity(1234, 100000)
+        if logout:
+            assert client.post('/auth/logout').status_code == 200
+        assert login(client, 'B').status_code == 200
+        for _ in range(10):
+            api.trading_state.push_equity(0, 10000)
+        metrics = client.get('/dashboard/metrics').json()
+        assert metrics['account_id'] == 'B'
+>       assert metrics['max_drawdown_pct'] == 0
+E       assert 90.0 == 0
+
+tests\test_recheck_regressions.py:55: AssertionError
+______________ test_account_transition_discards_old_equity[True] ______________
+
+client = <starlette.testclient.TestClient object at 0x000000003949B1D0>
+logout = True
+
+    @pytest.mark.parametrize('logout', [False, True])
+    def test_account_transition_discards_old_equity(client, logout):
+        assert login(client).status_code == 200
+        for _ in range(10):
+            api.trading_state.push_equity(1234, 100000)
+        if logout:
+            assert client.post('/auth/logout').status_code == 200
+        assert login(client, 'B').status_code == 200
+        for _ in range(10):
+            api.trading_state.push_equity(0, 10000)
+        metrics = client.get('/dashboard/metrics').json()
+        assert metrics['account_id'] == 'B'
+>       assert metrics['max_drawdown_pct'] == 0
+E       assert 100.0 == 0
+
+tests\test_recheck_regressions.py:55: AssertionError
+________ test_late_account_snapshot_and_queued_broadcast_are_discarded ________
+
+client = <starlette.testclient.TestClient object at 0x0000000039C96420>
+
+    def test_late_account_snapshot_and_queued_broadcast_are_discarded(client):
+        assert login(client).status_code == 200
+>       old_generation = api.trading_state.generation
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'TradingState' object has no attribute 'generation'
+
+tests\test_recheck_regressions.py:61: AttributeError
+_ test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config[risk0] _
+
+client = <starlette.testclient.TestClient object at 0x0000000039C96150>
+risk = {'max_order_volume': 0}
+
+    @pytest.mark.parametrize('risk', [
+        {'max_order_volume': 0}, {'enabled': 'false'}, {'max_daily_loss_ratio': 2},
+        {'contract_multipliers': []}, {'allowed_symbols': 'A'}, {'max_order_volume': None},
+    ])
+    def test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config(client, risk):
+        assert login(client).status_code == 200
+        assert client.put('/risk/config', json={'risk': {'max_order_volume': 7}}).status_code == 200
+        engine = api.trading_state.primary_engine()
+        saved = engine.ledger.load_setting('risk')
+        current = engine.risk_manager.status()
+        response = client.put('/risk/config', json={'risk': risk})
+>       assert response.status_code == 422
+E       assert 500 == 422
+E        +  where 500 = <Response [500 Internal Server Error]>.status_code
+
+tests\test_recheck_regressions.py:83: AssertionError
+------------------------------ Captured log call ------------------------------
+ERROR    src.api:__init__.py:1456 {"event": "http.request.error", "ts": "2026-10-08T11:36:29.705", "request_id": "1b07cc397f894e62", "method": "PUT", "path": "/risk/config"}
+  + Exception Group Traceback (most recent call last):
+  |   File "D:\mine\quant-audit-20261004\python-deps\starlette\_utils.py", line 107, in create_collapsing_task_group
+  |     async with anyio.create_task_group() as tg:
+  |                ^^^^^^^^^^^^^^^^^^^^^^^^^
+  |   File "D:\mine\quant-audit-20261004\python-deps\anyio\_backends\_asyncio.py", line 847, in __aexit__
+  |     raise BaseExceptionGroup(
+  | ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
+  +-+---------------- 1 ----------------
+    | Traceback (most recent call last):
+    |   File "D:\mine\quant\back_end\src\api\__init__.py", line 1453, in observability_middleware
+    |     response = await call_next(request)
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 173, in call_next
+    |     raise app_exc from app_exc.__cause__ or app_exc.__context__
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 149, in coro
+    |     await self.app(scope, receive_or_disconnect, send_no_error)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\cors.py", line 91, in __call__
+    |     await self.simple_response(scope, receive, send, request_headers=headers)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\cors.py", line 149, in simple_response
+    |     await self.app(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 197, in __call__
+    |     response = await self.dispatch_func(request, call_next)
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant\back_end\src\api\__init__.py", line 1431, in auth_middleware
+    |     return await call_next(request)
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 173, in call_next
+    |     raise app_exc from app_exc.__cause__ or app_exc.__context__
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 149, in coro
+    |     await self.app(scope, receive_or_disconnect, send_no_error)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\exceptions.py", line 63, in __call__
+    |     await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 53, in wrapped_app
+    |     raise exc
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 42, in wrapped_app
+    |     await app(scope, receive, sender)
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\middleware\asyncexitstack.py", line 18, in __call__
+    |     await self.app(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\routing.py", line 676, in __call__
+    |     await self.middleware_stack(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 2786, in app
+    |     await route.handle(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 1310, in handle
+    |     await super().handle(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\routing.py", line 282, in handle
+    |     await self.app(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 165, in app
+    |     await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 53, in wrapped_app
+    |     raise exc
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 42, in wrapped_app
+    |     await app(scope, receive, sender)
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 151, in app
+    |     response = await f(request)
+    |                ^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 727, in app
+    |     raw_response = await run_endpoint_function(
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 362, in run_endpoint_function
+    |     return await run_in_threadpool(
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\concurrency.py", line 34, in run_in_threadpool
+    |     return await anyio.to_thread.run_sync(func)
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\anyio\to_thread.py", line 65, in run_sync
+    |     return await get_async_backend().run_sync_in_worker_thread(
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\anyio\_backends\_asyncio.py", line 2706, in run_sync_in_worker_thread
+    |     return await future
+    |            ^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\anyio\_backends\_asyncio.py", line 1100, in run
+    |     result = context.run(func, *args)
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\telemetry\_api.py", line 240, in _run_sync_endpoint
+    |     return function(**arguments)
+    |            ^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant\back_end\src\api\__init__.py", line 1922, in update_risk_config
+    |     engine.configure_risk({"risk": merged})
+    |   File "D:\mine\quant\back_end\src\trading\engine.py", line 71, in configure_risk
+    |     self.risk_manager.configure(config)
+    |   File "D:\mine\quant\back_end\src\trading\risk.py", line 117, in configure
+    |     self.config = RiskConfig.from_mapping(raw)
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant\back_end\src\trading\risk.py", line 65, in from_mapping
+    |     raise ValueError(f"{key} must be a positive integer")
+    | ValueError: max_order_volume must be a positive integer
+    +------------------------------------
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "D:\mine\quant\back_end\src\api\__init__.py", line 1453, in observability_middleware
+    response = await call_next(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 173, in call_next
+    raise app_exc from app_exc.__cause__ or app_exc.__context__
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 149, in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\cors.py", line 91, in __call__
+    await self.simple_response(scope, receive, send, request_headers=headers)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\cors.py", line 149, in simple_response
+    await self.app(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 197, in __call__
+    response = await self.dispatch_func(request, call_next)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant\back_end\src\api\__init__.py", line 1431, in auth_middleware
+    return await call_next(request)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 173, in call_next
+    raise app_exc from app_exc.__cause__ or app_exc.__context__
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 149, in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\middleware\asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\routing.py", line 676, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 2786, in app
+    await route.handle(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 1310, in handle
+    await super().handle(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\routing.py", line 282, in handle
+    await self.app(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 165, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 151, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 727, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 362, in run_endpoint_function
+    return await run_in_threadpool(
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\concurrency.py", line 34, in run_in_threadpool
+    return await anyio.to_thread.run_sync(func)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\anyio\to_thread.py", line 65, in run_sync
+    return await get_async_backend().run_sync_in_worker_thread(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\anyio\_backends\_asyncio.py", line 2706, in run_sync_in_worker_thread
+    return await future
+           ^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\anyio\_backends\_asyncio.py", line 1100, in run
+    result = context.run(func, *args)
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\telemetry\_api.py", line 240, in _run_sync_endpoint
+    return function(**arguments)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant\back_end\src\api\__init__.py", line 1922, in update_risk_config
+    engine.configure_risk({"risk": merged})
+  File "D:\mine\quant\back_end\src\trading\engine.py", line 71, in configure_risk
+    self.risk_manager.configure(config)
+  File "D:\mine\quant\back_end\src\trading\risk.py", line 117, in configure
+    self.config = RiskConfig.from_mapping(raw)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant\back_end\src\trading\risk.py", line 65, in from_mapping
+    raise ValueError(f"{key} must be a positive integer")
+ValueError: max_order_volume must be a positive integer
+_ test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config[risk1] _
+
+client = <starlette.testclient.TestClient object at 0x000000003A114B00>
+risk = {'enabled': 'false'}
+
+    @pytest.mark.parametrize('risk', [
+        {'max_order_volume': 0}, {'enabled': 'false'}, {'max_daily_loss_ratio': 2},
+        {'contract_multipliers': []}, {'allowed_symbols': 'A'}, {'max_order_volume': None},
+    ])
+    def test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config(client, risk):
+        assert login(client).status_code == 200
+        assert client.put('/risk/config', json={'risk': {'max_order_volume': 7}}).status_code == 200
+        engine = api.trading_state.primary_engine()
+        saved = engine.ledger.load_setting('risk')
+        current = engine.risk_manager.status()
+        response = client.put('/risk/config', json={'risk': risk})
+>       assert response.status_code == 422
+E       assert 500 == 422
+E        +  where 500 = <Response [500 Internal Server Error]>.status_code
+
+tests\test_recheck_regressions.py:83: AssertionError
+------------------------------ Captured log call ------------------------------
+ERROR    src.api:__init__.py:1456 {"event": "http.request.error", "ts": "2026-10-08T11:36:29.803", "request_id": "35635d5d503f417e", "method": "PUT", "path": "/risk/config"}
+  + Exception Group Traceback (most recent call last):
+  |   File "D:\mine\quant-audit-20261004\python-deps\starlette\_utils.py", line 107, in create_collapsing_task_group
+  |     async with anyio.create_task_group() as tg:
+  |                ^^^^^^^^^^^^^^^^^^^^^^^^^
+  |   File "D:\mine\quant-audit-20261004\python-deps\anyio\_backends\_asyncio.py", line 847, in __aexit__
+  |     raise BaseExceptionGroup(
+  | ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
+  +-+---------------- 1 ----------------
+    | Traceback (most recent call last):
+    |   File "D:\mine\quant\back_end\src\api\__init__.py", line 1453, in observability_middleware
+    |     response = await call_next(request)
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 173, in call_next
+    |     raise app_exc from app_exc.__cause__ or app_exc.__context__
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 149, in coro
+    |     await self.app(scope, receive_or_disconnect, send_no_error)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\cors.py", line 91, in __call__
+    |     await self.simple_response(scope, receive, send, request_headers=headers)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\cors.py", line 149, in simple_response
+    |     await self.app(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 197, in __call__
+    |     response = await self.dispatch_func(request, call_next)
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant\back_end\src\api\__init__.py", line 1431, in auth_middleware
+    |     return await call_next(request)
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 173, in call_next
+    |     raise app_exc from app_exc.__cause__ or app_exc.__context__
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 149, in coro
+    |     await self.app(scope, receive_or_disconnect, send_no_error)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\exceptions.py", line 63, in __call__
+    |     await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 53, in wrapped_app
+    |     raise exc
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 42, in wrapped_app
+    |     await app(scope, receive, sender)
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\middleware\asyncexitstack.py", line 18, in __call__
+    |     await self.app(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\routing.py", line 676, in __call__
+    |     await self.middleware_stack(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 2786, in app
+    |     await route.handle(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 1310, in handle
+    |     await super().handle(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\routing.py", line 282, in handle
+    |     await self.app(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 165, in app
+    |     await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 53, in wrapped_app
+    |     raise exc
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 42, in wrapped_app
+    |     await app(scope, receive, sender)
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 151, in app
+    |     response = await f(request)
+    |                ^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 727, in app
+    |     raw_response = await run_endpoint_function(
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 362, in run_endpoint_function
+    |     return await run_in_threadpool(
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\concurrency.py", line 34, in run_in_threadpool
+    |     return await anyio.to_thread.run_sync(func)
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\anyio\to_thread.py", line 65, in run_sync
+    |     return await get_async_backend().run_sync_in_worker_thread(
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\anyio\_backends\_asyncio.py", line 2706, in run_sync_in_worker_thread
+    |     return await future
+    |            ^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\anyio\_backends\_asyncio.py", line 1100, in run
+    |     result = context.run(func, *args)
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\telemetry\_api.py", line 240, in _run_sync_endpoint
+    |     return function(**arguments)
+    |            ^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant\back_end\src\api\__init__.py", line 1922, in update_risk_config
+    |     engine.configure_risk({"risk": merged})
+    |   File "D:\mine\quant\back_end\src\trading\engine.py", line 71, in configure_risk
+    |     self.risk_manager.configure(config)
+    |   File "D:\mine\quant\back_end\src\trading\risk.py", line 117, in configure
+    |     self.config = RiskConfig.from_mapping(raw)
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant\back_end\src\trading\risk.py", line 46, in from_mapping
+    |     raise ValueError(f"{key} must be a boolean")
+    | ValueError: enabled must be a boolean
+    +------------------------------------
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "D:\mine\quant\back_end\src\api\__init__.py", line 1453, in observability_middleware
+    response = await call_next(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 173, in call_next
+    raise app_exc from app_exc.__cause__ or app_exc.__context__
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 149, in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\cors.py", line 91, in __call__
+    await self.simple_response(scope, receive, send, request_headers=headers)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\cors.py", line 149, in simple_response
+    await self.app(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 197, in __call__
+    response = await self.dispatch_func(request, call_next)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant\back_end\src\api\__init__.py", line 1431, in auth_middleware
+    return await call_next(request)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 173, in call_next
+    raise app_exc from app_exc.__cause__ or app_exc.__context__
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 149, in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\middleware\asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\routing.py", line 676, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 2786, in app
+    await route.handle(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 1310, in handle
+    await super().handle(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\routing.py", line 282, in handle
+    await self.app(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 165, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 151, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 727, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 362, in run_endpoint_function
+    return await run_in_threadpool(
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\concurrency.py", line 34, in run_in_threadpool
+    return await anyio.to_thread.run_sync(func)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\anyio\to_thread.py", line 65, in run_sync
+    return await get_async_backend().run_sync_in_worker_thread(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\anyio\_backends\_asyncio.py", line 2706, in run_sync_in_worker_thread
+    return await future
+           ^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\anyio\_backends\_asyncio.py", line 1100, in run
+    result = context.run(func, *args)
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\telemetry\_api.py", line 240, in _run_sync_endpoint
+    return function(**arguments)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant\back_end\src\api\__init__.py", line 1922, in update_risk_config
+    engine.configure_risk({"risk": merged})
+  File "D:\mine\quant\back_end\src\trading\engine.py", line 71, in configure_risk
+    self.risk_manager.configure(config)
+  File "D:\mine\quant\back_end\src\trading\risk.py", line 117, in configure
+    self.config = RiskConfig.from_mapping(raw)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant\back_end\src\trading\risk.py", line 46, in from_mapping
+    raise ValueError(f"{key} must be a boolean")
+ValueError: enabled must be a boolean
+_ test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config[risk2] _
+
+client = <starlette.testclient.TestClient object at 0x000000003A2DBF20>
+risk = {'max_daily_loss_ratio': 2}
+
+    @pytest.mark.parametrize('risk', [
+        {'max_order_volume': 0}, {'enabled': 'false'}, {'max_daily_loss_ratio': 2},
+        {'contract_multipliers': []}, {'allowed_symbols': 'A'}, {'max_order_volume': None},
+    ])
+    def test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config(client, risk):
+        assert login(client).status_code == 200
+        assert client.put('/risk/config', json={'risk': {'max_order_volume': 7}}).status_code == 200
+        engine = api.trading_state.primary_engine()
+        saved = engine.ledger.load_setting('risk')
+        current = engine.risk_manager.status()
+        response = client.put('/risk/config', json={'risk': risk})
+>       assert response.status_code == 422
+E       assert 500 == 422
+E        +  where 500 = <Response [500 Internal Server Error]>.status_code
+
+tests\test_recheck_regressions.py:83: AssertionError
+------------------------------ Captured log call ------------------------------
+ERROR    src.api:__init__.py:1456 {"event": "http.request.error", "ts": "2026-10-08T11:36:29.829", "request_id": "6889bf60b1844e6f", "method": "PUT", "path": "/risk/config"}
+  + Exception Group Traceback (most recent call last):
+  |   File "D:\mine\quant-audit-20261004\python-deps\starlette\_utils.py", line 107, in create_collapsing_task_group
+  |     async with anyio.create_task_group() as tg:
+  |                ^^^^^^^^^^^^^^^^^^^^^^^^^
+  |   File "D:\mine\quant-audit-20261004\python-deps\anyio\_backends\_asyncio.py", line 847, in __aexit__
+  |     raise BaseExceptionGroup(
+  | ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
+  +-+---------------- 1 ----------------
+    | Traceback (most recent call last):
+    |   File "D:\mine\quant\back_end\src\api\__init__.py", line 1453, in observability_middleware
+    |     response = await call_next(request)
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 173, in call_next
+    |     raise app_exc from app_exc.__cause__ or app_exc.__context__
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 149, in coro
+    |     await self.app(scope, receive_or_disconnect, send_no_error)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\cors.py", line 91, in __call__
+    |     await self.simple_response(scope, receive, send, request_headers=headers)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\cors.py", line 149, in simple_response
+    |     await self.app(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 197, in __call__
+    |     response = await self.dispatch_func(request, call_next)
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant\back_end\src\api\__init__.py", line 1431, in auth_middleware
+    |     return await call_next(request)
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 173, in call_next
+    |     raise app_exc from app_exc.__cause__ or app_exc.__context__
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 149, in coro
+    |     await self.app(scope, receive_or_disconnect, send_no_error)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\exceptions.py", line 63, in __call__
+    |     await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 53, in wrapped_app
+    |     raise exc
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 42, in wrapped_app
+    |     await app(scope, receive, sender)
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\middleware\asyncexitstack.py", line 18, in __call__
+    |     await self.app(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\routing.py", line 676, in __call__
+    |     await self.middleware_stack(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 2786, in app
+    |     await route.handle(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 1310, in handle
+    |     await super().handle(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\routing.py", line 282, in handle
+    |     await self.app(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 165, in app
+    |     await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 53, in wrapped_app
+    |     raise exc
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 42, in wrapped_app
+    |     await app(scope, receive, sender)
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 151, in app
+    |     response = await f(request)
+    |                ^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 727, in app
+    |     raw_response = await run_endpoint_function(
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 362, in run_endpoint_function
+    |     return await run_in_threadpool(
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\concurrency.py", line 34, in run_in_threadpool
+    |     return await anyio.to_thread.run_sync(func)
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\anyio\to_thread.py", line 65, in run_sync
+    |     return await get_async_backend().run_sync_in_worker_thread(
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\anyio\_backends\_asyncio.py", line 2706, in run_sync_in_worker_thread
+    |     return await future
+    |            ^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\anyio\_backends\_asyncio.py", line 1100, in run
+    |     result = context.run(func, *args)
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\telemetry\_api.py", line 240, in _run_sync_endpoint
+    |     return function(**arguments)
+    |            ^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant\back_end\src\api\__init__.py", line 1922, in update_risk_config
+    |     engine.configure_risk({"risk": merged})
+    |   File "D:\mine\quant\back_end\src\trading\engine.py", line 71, in configure_risk
+    |     self.risk_manager.configure(config)
+    |   File "D:\mine\quant\back_end\src\trading\risk.py", line 117, in configure
+    |     self.config = RiskConfig.from_mapping(raw)
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant\back_end\src\trading\risk.py", line 67, in from_mapping
+    |     raise ValueError("max_daily_loss_ratio must be within [0, 1]")
+    | ValueError: max_daily_loss_ratio must be within [0, 1]
+    +------------------------------------
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "D:\mine\quant\back_end\src\api\__init__.py", line 1453, in observability_middleware
+    response = await call_next(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 173, in call_next
+    raise app_exc from app_exc.__cause__ or app_exc.__context__
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 149, in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\cors.py", line 91, in __call__
+    await self.simple_response(scope, receive, send, request_headers=headers)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\cors.py", line 149, in simple_response
+    await self.app(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 197, in __call__
+    response = await self.dispatch_func(request, call_next)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant\back_end\src\api\__init__.py", line 1431, in auth_middleware
+    return await call_next(request)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 173, in call_next
+    raise app_exc from app_exc.__cause__ or app_exc.__context__
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 149, in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\middleware\asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\routing.py", line 676, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 2786, in app
+    await route.handle(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 1310, in handle
+    await super().handle(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\routing.py", line 282, in handle
+    await self.app(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 165, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 151, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 727, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 362, in run_endpoint_function
+    return await run_in_threadpool(
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\concurrency.py", line 34, in run_in_threadpool
+    return await anyio.to_thread.run_sync(func)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\anyio\to_thread.py", line 65, in run_sync
+    return await get_async_backend().run_sync_in_worker_thread(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\anyio\_backends\_asyncio.py", line 2706, in run_sync_in_worker_thread
+    return await future
+           ^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\anyio\_backends\_asyncio.py", line 1100, in run
+    result = context.run(func, *args)
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\telemetry\_api.py", line 240, in _run_sync_endpoint
+    return function(**arguments)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant\back_end\src\api\__init__.py", line 1922, in update_risk_config
+    engine.configure_risk({"risk": merged})
+  File "D:\mine\quant\back_end\src\trading\engine.py", line 71, in configure_risk
+    self.risk_manager.configure(config)
+  File "D:\mine\quant\back_end\src\trading\risk.py", line 117, in configure
+    self.config = RiskConfig.from_mapping(raw)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant\back_end\src\trading\risk.py", line 67, in from_mapping
+    raise ValueError("max_daily_loss_ratio must be within [0, 1]")
+ValueError: max_daily_loss_ratio must be within [0, 1]
+_ test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config[risk3] _
+
+client = <starlette.testclient.TestClient object at 0x000000003A2EA540>
+risk = {'contract_multipliers': []}
+
+    @pytest.mark.parametrize('risk', [
+        {'max_order_volume': 0}, {'enabled': 'false'}, {'max_daily_loss_ratio': 2},
+        {'contract_multipliers': []}, {'allowed_symbols': 'A'}, {'max_order_volume': None},
+    ])
+    def test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config(client, risk):
+        assert login(client).status_code == 200
+        assert client.put('/risk/config', json={'risk': {'max_order_volume': 7}}).status_code == 200
+        engine = api.trading_state.primary_engine()
+        saved = engine.ledger.load_setting('risk')
+        current = engine.risk_manager.status()
+        response = client.put('/risk/config', json={'risk': risk})
+>       assert response.status_code == 422
+E       assert 200 == 422
+E        +  where 200 = <Response [200 OK]>.status_code
+
+tests\test_recheck_regressions.py:83: AssertionError
+_ test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config[risk4] _
+
+client = <starlette.testclient.TestClient object at 0x000000003A36F740>
+risk = {'allowed_symbols': 'A'}
+
+    @pytest.mark.parametrize('risk', [
+        {'max_order_volume': 0}, {'enabled': 'false'}, {'max_daily_loss_ratio': 2},
+        {'contract_multipliers': []}, {'allowed_symbols': 'A'}, {'max_order_volume': None},
+    ])
+    def test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config(client, risk):
+        assert login(client).status_code == 200
+        assert client.put('/risk/config', json={'risk': {'max_order_volume': 7}}).status_code == 200
+        engine = api.trading_state.primary_engine()
+        saved = engine.ledger.load_setting('risk')
+        current = engine.risk_manager.status()
+        response = client.put('/risk/config', json={'risk': risk})
+>       assert response.status_code == 422
+E       assert 200 == 422
+E        +  where 200 = <Response [200 OK]>.status_code
+
+tests\test_recheck_regressions.py:83: AssertionError
+_ test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config[risk5] _
+
+client = <starlette.testclient.TestClient object at 0x000000003A385A00>
+risk = {'max_order_volume': None}
+
+    @pytest.mark.parametrize('risk', [
+        {'max_order_volume': 0}, {'enabled': 'false'}, {'max_daily_loss_ratio': 2},
+        {'contract_multipliers': []}, {'allowed_symbols': 'A'}, {'max_order_volume': None},
+    ])
+    def test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config(client, risk):
+        assert login(client).status_code == 200
+        assert client.put('/risk/config', json={'risk': {'max_order_volume': 7}}).status_code == 200
+        engine = api.trading_state.primary_engine()
+        saved = engine.ledger.load_setting('risk')
+        current = engine.risk_manager.status()
+        response = client.put('/risk/config', json={'risk': risk})
+>       assert response.status_code == 422
+E       assert 500 == 422
+E        +  where 500 = <Response [500 Internal Server Error]>.status_code
+
+tests\test_recheck_regressions.py:83: AssertionError
+------------------------------ Captured log call ------------------------------
+ERROR    src.api:__init__.py:1456 {"event": "http.request.error", "ts": "2026-10-08T11:36:29.904", "request_id": "87f97e05248f4408", "method": "PUT", "path": "/risk/config"}
+  + Exception Group Traceback (most recent call last):
+  |   File "D:\mine\quant-audit-20261004\python-deps\starlette\_utils.py", line 107, in create_collapsing_task_group
+  |     async with anyio.create_task_group() as tg:
+  |                ^^^^^^^^^^^^^^^^^^^^^^^^^
+  |   File "D:\mine\quant-audit-20261004\python-deps\anyio\_backends\_asyncio.py", line 847, in __aexit__
+  |     raise BaseExceptionGroup(
+  | ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)
+  +-+---------------- 1 ----------------
+    | Traceback (most recent call last):
+    |   File "D:\mine\quant\back_end\src\api\__init__.py", line 1453, in observability_middleware
+    |     response = await call_next(request)
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 173, in call_next
+    |     raise app_exc from app_exc.__cause__ or app_exc.__context__
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 149, in coro
+    |     await self.app(scope, receive_or_disconnect, send_no_error)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\cors.py", line 91, in __call__
+    |     await self.simple_response(scope, receive, send, request_headers=headers)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\cors.py", line 149, in simple_response
+    |     await self.app(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 197, in __call__
+    |     response = await self.dispatch_func(request, call_next)
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant\back_end\src\api\__init__.py", line 1431, in auth_middleware
+    |     return await call_next(request)
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 173, in call_next
+    |     raise app_exc from app_exc.__cause__ or app_exc.__context__
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 149, in coro
+    |     await self.app(scope, receive_or_disconnect, send_no_error)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\exceptions.py", line 63, in __call__
+    |     await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 53, in wrapped_app
+    |     raise exc
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 42, in wrapped_app
+    |     await app(scope, receive, sender)
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\middleware\asyncexitstack.py", line 18, in __call__
+    |     await self.app(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\routing.py", line 676, in __call__
+    |     await self.middleware_stack(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 2786, in app
+    |     await route.handle(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 1310, in handle
+    |     await super().handle(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\routing.py", line 282, in handle
+    |     await self.app(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 165, in app
+    |     await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 53, in wrapped_app
+    |     raise exc
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 42, in wrapped_app
+    |     await app(scope, receive, sender)
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 151, in app
+    |     response = await f(request)
+    |                ^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 727, in app
+    |     raw_response = await run_endpoint_function(
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 362, in run_endpoint_function
+    |     return await run_in_threadpool(
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\starlette\concurrency.py", line 34, in run_in_threadpool
+    |     return await anyio.to_thread.run_sync(func)
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\anyio\to_thread.py", line 65, in run_sync
+    |     return await get_async_backend().run_sync_in_worker_thread(
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\anyio\_backends\_asyncio.py", line 2706, in run_sync_in_worker_thread
+    |     return await future
+    |            ^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\anyio\_backends\_asyncio.py", line 1100, in run
+    |     result = context.run(func, *args)
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant-audit-20261004\python-deps\fastapi\telemetry\_api.py", line 240, in _run_sync_endpoint
+    |     return function(**arguments)
+    |            ^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant\back_end\src\api\__init__.py", line 1922, in update_risk_config
+    |     engine.configure_risk({"risk": merged})
+    |   File "D:\mine\quant\back_end\src\trading\engine.py", line 71, in configure_risk
+    |     self.risk_manager.configure(config)
+    |   File "D:\mine\quant\back_end\src\trading\risk.py", line 117, in configure
+    |     self.config = RiskConfig.from_mapping(raw)
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |   File "D:\mine\quant\back_end\src\trading\risk.py", line 61, in from_mapping
+    |     if key in raw and (isinstance(raw[key], bool) or not math.isfinite(float(raw[key])) or float(raw[key]) < 0):
+    |                                                                        ^^^^^^^^^^^^^^^
+    | TypeError: float() argument must be a string or a real number, not 'NoneType'
+    +------------------------------------
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "D:\mine\quant\back_end\src\api\__init__.py", line 1453, in observability_middleware
+    response = await call_next(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 173, in call_next
+    raise app_exc from app_exc.__cause__ or app_exc.__context__
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 149, in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\cors.py", line 91, in __call__
+    await self.simple_response(scope, receive, send, request_headers=headers)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\cors.py", line 149, in simple_response
+    await self.app(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 197, in __call__
+    response = await self.dispatch_func(request, call_next)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant\back_end\src\api\__init__.py", line 1431, in auth_middleware
+    return await call_next(request)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 173, in call_next
+    raise app_exc from app_exc.__cause__ or app_exc.__context__
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\base.py", line 149, in coro
+    await self.app(scope, receive_or_disconnect, send_no_error)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\middleware\exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\middleware\asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\routing.py", line 676, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 2786, in app
+    await route.handle(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 1310, in handle
+    await super().handle(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\routing.py", line 282, in handle
+    await self.app(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 165, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 151, in app
+    response = await f(request)
+               ^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 727, in app
+    raw_response = await run_endpoint_function(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\routing.py", line 362, in run_endpoint_function
+    return await run_in_threadpool(
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\starlette\concurrency.py", line 34, in run_in_threadpool
+    return await anyio.to_thread.run_sync(func)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\anyio\to_thread.py", line 65, in run_sync
+    return await get_async_backend().run_sync_in_worker_thread(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\anyio\_backends\_asyncio.py", line 2706, in run_sync_in_worker_thread
+    return await future
+           ^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\anyio\_backends\_asyncio.py", line 1100, in run
+    result = context.run(func, *args)
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant-audit-20261004\python-deps\fastapi\telemetry\_api.py", line 240, in _run_sync_endpoint
+    return function(**arguments)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant\back_end\src\api\__init__.py", line 1922, in update_risk_config
+    engine.configure_risk({"risk": merged})
+  File "D:\mine\quant\back_end\src\trading\engine.py", line 71, in configure_risk
+    self.risk_manager.configure(config)
+  File "D:\mine\quant\back_end\src\trading\risk.py", line 117, in configure
+    self.config = RiskConfig.from_mapping(raw)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\mine\quant\back_end\src\trading\risk.py", line 61, in from_mapping
+    if key in raw and (isinstance(raw[key], bool) or not math.isfinite(float(raw[key])) or float(raw[key]) < 0):
+                                                                       ^^^^^^^^^^^^^^^
+TypeError: float() argument must be a string or a real number, not 'NoneType'
+_____ test_invalid_margin_configuration_does_not_replace_account[rates2] ______
+
+client = <starlette.testclient.TestClient object at 0x000000003A496720>
+rates = {'A': True}
+
+    @pytest.mark.parametrize('rates', [{'A': 0}, {'A': 1.1}, {'A': True}, {' ': .1}])
+    def test_invalid_margin_configuration_does_not_replace_account(client, rates):
+        assert login(client).status_code == 200
+        engine = api.trading_state.primary_engine()
+>       assert login(client, 'B', contract_margin_rates=rates).status_code == 422
+E       AssertionError: assert 200 == 422
+E        +  where 200 = <Response [200 OK]>.status_code
+E        +    where <Response [200 OK]> = login(<starlette.testclient.TestClient object at 0x000000003A496720>, 'B', contract_margin_rates={'A': True})
+
+tests\test_recheck_regressions.py:98: AssertionError
+_____ test_invalid_margin_configuration_does_not_replace_account[rates3] ______
+
+client = <starlette.testclient.TestClient object at 0x000000003A424D10>
+rates = {' ': 0.1}
+
+    @pytest.mark.parametrize('rates', [{'A': 0}, {'A': 1.1}, {'A': True}, {' ': .1}])
+    def test_invalid_margin_configuration_does_not_replace_account(client, rates):
+        assert login(client).status_code == 200
+        engine = api.trading_state.primary_engine()
+>       assert login(client, 'B', contract_margin_rates=rates).status_code == 422
+E       AssertionError: assert 200 == 422
+E        +  where 200 = <Response [200 OK]>.status_code
+E        +    where <Response [200 OK]> = login(<starlette.testclient.TestClient object at 0x000000003A424D10>, 'B', contract_margin_rates={' ': 0.1})
+
+tests\test_recheck_regressions.py:98: AssertionError
+____ test_breakout_uses_the_last_n_prior_bars_without_skipping_the_latest _____
+
+    def test_breakout_uses_the_last_n_prior_bars_without_skipping_the_latest():
+        strategy = prepared_strategy('breakout', lookback_period=2)
+        strategy.data['A'] = pd.DataFrame({'high': [110, 110, 200], 'low': [90, 90, 90], 'close': [100, 100, 190]})
+        strategy.on_bar(pd.Series({'close': 150}))
+        assert not strategy.signals
+        strategy.on_bar(pd.Series({'close': 201}))
+>       assert len(strategy.signals) == 1
+E       assert 0 == 1
+E        +  where 0 = len([])
+E        +    where [] = <src.strategy.strategies.breakout.BreakoutStrategy object at 0x000000003A4D9550>.signals
+
+tests\test_recheck_regressions.py:117: AssertionError
+------------------------------ Captured log call ------------------------------
+WARNING  src.strategy.base:base.py:130 信号验证失败: A
+WARNING  src.strategy.base:base.py:130 信号验证失败: A
+________ test_ma_uses_current_completed_close_without_mutating_history ________
+
+    def test_ma_uses_current_completed_close_without_mutating_history():
+        strategy = prepared_strategy('ma_cross', fast_period=1, slow_period=2)
+        strategy.data['A'] = pd.DataFrame({'close': [100, 100, 100]})
+        strategy.on_bar(pd.Series({'close': 110}))
+>       assert len(strategy.signals) == 1
+E       assert 0 == 1
+E        +  where 0 = len([])
+E        +    where [] = <src.strategy.strategies.ma_cross.MACrossStrategy object at 0x00000000394E87D0>.signals
+
+tests\test_recheck_regressions.py:125: AssertionError
+_______________ test_rsi_strategy_uses_current_completed_close ________________
+
+    def test_rsi_strategy_uses_current_completed_close():
+        strategy = prepared_strategy('rsi', rsi_period=3)
+        strategy.data['A'] = pd.DataFrame({'close': [100, 100, 100]})
+        strategy.on_bar(pd.Series({'close': 90}))
+>       assert len(strategy.signals) == 1
+E       assert 0 == 1
+E        +  where 0 = len([])
+E        +    where [] = <src.strategy.strategies.rsi.RSIStrategy object at 0x00000000394E9EE0>.signals
+
+tests\test_recheck_regressions.py:135: AssertionError
+___________ test_server_rsi_matches_shared_wilder_fixtures[rising] ____________
+
+case = {'name': 'rising', 'period': 3, 'closes': [100, 101, 102, 103, 104, 105], 'expected': [None, None, None, 100, 100, 100]}
+
+    @pytest.mark.parametrize('case', RSI_CASES, ids=lambda case: case['name'])
+    def test_server_rsi_matches_shared_wilder_fixtures(case):
+        actual = _calc_rsi(pd.Series(case['closes'], dtype=float), case['period']).tolist()
+        for value, expected in zip(actual, case['expected'], strict=True):
+            if expected is None:
+>               assert pd.isna(value)
+E               assert False
+E                +  where False = <function isna at 0x0000000036D5E2A0>(50.0)
+E                +    where <function isna at 0x0000000036D5E2A0> = pd.isna
+
+tests\test_recheck_regressions.py:147: AssertionError
+___________ test_server_rsi_matches_shared_wilder_fixtures[falling] ___________
+
+case = {'name': 'falling', 'period': 3, 'closes': [105, 104, 103, 102, 101, 100], 'expected': [None, None, None, 0, 0, 0]}
+
+    @pytest.mark.parametrize('case', RSI_CASES, ids=lambda case: case['name'])
+    def test_server_rsi_matches_shared_wilder_fixtures(case):
+        actual = _calc_rsi(pd.Series(case['closes'], dtype=float), case['period']).tolist()
+        for value, expected in zip(actual, case['expected'], strict=True):
+            if expected is None:
+>               assert pd.isna(value)
+E               assert False
+E                +  where False = <function isna at 0x0000000036D5E2A0>(50.0)
+E                +    where <function isna at 0x0000000036D5E2A0> = pd.isna
+
+tests\test_recheck_regressions.py:147: AssertionError
+____________ test_server_rsi_matches_shared_wilder_fixtures[flat] _____________
+
+case = {'name': 'flat', 'period': 3, 'closes': [100, 100, 100, 100, 100, 100], 'expected': [None, None, None, 50, 50, 50]}
+
+    @pytest.mark.parametrize('case', RSI_CASES, ids=lambda case: case['name'])
+    def test_server_rsi_matches_shared_wilder_fixtures(case):
+        actual = _calc_rsi(pd.Series(case['closes'], dtype=float), case['period']).tolist()
+        for value, expected in zip(actual, case['expected'], strict=True):
+            if expected is None:
+>               assert pd.isna(value)
+E               assert False
+E                +  where False = <function isna at 0x0000000036D5E2A0>(50.0)
+E                +    where <function isna at 0x0000000036D5E2A0> = pd.isna
+
+tests\test_recheck_regressions.py:147: AssertionError
+__________ test_server_rsi_matches_shared_wilder_fixtures[reversal] ___________
+
+case = {'name': 'reversal', 'period': 3, 'closes': [100, 101, 102, 103, 102, 101, ...], 'expected': [None, None, None, 100, 66.66666666666667, 44.44444444444444, ...]}
+
+    @pytest.mark.parametrize('case', RSI_CASES, ids=lambda case: case['name'])
+    def test_server_rsi_matches_shared_wilder_fixtures(case):
+        actual = _calc_rsi(pd.Series(case['closes'], dtype=float), case['period']).tolist()
+        for value, expected in zip(actual, case['expected'], strict=True):
+            if expected is None:
+>               assert pd.isna(value)
+E               assert False
+E                +  where False = <function isna at 0x0000000036D5E2A0>(50.0)
+E                +    where <function isna at 0x0000000036D5E2A0> = pd.isna
+
+tests\test_recheck_regressions.py:147: AssertionError
+___________ test_server_rsi_matches_shared_wilder_fixtures[warmup] ____________
+
+case = {'name': 'warmup', 'period': 3, 'closes': [100, 101, 102], 'expected': [None, None, None]}
+
+    @pytest.mark.parametrize('case', RSI_CASES, ids=lambda case: case['name'])
+    def test_server_rsi_matches_shared_wilder_fixtures(case):
+        actual = _calc_rsi(pd.Series(case['closes'], dtype=float), case['period']).tolist()
+        for value, expected in zip(actual, case['expected'], strict=True):
+            if expected is None:
+>               assert pd.isna(value)
+E               assert False
+E                +  where False = <function isna at 0x0000000036D5E2A0>(50.0)
+E                +    where <function isna at 0x0000000036D5E2A0> = pd.isna
+
+tests\test_recheck_regressions.py:147: AssertionError
+_________ test_server_rsi_matches_shared_wilder_fixtures[period_one] __________
+
+case = {'name': 'period_one', 'period': 1, 'closes': [100, 101, 100, 100], 'expected': [None, 100, 0, 50]}
+
+    @pytest.mark.parametrize('case', RSI_CASES, ids=lambda case: case['name'])
+    def test_server_rsi_matches_shared_wilder_fixtures(case):
+        actual = _calc_rsi(pd.Series(case['closes'], dtype=float), case['period']).tolist()
+        for value, expected in zip(actual, case['expected'], strict=True):
+            if expected is None:
+>               assert pd.isna(value)
+E               assert False
+E                +  where False = <function isna at 0x0000000036D5E2A0>(50.0)
+E                +    where <function isna at 0x0000000036D5E2A0> = pd.isna
+
+tests\test_recheck_regressions.py:147: AssertionError
+============================== warnings summary ===============================
+..\..\quant-audit-20261004\python-deps\fastapi\testclient.py:1
+  D:\mine\quant-audit-20261004\python-deps\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_recheck_regressions.py::test_account_transition_discards_old_equity[False]
+FAILED tests/test_recheck_regressions.py::test_account_transition_discards_old_equity[True]
+FAILED tests/test_recheck_regressions.py::test_late_account_snapshot_and_queued_broadcast_are_discarded
+FAILED tests/test_recheck_regressions.py::test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config[risk0]
+FAILED tests/test_recheck_regressions.py::test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config[risk1]
+FAILED tests/test_recheck_regressions.py::test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config[risk2]
+FAILED tests/test_recheck_regressions.py::test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config[risk3]
+FAILED tests/test_recheck_regressions.py::test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config[risk4]
+FAILED tests/test_recheck_regressions.py::test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config[risk5]
+FAILED tests/test_recheck_regressions.py::test_invalid_margin_configuration_does_not_replace_account[rates2]
+FAILED tests/test_recheck_regressions.py::test_invalid_margin_configuration_does_not_replace_account[rates3]
+FAILED tests/test_recheck_regressions.py::test_breakout_uses_the_last_n_prior_bars_without_skipping_the_latest
+FAILED tests/test_recheck_regressions.py::test_ma_uses_current_completed_close_without_mutating_history
+FAILED tests/test_recheck_regressions.py::test_rsi_strategy_uses_current_completed_close
+FAILED tests/test_recheck_regressions.py::test_server_rsi_matches_shared_wilder_fixtures[rising]
+FAILED tests/test_recheck_regressions.py::test_server_rsi_matches_shared_wilder_fixtures[falling]
+FAILED tests/test_recheck_regressions.py::test_server_rsi_matches_shared_wilder_fixtures[flat]
+FAILED tests/test_recheck_regressions.py::test_server_rsi_matches_shared_wilder_fixtures[reversal]
+FAILED tests/test_recheck_regressions.py::test_server_rsi_matches_shared_wilder_fixtures[warmup]
+FAILED tests/test_recheck_regressions.py::test_server_rsi_matches_shared_wilder_fixtures[period_one]

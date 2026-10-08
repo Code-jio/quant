@@ -22,6 +22,7 @@ from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
+from ..common.indicators import wilder_rsi
 
 # ---------------------------------------------------------------------------
 # 内存 TTL 缓存（无需 Redis，行为等价）
@@ -127,11 +128,7 @@ _TRADING_MINUTES_PER_DAY = 240  # 期货日内交易时间约 4 小时
 
 
 def _calc_rsi(close: pd.Series, period: int = 14) -> pd.Series:
-    delta = close.diff()
-    gain = delta.clip(lower=0).ewm(com=period - 1, adjust=False).mean()
-    loss = (-delta.clip(upper=0)).ewm(com=period - 1, adjust=False).mean()
-    rs = gain / loss.replace(0, np.nan)
-    return (100 - 100 / (1 + rs)).fillna(50)
+    return wilder_rsi(close, period)
 
 
 def _calc_kdj(

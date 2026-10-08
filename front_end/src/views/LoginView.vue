@@ -125,6 +125,16 @@
             </el-form-item>
           </div>
 
+          <div class="form-section-title">开仓保证金</div>
+          <p class="margin-hint">填写经柜台确认的合约保证金率（%）。留空可登录查看行情，未配置的合约暂不允许开仓。</p>
+          <div v-for="(row,index) in marginRows" :key="row.id" class="margin-row">
+            <el-input v-model="row.symbol" :aria-label="`保证金合约 ${index+1}`" placeholder="合约代码，如 rb2610" :disabled="connecting" />
+            <el-input-number v-model="row.percent" :aria-label="`保证金率 ${index+1}`" :min="0" :max="100" :precision="4" :step="1" :disabled="connecting" />
+            <span>%</span>
+            <el-button :aria-label="`删除保证金配置 ${index+1}`" :disabled="connecting" @click="marginRows.splice(index,1)">删除</el-button>
+          </div>
+          <el-button class="margin-add" :disabled="connecting" @click="addMarginRow">添加合约保证金率</el-button>
+
           <!-- ── 高级配置（折叠） ── -->
           <div
             class="advanced-toggle"
@@ -234,6 +244,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '@/stores/auth.js'
 import { login, fetchAuthStatus, fetchServers } from '@/api/index.js'
+import { marginRatesFromRows } from '@/utils/marginRates.js'
 
 const router    = useRouter()
 const authStore = useAuthStore()
@@ -274,6 +285,9 @@ const connecting      = ref(false)
 const errorMsg        = ref('')
 const connectLog      = ref([])
 const logContainer    = ref(null)
+let marginRowId=0
+const marginRows=ref([{id:marginRowId++,symbol:'',percent:undefined}])
+function addMarginRow() { marginRows.value.push({id:marginRowId++,symbol:'',percent:undefined}) }
 
 // ── 表单校验规则 ──────────────────────────────────────────────────────────
 const rules = {
@@ -325,9 +339,16 @@ onUnmounted(stopPolling)
 
 async function handleLogin() {
   if (connecting.value) return
+  let marginRates
   try {
     await formRef.value.validate()
   } catch {
+    return
+  }
+  try {
+    marginRates=marginRatesFromRows(marginRows.value)
+  } catch(error) {
+    errorMsg.value=error.message
     return
   }
 
@@ -346,6 +367,7 @@ async function handleLogin() {
       app_id:    form.app_id,
       auth_code: form.auth_code,
       environment: form.environment,
+      contract_margin_rates: marginRates,
       auto_start_strategy: form.auto_start_strategy,
       strategy_name: form.strategy_name,
       strategy_params: {
@@ -476,6 +498,15 @@ async function handleLogin() {
   gap: 0 16px;
 }
 .broker-field { grid-column: 1; }
+.margin-hint { margin: 0 0 12px; color: var(--q-muted); font-size: 12px; line-height: 1.6; }
+.margin-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.margin-row > .el-input { flex: 1; min-width: 100px; }
+.margin-row > .el-input-number { width: 155px; }
+.margin-add { margin-bottom: 18px; }
+@media (max-width: 520px) {
+  .margin-row { flex-wrap: wrap; }
+  .margin-row > .el-input { flex-basis: 100%; }
+}
 
 /* ── 高级配置折叠 ── */
 .advanced-toggle {

@@ -40,17 +40,15 @@ class MACrossStrategy(StrategyBase):
             if df is None or len(df) < self.slow_period:
                 return
 
-            current_idx = df.index.get_loc(self.current_date) if self.current_date in df.index else len(df) - 1
-            if current_idx < self.slow_period:
-                return
+            # data holds prior bars; the callback supplies the newly completed bar.
+            closes = pd.concat([df["close"], pd.Series([float(bar["close"])])], ignore_index=True)
+            fast_ma = closes.rolling(window=self.fast_period).mean()
+            slow_ma = closes.rolling(window=self.slow_period).mean()
 
-            fast_ma = df["close"].rolling(window=self.fast_period).mean()
-            slow_ma = df["close"].rolling(window=self.slow_period).mean()
-
-            prev_fast = fast_ma.iloc[current_idx - 1]
-            prev_slow = slow_ma.iloc[current_idx - 1]
-            curr_fast = fast_ma.iloc[current_idx]
-            curr_slow = slow_ma.iloc[current_idx]
+            prev_fast = fast_ma.iloc[-2]
+            prev_slow = slow_ma.iloc[-2]
+            curr_fast = fast_ma.iloc[-1]
+            curr_slow = slow_ma.iloc[-1]
 
             if pd.isna(prev_fast) or pd.isna(prev_slow) or pd.isna(curr_fast) or pd.isna(curr_slow):
                 return
@@ -60,7 +58,7 @@ class MACrossStrategy(StrategyBase):
                 target = Direction.LONG
             elif prev_fast >= prev_slow and curr_fast < curr_slow:
                 target = Direction.SHORT
-            self.rebalance_target(symbol, bar["close"], target)
+            self.rebalance_target(symbol, float(bar["close"]), target)
 
         except Exception as e:
             self.on_error(e, "on_bar")
