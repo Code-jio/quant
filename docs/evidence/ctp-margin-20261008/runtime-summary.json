@@ -26,7 +26,8 @@
   },
   "deployment": {
     "margin_query_and_cancel_transport_guard": "loaded at user restart",
-    "public_search_isolation_and_periodic_snapshot_fairness": "tested; pending restart after final review"
+    "public_search_isolation_and_periodic_snapshot_fairness": "tested; pending restart after final review",
+    "restart_decision": "user chose to preserve the active session; final two fixes await a future restart"
   },
   "not_verified_live": [
     "continuous fresh Tick and browser push",
