@@ -1,0 +1,24 @@
+{
+  "http://127.0.0.1:8000": {
+    "status": 200,
+    "matches_saved_defaults": true,
+    "environment": "实盘",
+    "td_count": 6,
+    "md_count": 6,
+    "auth_code_hidden": true
+  },
+  "http://127.0.0.1:5174/api": {
+    "status": 200,
+    "matches_saved_defaults": true,
+    "environment": "实盘",
+    "td_count": 6,
+    "md_count": 6,
+    "auth_code_hidden": true
+  },
+  "openapi_secret_absent": true,
+  "native_runtime": {
+    "vnpy": false,
+    "vnpy_ctp": false
+  },
+  "tracked_files_secret_absent": true
+}

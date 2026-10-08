@@ -13,6 +13,7 @@ from src.api import LoginRequest
 from src.strategy import Direction, OffsetFlag, OrderType, Position, Signal
 from src.trading.risk import RiskManager
 from main import DEFAULT_CONFIG
+from src.settings import ctp_defaults
 
 
 class SafeDefaultsTest(unittest.TestCase):
@@ -23,9 +24,10 @@ class SafeDefaultsTest(unittest.TestCase):
         self.assertEqual(request.md_server, "")
         self.assertEqual(request.app_id, "")
         self.assertEqual(request.auth_code, "")
-        self.assertEqual(request.environment, "测试")
+        self.assertIsNone(request.environment)
+        self.assertEqual(ctp_defaults()["vnpy_environment"], "实盘")
         self.assertEqual(DEFAULT_CONFIG["trading"]["auth_code"], "")
-        self.assertEqual(DEFAULT_CONFIG["trading"]["vnpy_environment"], "测试")
+        self.assertEqual(DEFAULT_CONFIG["trading"]["vnpy_environment"], "实盘")
 
 
 class SessionStoreTest(unittest.TestCase):

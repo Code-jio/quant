@@ -40,7 +40,7 @@ import traceback
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Literal, Optional, Set
 
 import numpy as np
 import pandas as pd
@@ -57,6 +57,7 @@ from ..observability import audit_log, metrics, new_request_id, structured_json
 from ..settings import (
     ctp_defaults,
     ctp_server_presets,
+    load_ctp_config,
     runtime_risk_defaults,
     secure_session_cookie_enabled,
     websocket_query_token_enabled,
@@ -65,7 +66,6 @@ from .backtest_service import STRATEGY_CATALOG, run_backtest_sync
 from .security import SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME, is_open_path, session_store
 
 logger = logging.getLogger(__name__)
-_CTP_DEFAULTS = ctp_defaults()
 _DEFAULT_RUNTIME_RISK = runtime_risk_defaults()
 
 _DEFAULT_CORS_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174"
@@ -84,13 +84,13 @@ def _cors_origins() -> List[str]:
 class LoginRequest(BaseModel):
     username: str
     password: str
-    broker_id: str = _CTP_DEFAULTS["broker_id"]
-    td_server: str = _CTP_DEFAULTS["td_server"]
-    md_server: str = _CTP_DEFAULTS["md_server"]
-    app_id: str = _CTP_DEFAULTS["app_id"]
-    auth_code: str = _CTP_DEFAULTS["auth_code"]
+    broker_id: str = ""
+    td_server: str = ""
+    md_server: str = ""
+    app_id: str = ""
+    auth_code: str = ""
     gateway_type: str = "vnpy"  # "vnpy" | "ctp"
-    environment: str = _CTP_DEFAULTS["vnpy_environment"]  # vn.py CTP 柜台环境："实盘" | "测试"
+    environment: Literal["实盘", "测试"] | None = None
     auto_start_strategy: bool = False
     strategy_name: str = "ma_cross"
     strategy_params: Dict[str, Any] = Field(default_factory=dict)
@@ -393,13 +393,10 @@ def _close_direction_for_position(pos) -> Direction:
 
 
 # ---------------------------------------------------------------------------
-# 预设服务器列表从环境变量读取：
+# 预设服务器列表从本地配置读取，环境变量可覆盖：
 # QUANT_CTP_TD_PRESETS="label=tcp://host:port,label2=tcp://host:port"
 # QUANT_CTP_MD_PRESETS="label=tcp://host:port,label2=tcp://host:port"
 # ---------------------------------------------------------------------------
-
-_PRESET_TD = ctp_server_presets("td")
-_PRESET_MD = ctp_server_presets("md")
 
 # ---------------------------------------------------------------------------
 # WebSocket 连接管理器
@@ -1586,8 +1583,21 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
 
     @app.get("/auth/servers", summary="获取预设服务器列表", tags=["认证"])
     def get_servers():
-        """返回 CTP 交易/行情前置预设地址列表，供前端选择器使用。"""
-        return {"td_servers": _PRESET_TD, "md_servers": _PRESET_MD}
+        """Only publish allowlisted connection defaults, never the auth code."""
+        try:
+            local_config = load_ctp_config()
+            defaults = ctp_defaults(local_config)
+            return {
+                "td_servers": ctp_server_presets("td", local_config),
+                "md_servers": ctp_server_presets("md", local_config),
+                "defaults": {
+                    **{key: defaults[key] for key in ("broker_id", "td_server", "md_server", "app_id")},
+                    "environment": defaults["vnpy_environment"],
+                    "auth_code_configured": bool(defaults["auth_code"]),
+                },
+            }
+        except ValueError as exc:
+            raise HTTPException(503, str(exc)) from None
 
     @app.get(
         "/auth/status",
@@ -1638,6 +1648,26 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         from ..trading import create_gateway
         from ..strategy import create_strategy
 
+        try:
+            local_config = load_ctp_config()
+            connection = ctp_defaults(local_config)
+        except ValueError as exc:
+            raise HTTPException(503, str(exc)) from None
+        # Empty legacy UI fields inherit saved defaults instead of erasing them.
+        for key in ("broker_id", "td_server", "md_server", "app_id", "auth_code"):
+            override = getattr(body, key).strip()
+            if override:
+                connection[key] = override
+        if body.environment is not None:
+            connection["vnpy_environment"] = body.environment
+        margin_rates = (
+            body.contract_margin_rates if "contract_margin_rates" in body.model_fields_set
+            else local_config.get("contract_margin_rates", {})
+        )
+        try:
+            LoginRequest.validate_margin_rates(margin_rates)
+        except ValueError:
+            raise HTTPException(422, "CTP 合约保证金配置无效，请检查 contract_margin_rates") from None
         if body.gateway_type.lower() not in {"vnpy", "ctp"}:
             raise HTTPException(400, "仅支持 vn.py/CTP 网关")
         strategy = None
@@ -1653,15 +1683,10 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             "gateway": "vnpy",
             "username": body.username,
             "password": body.password,
-            "broker_id": body.broker_id,
-            "td_server": body.td_server,
-            "md_server": body.md_server,
-            "app_id": body.app_id,
-            "auth_code": body.auth_code,
-            "vnpy_environment": body.environment,
+            **connection,
             "connect_timeout": 25,
             "risk": {**runtime_risk_defaults(), **body.risk},
-            "contract_margin_rates": body.contract_margin_rates,
+            "contract_margin_rates": margin_rates,
             "log_callback": trading_state.add_log,
         }
         from ..trading.risk import RiskConfig

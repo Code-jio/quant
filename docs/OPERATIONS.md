@@ -7,7 +7,8 @@
 - `QUANT_CORS_ORIGINS` 使用逗号分隔的精确前端 Origin；禁止通配符配合 Cookie。前后端同域代理优先。
 - `QUANT_BIND_HOST`、`QUANT_PORT` 控制绑定；`QUANT_INSTANCE_LOCK` 必须指向所有同账户执行进程共享的本机锁文件。不同工作目录或机器没有分布式执行锁，需要部署层保证唯一执行者。
 - `QUANT_LEDGER_PATH` 为执行账本，默认 `data/runtime/execution.db`；审计默认 `data/runtime/audit.db`。历史库 `data/historical/quotes.db`。
-- 开仓要求已验证合约乘数、最小手数、最小变动价位和保证金率。Web 登录页逐合约填写柜台确认的百分比，并转换为 API 的 `contract_margin_rates` 比例映射；每次登录显式填写，空值不允许开仓。CLI 可通过本地交易配置提供该映射，Web/API 不读取 CLI 配置文件。合约 metadata 不完整时不采用猜测值。
+- Web/API 读取 `back_end/config/config_production.json`（或 `QUANT_CTP_CONFIG`）的 `trading` 连接配置；`QUANT_CTP_*` 环境变量优先，非空登录字段可再次覆盖。默认实盘 API；认证码不返回浏览器，仅返回是否已配置。只需账号、密码，不在登录页填写合约或启动策略。文件损坏/显式路径不存在时返回脱敏的 503 错误，不能静默换用另一套配置。
+- 开仓要求已验证合约乘数、最小手数、最小变动价位和保证金率。本地 `trading.contract_margin_rates` 或显式 API 参数提供比例映射，维护者需按账户/交易日确认；缺失仍禁止开仓，不影响登录。合约 metadata 不完整时不采用猜测值。
 
 ## 备份和恢复演练
 

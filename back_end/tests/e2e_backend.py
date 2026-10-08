@@ -9,6 +9,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ["QUANT_ENV"] = "test"
 os.environ["QUANT_ALLOW_SYNTHETIC_DATA"] = "1"
 os.environ["QUANT_CORS_ORIGINS"] = "http://127.0.0.1:" + os.getenv("PLAYWRIGHT_PORT", "55173")
+for name in list(os.environ):
+    if name.startswith("QUANT_CTP_"):
+        del os.environ[name]
+os.environ["QUANT_CTP_CONFIG"] = str(Path(__file__).parent / "fixtures/ctp.browser.json")
 
 
 def main():
@@ -25,6 +29,8 @@ def main():
             super().__init__("E2E_OFFLINE")
 
         def connect(self, config):
+            assert config["auth_code"] == "E2E_SERVER_ONLY_CODE"
+            assert config["vnpy_environment"] == "实盘"
             self.status = TradingStatus.CONNECTED
             self.account = AccountInfo(account_id="E2E_ONLY", balance=100000, available=100000)
             return True

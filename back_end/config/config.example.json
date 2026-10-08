@@ -29,7 +29,7 @@
     "md_server": "",
     "app_id": "",
     "auth_code": "",
-    "vnpy_environment": "测试",
+    "vnpy_environment": "实盘",
     "initial_capital": 1000000,
     "max_errors": 10,
     "contract_margin_rates": {}

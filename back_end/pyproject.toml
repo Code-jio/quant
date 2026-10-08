@@ -24,6 +24,7 @@ select = ["E9", "F63", "F7", "F82"]
 [tool.mypy]
 python_version = "3.12"
 files = [
+  "src/settings.py",
   "src/common/indicators.py",
   "src/api/security.py",
   "src/trading/risk.py",

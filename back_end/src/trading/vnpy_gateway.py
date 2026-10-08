@@ -127,7 +127,7 @@ class VnpyGateway(GatewayBase):
             "行情服务器": config.get("md_server", ""),
             "产品名称": config.get("app_id", ""),
             "授权编码": config.get("auth_code", ""),
-            "柜台环境": config.get("vnpy_environment", config.get("environment", "测试")),
+            "柜台环境": config.get("vnpy_environment", config.get("environment", "实盘")),
         }
 
         if not all([setting["用户名"], setting["密码"], setting["经纪商代码"], setting["交易服务器"]]):
