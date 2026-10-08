@@ -1,0 +1,28 @@
+[WebServer] (node:42152) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+
+Running 18 tests using 1 worker
+
+(node:56968) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ok  1 [chromium] › tests\e2e\feature-inventory.spec.js:3:1 › authenticated dashboard and system monitoring expose account views and log controls (2.1s)
+  ok  2 [chromium] › tests\e2e\feature-inventory.spec.js:26:1 › historical chart supports indicator selection drawing clearing fullscreen and PNG export (2.4s)
+  ok  3 [chromium] › tests\e2e\feature-inventory.spec.js:70:1 › unsupported custom chart period is reported instead of showing fabricated bars (914ms)
+[WebServer] 17:43:27 [vite] (client) [console.warn] [useWatchWs] 连接断开 (code=1006)，1s 后重连
+  ok  4 [chromium] › tests\e2e\multi-device.spec.js:20:1 › independent devices join one account, restore tabs, leave individually and disconnect explicitly (6.1s)
+  ok  5 [chromium] › tests\e2e\multi-device.spec.js:80:1 › failed per-device logout never silently falls back to global disconnect (1.7s)
+  ok  6 [chromium] › tests\e2e\recheck.spec.js:3:1 › saved live API defaults allow account/password login without a contract (1.3s)
+  ok  7 [chromium] › tests\e2e\recheck.spec.js:37:1 › saved settings load failure is visible and custom connection remains editable (607ms)
+  ok  8 [chromium] › tests\e2e\recheck.spec.js:46:1 › saved connection fields can be overridden explicitly (2.5s)
+  ok  9 [chromium] › tests\e2e\recheck.spec.js:75:1 › trading panel shows queried account margin and clears it when contract changes (3.2s)
+  ok 10 [chromium] › tests\e2e\remediation.spec.js:3:1 › offline backtest runs with explicit synthetic data and renders result charts (1.3s)
+  ok 11 [chromium] › tests\e2e\remediation.spec.js:23:1 › stored historical bars render through the real worker without auth sockets (903ms)
+  ok 12 [chromium] › tests\e2e\remediation.spec.js:40:1 › authenticated sockets close on logout and trading data loses access (1.3s)
+  ok 13 [chromium] › tests\e2e\smoke.spec.js:3:1 › public pages render without a hard crash (988ms)
+  ok 14 [chromium] › tests\e2e\trading-layout.spec.js:19:1 › desktop desk keeps market ticket and order book in one screen (2.7s)
+  ok 15 [chromium] › tests\e2e\trading-layout.spec.js:70:1 › contract linking clears the old limit price and trading actions retain confirmation (3.5s)
+  ok 16 [chromium] › tests\e2e\trading-layout.spec.js:104:1 › search keyboard navigation and analysis panels preserve the trading ticket (2.9s)
+  ok 17 [chromium] › tests\e2e\trading-layout.spec.js:135:1 › dense order rows scroll inside the dock while the ticket stays visible (2.2s)
+  ok 18 [chromium] › tests\e2e\trading-layout.spec.js:151:1 › tablet and narrow screens have reachable controls without page-wide overflow (1.8s)
+
+  18 passed (41.7s)

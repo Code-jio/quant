@@ -4,6 +4,7 @@ REST API 模块 - FastAPI + WebSocket + 身份认证
 端点总览：
   POST /auth/login            — CTP 账户登录（连接交易/行情前置）
   POST /auth/logout           — 断开连接并注销会话
+  POST /auth/session/logout   — 仅注销当前端，保留共享连接
   GET  /auth/status           — 当前连接状态（无需鉴权）
   GET  /auth/servers          — 预设服务器列表
   GET  /system/status         — 系统健康状态
@@ -46,6 +47,7 @@ import numpy as np
 import pandas as pd
 import psutil
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -63,7 +65,7 @@ from ..settings import (
     websocket_query_token_enabled,
 )
 from .backtest_service import STRATEGY_CATALOG, run_backtest_sync
-from .security import SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME, is_open_path, session_store
+from .security import AccountCredential, LoginThrottle, SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME, is_open_path, session_store
 
 logger = logging.getLogger(__name__)
 _DEFAULT_RUNTIME_RISK = runtime_risk_defaults()
@@ -82,8 +84,8 @@ def _cors_origins() -> List[str]:
 
 
 class LoginRequest(BaseModel):
-    username: str
-    password: str
+    username: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=1, max_length=1024, repr=False)
     broker_id: str = ""
     td_server: str = ""
     md_server: str = ""
@@ -120,6 +122,7 @@ class LoginResponse(BaseModel):
     balance: float = 0.0
     strategy_started: bool = False
     strategy_id: str = ""
+    connection_reused: bool = False
 
 
 class AuthStatusResponse(BaseModel):
@@ -129,6 +132,8 @@ class AuthStatusResponse(BaseModel):
     gateway_name: str
     account_id: str
     connect_log: List[str]
+    multi_device_supported: bool = True
+    active_sessions: int = 0
 
 
 class SystemStatusResponse(BaseModel):
@@ -731,7 +736,10 @@ async def _require_websocket_session(ws: WebSocket) -> bool:
 async def _session_receive_text(ws: WebSocket) -> str:
     while session_store.is_valid(_websocket_session_token(ws)):
         try:
-            return await asyncio.wait_for(ws.receive_text(), timeout=0.25)
+            text = await asyncio.wait_for(ws.receive_text(), timeout=0.25)
+            if session_store.is_valid(_websocket_session_token(ws)):
+                return text
+            break
         except asyncio.TimeoutError:
             continue
     await ws.close(code=1008)
@@ -1472,6 +1480,16 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
 
     # Serialize account transitions with all authenticated actions. Validate after acquiring.
     account_lock = asyncio.Lock()
+    login_throttle = LoginThrottle()
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, exc: RequestValidationError):
+        if request.url.path == "/auth/login":
+            # FastAPI's default validation payload includes the rejected password input.
+            return JSONResponse({"detail": "登录参数无效，请检查账号、密码长度及连接配置"}, status_code=422)
+        from fastapi.exception_handlers import request_validation_exception_handler
+
+        return await request_validation_exception_handler(request, exc)
 
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
@@ -1484,8 +1502,16 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             request.state.identity = session_store.identity(token)
             if path != "/auth/login" and not request.state.identity:
                 return JSONResponse({"detail": "未登录或会话已失效"}, status_code=401)
-            if path == "/auth/login" and trading_state.primary_engine() and not request.state.identity:
-                return JSONResponse({"detail": "已有账户连接；切换需当前账户授权"}, status_code=409)
+            if path == "/auth/login":
+                peer = request.client.host if request.client else "unknown"
+                retry_after = login_throttle.retry_after(peer)
+                if retry_after:
+                    return JSONResponse({"detail": "登录尝试过于频繁，请稍后重试"}, status_code=429,
+                                        headers={"Retry-After": str(retry_after)})
+                result = await call_next(request)
+                if result.status_code < 400 or result.status_code in (400, 401, 403, 409, 422):
+                    login_throttle.record(peer, result.status_code < 400)
+                return result
             return await call_next(request)
 
     app.add_middleware(
@@ -1636,6 +1662,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             gateway_name=gw_name,
             account_id=account_id,
             connect_log=trading_state.get_log(),
+            active_sessions=session_store.active_count(),
         )
 
     @app.post(
@@ -1670,6 +1697,36 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             raise HTTPException(422, "CTP 合约保证金配置无效，请检查 contract_margin_rates") from None
         if body.gateway_type.lower() not in {"vnpy", "ctp"}:
             raise HTTPException(400, "仅支持 vn.py/CTP 网关")
+        existing = trading_state.primary_engine()
+        join_config = {"username": body.username, "password": body.password, **connection}
+        credential = session_store._credential
+        reconfigure = body.auto_start_strategy or bool(body.risk) or (
+            "contract_margin_rates" in body.model_fields_set
+            and body.contract_margin_rates != trading_state._main_config.get("contract_margin_rates", {})
+        )
+        if existing:
+            same_connection = credential is not None and credential.matches(join_config)
+            if same_connection:
+                if not await asyncio.to_thread(credential.verify, body.password):
+                    raise HTTPException(401, "账号或密码不正确")
+                if not reconfigure:
+                    old_token = _request_session_token(request)
+                    current_is_valid = session_store.is_valid(old_token)
+                    if session_store.active_count() - int(current_is_valid) >= session_store.max_sessions:
+                        raise HTTPException(429, "当前账户登录端数量已达上限，请先退出不使用的终端")
+                    account = existing.get_account()
+                    account_id = account.account_id or body.username
+                    token = session_store.create(account_id=account_id)
+                    session_store.revoke(old_token)
+                    response.set_cookie(SESSION_COOKIE_NAME, token, max_age=SESSION_COOKIE_MAX_AGE,
+                                        httponly=True, samesite="lax", secure=secure_session_cookie_enabled())
+                    _record_audit("auth", "join", "success", actor=body.username, request=request,
+                                  detail={"account_id": account_id})
+                    return LoginResponse(success=True, message="已加入当前账户，共用柜台连接",
+                                         gateway_status=existing.gateway.status.value, account_id=account_id,
+                                         balance=account.balance, connection_reused=True)
+            if not request.state.identity:
+                raise HTTPException(409, "当前已有账户连接；仅允许同一账户及连接配置登录，不能修改运行参数")
         strategy = None
         if body.auto_start_strategy:
             if not body.strategy_params.get("symbol") and not body.strategy_params.get("symbols"):
@@ -1723,6 +1780,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
                 if not engine.start(config):
                     raise HTTPException(500, "策略启动失败，原账户连接保持不变")
                 strategy_id = f"{body.strategy_name}_main"
+            new_credential = await asyncio.to_thread(AccountCredential.from_config, config)
         except BaseException as exc:
             await asyncio.to_thread(gateway.disconnect)
             # A cancelled await must not leave the connection worker able to commit late.
@@ -1743,6 +1801,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         await asyncio.to_thread(trading_state.clear_main)
         stored_config = {k: v for k, v in config.items() if k not in {"password", "auth_code"}}
         trading_state.set_main_engine(engine, stored_config)
+        session_store._credential = new_credential
         trading_state._day_open_balance = engine.risk_manager.day_open_balance
         if strategy:
             stored_config.update(strategy_name=body.strategy_name, strategy_params=dict(body.strategy_params))
@@ -1771,7 +1830,15 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             strategy_id=strategy_id,
         )
 
-    @app.post("/auth/logout", summary="断开连接并注销会话", tags=["认证"])
+    @app.post("/auth/session/logout", summary="退出当前端，保留共享柜台连接", tags=["认证"])
+    async def logout_session(request: Request):
+        session_store.revoke(_request_session_token(request))
+        response = JSONResponse({"success": True, "message": "已退出当前端，柜台连接及其他终端保持运行"})
+        response.delete_cookie(SESSION_COOKIE_NAME)
+        _record_audit("auth", "logout_session", "success", request=request)
+        return response
+
+    @app.post("/auth/logout", summary="断开账户并注销全部终端", tags=["认证"])
     async def do_logout(request: Request):
         auth = request.headers.get("authorization", "")
         token = auth[7:] if auth.lower().startswith("bearer ") else ""
@@ -2808,6 +2875,8 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             try:
                 while True:
                     await asyncio.sleep(0.5)
+                    if not session_store.is_valid(_websocket_session_token(ws)):
+                        return
                     if not subscriptions:
                         continue
                     engine = trading_state.primary_engine()
@@ -2879,6 +2948,9 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
                 for task in tasks:
                     task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
+        except asyncio.CancelledError:
+            # ASGI cancels the connection task on close; its children were cancelled above.
+            pass
         except Exception as exc:
             logger.debug(f"[WS:watch] 连接结束: {exc}")
         finally:

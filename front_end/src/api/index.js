@@ -59,6 +59,10 @@ export const login = (body) =>
 export const logout = () =>
   request('/auth/logout', { method: 'POST' })
 
+/** 注销当前浏览器会话，保留其他设备和柜台连接。 */
+export const logoutSession = () =>
+  request('/auth/session/logout', { method: 'POST' })
+
 // ── 行情 ──────────────────────────────────────────────────────────────────
 /** 批量查询实时 tick（轮询接口） */
 export const fetchTicks = (symbols) =>

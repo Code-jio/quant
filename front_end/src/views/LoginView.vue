@@ -18,6 +18,8 @@
           </div>
         </div>
 
+        <p class="session-hint">同一账户可在多端登录，共享行情、委托与风控；连接配置需一致。</p>
+
         <!-- 错误横幅 -->
         <el-alert
           v-if="errorMsg"
@@ -333,7 +335,7 @@ async function handleLogin() {
       balance:   res.balance,
     })
 
-    ElMessage.success(`登录成功，账户：${res.account_id}`)
+    ElMessage.success(res.connection_reused ? '已加入当前账户，原有终端保持在线' : `登录成功，账户：${res.account_id}`)
     router.push({ name: 'Dashboard' })
 
   } catch (err) {
@@ -347,6 +349,7 @@ async function handleLogin() {
 </script>
 
 <style scoped>
+.session-hint { color: var(--q-muted); font-size: 12px; line-height: 1.7; margin: 0 0 18px; }
 /* ── 全屏背景 ── */
 .login-page {
   min-height: 100vh;

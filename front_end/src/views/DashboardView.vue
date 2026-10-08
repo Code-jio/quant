@@ -14,7 +14,7 @@ import { useAuthStore } from '@/stores/auth.js'
 import { useWatchStore } from '@/stores/watch.js'
 import { useHotkeys } from '@/composables/useHotkeys.js'
 import { useWatchWs } from '@/composables/useWatchWs.js'
-import { fetchStrategies, logout } from '@/api/index.js'
+import { fetchStrategies, logout, logoutSession } from '@/api/index.js'
 
 const GlobalDashboard = defineAsyncComponent(() => import('@/components/GlobalDashboard.vue'))
 const router = useRouter()
@@ -53,20 +53,24 @@ onMounted(() => { refreshTimer = setInterval(() => { if (activePanel.value === '
 onUnmounted(() => { disposed = true; clearInterval(refreshTimer) })
 useHotkeys([{ key: 'k', ctrl: true, handler: () => { searchOpen.value = true } }])
 
-async function handleLogout() {
+async function handleLogout(disconnectAll = false) {
   try {
-    await ElMessageBox.confirm('确认断开 CTP 连接并退出登录？', '退出', {
-      confirmButtonText: '确认断开', cancelButtonText: '取消', type: 'warning',
+    await ElMessageBox.confirm(disconnectAll
+      ? '将断开交易账户，所有终端退出，后台策略停止。此操作不会自动撤销柜台已有委托。确认继续？'
+      : '退出当前浏览器会话，其他设备和后台策略继续运行；同一浏览器的标签页共享此会话。',
+    disconnectAll ? '断开全部终端' : '退出当前端', {
+      confirmButtonText: disconnectAll ? '确认断开全部' : '确认退出当前端', cancelButtonText: '取消', type: 'warning',
     })
   } catch { return }
   loggingOut.value = true
-  try { await logout() }
-  catch { /* Session cleanup still applies if the connection has closed. */ }
-  finally {
+  try {
+    await (disconnectAll ? logout() : logoutSession())
     authStore.clearAuth()
-    ElMessage.success('已断开连接')
+    ElMessage.success(disconnectAll ? '已断开账户，全部终端退出' : '已退出当前端，后台连接保留')
     router.push({ name: 'Login' })
-  }
+  } catch (error) {
+    ElMessage.error(`退出未完成：${error.message}。当前端未主动清除登录状态。`)
+  } finally { loggingOut.value = false }
 }
 </script>
 
@@ -83,7 +87,13 @@ async function handleLogout() {
         <button @click="router.push('/system')">系统</button>
       </nav>
       <button class="desk-search" @click="searchOpen = true"><el-icon><Search /></el-icon><span>搜索合约</span><kbd>Ctrl K</kbd></button>
-      <el-button class="desk-logout" size="small" plain :loading="loggingOut" @click="handleLogout">断开退出</el-button>
+      <el-dropdown trigger="click" @command="command => handleLogout(command === 'all')">
+        <el-button class="desk-logout" size="small" plain :loading="loggingOut">账户会话 <el-icon><ArrowDown /></el-icon></el-button>
+        <template #dropdown><el-dropdown-menu>
+          <el-dropdown-item command="current">退出当前端</el-dropdown-item>
+          <el-dropdown-item command="all" divided>断开全部终端</el-dropdown-item>
+        </el-dropdown-menu></template>
+      </el-dropdown>
     </header>
     <AccountStrip @details="activePanel = 'account'" />
     <main class="desk-grid">
