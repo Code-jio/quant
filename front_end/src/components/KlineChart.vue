@@ -110,7 +110,7 @@
 
 <script setup>
 import {
-  ref, watch, onMounted, onUnmounted, nextTick,
+  ref, computed, watch, onMounted, onUnmounted, nextTick,
 } from 'vue'
 import * as echarts from '@/utils/echarts.js'
 import {
@@ -146,7 +146,11 @@ const indicatorStore = useIndicatorStore()
 const historyStore   = useHistoryStore()
 
 // 从 stores 中拉取可写响应式 refs（别名，保持模板兼容）
-const { maList: maConfig, activeIndicator, visibleMas, maNums } = storeToRefs(indicatorStore)
+const { maList: maConfig, visibleMas, maNums } = storeToRefs(indicatorStore)
+const activeIndicator = computed({
+  get: () => indicatorStore.activeIndicator,
+  set: value => indicatorStore.setActiveIndicator(value),
+})
 
 // ── 状态 ─────────────────────────────────────────────────────────────────
 const chartRef      = ref(null)
@@ -877,13 +881,13 @@ function applyDrawings(previewPoint = null) {
     }
   }
 
-  chart.setOption({ graphic: { elements: graphics } })
+  chart.setOption({ graphic: { elements: graphics } }, { replaceMerge: ['graphic'] })
 }
 
 function clearDrawings() {
   drawnLines.value = []
   drawingLine = null
-  chart?.setOption({ graphic: { elements: [] } })
+  chart?.setOption({ graphic: [] }, { replaceMerge: ['graphic'] })
 }
 
 // ── 全屏 ─────────────────────────────────────────────────────────────────

@@ -92,6 +92,7 @@ const subscribedSymbols = computed(() => Object.keys(_subscriptions))
 const ticks       = reactive({})
 const currentBars = reactive({})
 const _volHistory = {}
+const _lastAlertCheck = {}
 const volAvg      = reactive({})
 
 const alerts      = reactive([])
@@ -219,7 +220,6 @@ function _handleMessage(raw) {
       if (!ticks[s]) ticks[s] = emptyTick(s)
 
       const oldLast      = ticks[s].last
-      const oldUpdatedAt = ticks[s].updatedAt ?? 0
 
       const prev = _tickBuf[s] ?? { ...ticks[s] }
       _tickBuf[s] = {
@@ -262,8 +262,10 @@ function _handleMessage(raw) {
       if (bufVol > 0) _updateVolAvg(s, bufVol)
 
       const now = _tickBuf[s].updatedAt
-      if ((now - oldUpdatedAt) >= 500) {
-        _detectPrice(s, _tickBuf[s], { last: oldLast, updatedAt: oldUpdatedAt })
+      // Throttle by the last check, not the last Tick: a busy feed must still be checked.
+      if ((now - (_lastAlertCheck[s] ?? 0)) >= 500) {
+        _lastAlertCheck[s] = now
+        _detectPrice(s, _tickBuf[s], { last: oldLast })
         _detectVolume(s, _tickBuf[s])
       }
       break
@@ -488,7 +490,7 @@ function flushTicks() {
 }
 function onAuthChange() {
   disconnect()
-  for (const obj of [ticks,currentBars,_volHistory,volAvg,_tickBuf]) for (const key of Object.keys(obj)) delete obj[key]
+  for (const obj of [ticks,currentBars,_volHistory,volAvg,_tickBuf,_lastAlertCheck]) for (const key of Object.keys(obj)) delete obj[key]
   clearAlerts()
   if (authenticated() && consumers.size) reconnect()
 }
@@ -503,6 +505,7 @@ function releaseChannels(owner,symbols,channels=null) {
     if (!mine.get(symbol)?.size) mine.delete(symbol)
     if (!_subscriptions[symbol]) {
       delete ticks[symbol];delete _volHistory[symbol];delete volAvg[symbol];delete _tickBuf[symbol]
+      delete _lastAlertCheck[symbol]
       for (const key of Object.keys(currentBars)) if (key.startsWith(symbol+'_')) delete currentBars[key]
     }
   }

@@ -9,3 +9,7 @@ R07,P1,CTP撤单,原生reqOrderAction即时失败码被忽略并报告请求成�
 R08,P1,CTP保证金,未自动查询账户合约保证金导致缺少手工配置时不能开仓,安装包回调兼容性及隔离API/风控/UI回归；用户本地复制真实柜台响应,已修复；au2612查询ready且来源ctp_query；其他账户/品种/跨日仍待验收,新增,2026-10-08,test_ctp_margin.py；test_native_ctp_compat.py；test_review_trading.py；recheck.spec.js；CTP_MARGIN_QUERY_2026-10-08.md
 R09,P1,账户隔离,公开搜索依据锁外身份快照返回保证金可能在账户切换时混用,搜索带会话和不带会话都隐藏保证金；受保护接口独立验证,已修复并通过回归；最后补充代码待重启加载,新增,2026-10-08,test_ctp_margin.py；CTP_MARGIN_QUERY_2026-10-08.md
 R10,P1,查询调度,连续保证金队列重置查询时间导致账户持仓刷新饥饿,60合约连续查询期间账户及持仓持续刷新,已修复并通过回归；最后补充代码待重启加载,新增,2026-10-08,test_ctp_margin.py；CTP_MARGIN_QUERY_2026-10-08.md
+R11,P2,盯盘告警,高频Tick以显示更新时间限流导致告警检测永久推迟,100ms及600ms事件序列覆盖价格和量阈值及冷却,已修复（隔离验证）；刷新前端加载,新增,2026-10-08,feature-inventory.spec.js单测；FEATURE_INVENTORY_2026-10-08.md
+R12,P2,图表偏好,副图选择及均线嵌套属性直接修改未保存,选择RSI和关闭首条均线后刷新页面验证持久化,已修复（浏览器验证）；刷新前端加载,新增,2026-10-08,feature-inventory.spec.js单测和E2E；FEATURE_INVENTORY_2026-10-08.md
+R13,P2,图表画线,清除按钮仅清状态而ECharts合并保留旧图形,实际绘制水平线并检查清除后graphic元素为0及截图,已修复（浏览器验证）；刷新前端加载,新增,2026-10-08,feature-inventory.spec.js E2E；FEATURE_INVENTORY_2026-10-08.md
+R14,P3,K线周期,自定义周期输入超出后端八种支持周期时不能生成K线,7d请求返回400且页面显示错误,能力限制已记录；任意周期聚合尚未实现,新增,,test_feature_inventory.py；feature-inventory.spec.js E2E；FEATURE_INVENTORY_2026-10-08.md

@@ -1,0 +1,8 @@
+{
+  "exit_code": 0,
+  "success": true,
+  "data_source": "cli_fixture",
+  "synthetic_data_used": false,
+  "timeframe": "1d",
+  "scope": "main.py --mode backtest using temporary named fixture history, never broker mode"
+}
