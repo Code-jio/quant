@@ -1,0 +1,93 @@
+[
+  {
+    "url": "http://127.0.0.1:8000/health",
+    "status": 200,
+    "expected": 200,
+    "body": {
+      "status": "ok",
+      "timestamp": "2026-10-08T11:48:20",
+      "gateway_status": "stopped",
+      "active_sessions": 0,
+      "websockets": {
+        "system": 0,
+        "orders": 0,
+        "dashboard": 0,
+        "positions": 0,
+        "logs": 0
+      }
+    }
+  },
+  {
+    "url": "http://127.0.0.1:8000/docs",
+    "status": 200,
+    "expected": 200
+  },
+  {
+    "url": "http://127.0.0.1:8000/openapi.json",
+    "status": 200,
+    "expected": 200
+  },
+  {
+    "url": "http://127.0.0.1:8000/backtest/strategies",
+    "status": 200,
+    "expected": 200
+  },
+  {
+    "url": "http://127.0.0.1:8000/auth/status",
+    "status": 200,
+    "expected": 200,
+    "body": {
+      "logged_in": false,
+      "gateway_connected": false,
+      "gateway_status": "stopped",
+      "gateway_name": "",
+      "account_id": "",
+      "connect_log": []
+    }
+  },
+  {
+    "url": "http://127.0.0.1:8000/watch/tick?symbols=rb2610",
+    "status": 503,
+    "expected": 503,
+    "body": {
+      "code": 1,
+      "msg": "行情网关未连接，请先登录 CTP 账户",
+      "ticks": {},
+      "missing_symbols": [
+        "rb2610"
+      ]
+    }
+  },
+  {
+    "url": "http://127.0.0.1:8000/trading/snapshot",
+    "status": 401,
+    "expected": 401,
+    "body": {
+      "detail": "未登录或会话已失效"
+    }
+  },
+  {
+    "url": "http://127.0.0.1:5174/api/health",
+    "status": 200,
+    "expected": 200,
+    "body": {
+      "status": "ok",
+      "timestamp": "2026-10-08T11:48:20",
+      "gateway_status": "stopped",
+      "active_sessions": 0,
+      "websockets": {
+        "system": 0,
+        "orders": 0,
+        "dashboard": 0,
+        "positions": 0,
+        "logs": 0
+      }
+    }
+  },
+  {
+    "url": "http://127.0.0.1:8000/risk/config",
+    "method": "OPTIONS",
+    "status": 200,
+    "allow_origin": "http://127.0.0.1:5174"
+  }
+]

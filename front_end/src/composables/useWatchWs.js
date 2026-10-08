@@ -30,7 +30,7 @@
  *     客户端发 'ping' → 服务端回 'pong'
  */
 
-import { ref, reactive, computed, onUnmounted } from 'vue'
+import { ref, reactive, computed, getCurrentScope, onScopeDispose } from 'vue'
 import { useAlertConfig } from '@/composables/useAlertConfig.js'
 import { buildWsUrl } from '@/config/network.js'
 
@@ -84,11 +84,15 @@ const connecting = ref(false)
 const lastPongAt = ref(Date.now())
 
 const _subscriptions = reactive({})
+const consumers=new Map()
+let _flushTimer=null
+const authenticated=()=>sessionStorage.getItem("quant_session_active")==="1"
 const subscribedSymbols = computed(() => Object.keys(_subscriptions))
 
 const ticks       = reactive({})
 const currentBars = reactive({})
 const _volHistory = {}
+const _lastAlertCheck = {}
 const volAvg      = reactive({})
 
 const alerts      = reactive([])
@@ -216,7 +220,6 @@ function _handleMessage(raw) {
       if (!ticks[s]) ticks[s] = emptyTick(s)
 
       const oldLast      = ticks[s].last
-      const oldUpdatedAt = ticks[s].updatedAt ?? 0
 
       const prev = _tickBuf[s] ?? { ...ticks[s] }
       _tickBuf[s] = {
@@ -259,8 +262,10 @@ function _handleMessage(raw) {
       if (bufVol > 0) _updateVolAvg(s, bufVol)
 
       const now = _tickBuf[s].updatedAt
-      if ((now - oldUpdatedAt) >= 500) {
-        _detectPrice(s, _tickBuf[s], { last: oldLast, updatedAt: oldUpdatedAt })
+      // Throttle by the last check, not the last Tick: a busy feed must still be checked.
+      if ((now - (_lastAlertCheck[s] ?? 0)) >= 500) {
+        _lastAlertCheck[s] = now
+        _detectPrice(s, _tickBuf[s], { last: oldLast })
         _detectVolume(s, _tickBuf[s])
       }
       break
@@ -377,7 +382,7 @@ function _stopHeartbeat() {
 // ══════════════════════════════════════════════════════════════════════════
 
 function connect() {
-  if (destroyed || ws?.readyState === WebSocket.CONNECTING) return
+  if (destroyed || !consumers.size || !authenticated() || ws?.readyState === WebSocket.CONNECTING || ws?.readyState === WebSocket.OPEN) return
 
   connecting.value = true
 
@@ -412,7 +417,7 @@ function connect() {
     connected.value  = false
     connecting.value = false
     _stopHeartbeat()
-    if (!destroyed) {
+    if (!destroyed && e.code!==1008 && authenticated()) {
       console.warn(`[useWatchWs] 连接断开 (code=${e.code})，${retryDelay / 1000}s 后重连`)
       _scheduleReconnect()
     }
@@ -476,41 +481,73 @@ function _onVisibilityChange() {
   }
 }
 
-document.addEventListener('visibilitychange', _onVisibilityChange)
-
-// ── Tick 批量写入 ──────────────────────────────────────────────────────────
-const _flushTimer = setInterval(() => {
-  for (const [symbol, data] of Object.entries(_tickBuf)) {
-    if (!ticks[symbol]) ticks[symbol] = reactive(emptyTick(symbol))
-    Object.assign(ticks[symbol], data)
+function flushTicks() {
+  for (const [symbol,data] of Object.entries(_tickBuf)) {
+    if (!ticks[symbol]) ticks[symbol]=reactive(emptyTick(symbol))
+    Object.assign(ticks[symbol],data)
     delete _tickBuf[symbol]
   }
-}, TICK_FLUSH_MS)
-
-// ══════════════════════════════════════════════════════════════════════════
-// 初始化 & 清理
-// ══════════════════════════════════════════════════════════════════════════
-
-connect()
-
-onUnmounted(() => {
-  clearInterval(_flushTimer)
+}
+function onAuthChange() {
   disconnect()
-  document.removeEventListener('visibilitychange', _onVisibilityChange)
-})
-
-// ══════════════════════════════════════════════════════════════════════════
-// 导出（单例 API，所有组件共享）
-// ══════════════════════════════════════════════════════════════════════════
+  for (const obj of [ticks,currentBars,_volHistory,volAvg,_tickBuf,_lastAlertCheck]) for (const key of Object.keys(obj)) delete obj[key]
+  clearAlerts()
+  if (authenticated() && consumers.size) reconnect()
+}
+function releaseChannels(owner,symbols,channels=null) {
+  const mine=consumers.get(owner)
+  for (const symbol of (Array.isArray(symbols)?symbols:[symbols])) {
+    const removing=channels ?? [...(mine.get(symbol) ?? [])]
+    for (const channel of removing) {
+      mine.get(symbol)?.delete(channel)
+      if (![...consumers.values()].some(set=>set.get(symbol)?.has(channel))) unsubscribe([symbol],[channel])
+    }
+    if (!mine.get(symbol)?.size) mine.delete(symbol)
+    if (!_subscriptions[symbol]) {
+      delete ticks[symbol];delete _volHistory[symbol];delete volAvg[symbol];delete _tickBuf[symbol]
+      delete _lastAlertCheck[symbol]
+      for (const key of Object.keys(currentBars)) if (key.startsWith(symbol+'_')) delete currentBars[key]
+    }
+  }
+}
 
 export function useWatchWs() {
+  const owner=Symbol('watch-consumer')
+  consumers.set(owner,new Map())
+  if (consumers.size===1) {
+    destroyed=false
+    document.addEventListener('visibilitychange',_onVisibilityChange)
+    window.addEventListener('quant-auth-change',onAuthChange)
+    _flushTimer=setInterval(flushTicks,TICK_FLUSH_MS)
+    connect()
+  }
+  function ownedSubscribe(symbols,channels=['tick','kline_1m']) {
+    const mine=consumers.get(owner)
+    for (const symbol of (Array.isArray(symbols)?symbols:[symbols]).filter(Boolean)) {
+      if (!mine.has(symbol)) mine.set(symbol,new Set())
+      for (const channel of channels) mine.get(symbol).add(channel)
+      subscribe([symbol],channels)
+    }
+  }
+  function dispose() {
+    if (!consumers.has(owner)) return
+    releaseChannels(owner,[...consumers.get(owner).keys()])
+    consumers.delete(owner)
+    if (!consumers.size) {
+      clearInterval(_flushTimer); _flushTimer=null
+      disconnect()
+      document.removeEventListener('visibilitychange',_onVisibilityChange)
+      window.removeEventListener('quant-auth-change',onAuthChange)
+    }
+  }
+  if (getCurrentScope()) onScopeDispose(dispose)
   return {
     connected,
     connecting,
     lastPongAt,
     subscribedSymbols,
-    subscribe,
-    unsubscribe,
+    subscribe:ownedSubscribe,
+    unsubscribe:(symbols,channels)=>releaseChannels(owner,symbols,channels),
     ticks,
     currentBars,
     volAvg,
@@ -521,6 +558,6 @@ export function useWatchWs() {
     clearAlerts,
     markAlertsRead,
     reconnect,
-    disconnect,
+    disconnect:dispose,
   }
 }

@@ -11,9 +11,10 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { cancelOrder } from '@/api/index.js'
 import { useOrderBookWs } from '@/composables/useOrderBookWs.js'
 
+defineProps({ compact: Boolean })
 const {
   ordersArray, trades, positions,
-  loading, ordersWsAlive, positionsWsAlive,
+  loading, stale, error, ordersWsAlive, positionsWsAlive,
   lastOrderTime, lastPositionTime,
   reload,
 } = useOrderBookWs()
@@ -104,7 +105,8 @@ function tradeRowClass({ row }) {
 </script>
 
 <template>
-  <div class="ob-wrap">
+  <div class="ob-wrap" :class="{ 'ob-compact': compact }">
+    <el-alert v-if="stale || error" :title="error || '账户快照尚未同步，当前数据可能过期'" type="warning" :closable="false" />
 
     <!-- ── 状态栏 ──────────────────────────────────────────────────────────── -->
     <div class="ob-statusbar">
@@ -173,7 +175,8 @@ function tradeRowClass({ row }) {
           size="small"
           class="ob-table"
           :empty-text="'暂无委托单'"
-          max-height="420"
+          :max-height="compact ? undefined : 420"
+          :height="compact ? '100%' : undefined"
           :row-class-name="({ row }) => ACTIVE_STATUS.has(row.status) ? 'row-active' : ''"
         >
           <el-table-column label="时间" width="72" fixed>
@@ -298,7 +301,8 @@ function tradeRowClass({ row }) {
           size="small"
           class="ob-table"
           :empty-text="'暂无成交记录'"
-          max-height="420"
+          :max-height="compact ? undefined : 420"
+          :height="compact ? '100%' : undefined"
           :row-class-name="tradeRowClass"
         >
           <el-table-column label="成交时间" width="72" fixed>
@@ -342,7 +346,7 @@ function tradeRowClass({ row }) {
           <el-table-column label="本笔盈亏" align="right">
             <template #default="{ row }">
               <span
-                v-if="row.pnl !== 0"
+                v-if="row.pnl != null && row.pnl !== 0"
                 class="mono fw-600"
                 :class="pnlCss(row.pnl)"
               >
@@ -380,6 +384,7 @@ function tradeRowClass({ row }) {
 
         <el-table
           :data="positions"
+          :height="compact ? '100%' : undefined"
           size="small"
           class="ob-table"
           :empty-text="'当前空仓'"
@@ -579,4 +584,15 @@ function tradeRowClass({ row }) {
 .c-muted { color: var(--q-muted);  }
 .c-text  { color: var(--q-text);   }
 .c-yellow{ color: var(--q-yellow); }
+.ob-compact { height: 100%; min-height: 0; display: flex; flex-direction: column; border-radius: 5px; }
+.ob-compact .ob-statusbar { padding: 7px 12px; flex-shrink: 0; }.ob-compact .sb-left { gap: 10px; }
+.ob-compact .ob-tabs { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.ob-compact :deep(.el-tabs__header) { flex-shrink: 0; padding: 0 12px; }
+.ob-compact :deep(.el-tabs__content) { flex: 1; min-height: 0; }
+.ob-compact :deep(.el-tab-pane) { height: 100%; display: flex; flex-direction: column; min-height: 0; }
+.ob-compact .filter-bar { flex-shrink: 0; padding: 6px 12px; }
+.ob-compact .ob-table { flex: 1; min-height: 0; }
+.ob-compact .ob-empty { padding: 12px 0; gap: 4px; }.ob-compact .ob-empty p { margin: 6px 0; }
+.ob-compact .pos-summary { flex-shrink: 0; padding: 8px 12px; }
+@media (max-width: 700px) { .ob-compact .sb-left { gap: 7px; }.ob-compact .sb-left > .sb-item:nth-last-child(-n+2) { display: none; } }
 </style>

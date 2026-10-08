@@ -194,7 +194,7 @@ import { useWatchStore }   from '@/stores/watch.js'
 import { useHistoryStore } from '@/stores/history.js'
 import { useWatchWs }      from '@/composables/useWatchWs.js'
 import { useHotkeys }      from '@/composables/useHotkeys.js'
-import { INTERVALS }       from '@/composables/useKlineData.js'
+
 
 // ── 路由 ──────────────────────────────────────────────────────────────────
 const router = useRouter()

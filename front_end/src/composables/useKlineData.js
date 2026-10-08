@@ -8,7 +8,7 @@
  *  - 提供 loading / error 响应状态
  */
 
-import { ref } from 'vue'
+import { ref, getCurrentScope, onScopeDispose } from 'vue'
 import { fetchKline } from '@/api/index.js'
 export { DEFAULT_MA_CONFIG, INTERVALS } from '@/config/kline.js'
 
@@ -46,6 +46,11 @@ function pickFromRecords(records, ...keys) {
 // ── Composable ─────────────────────────────────────────────────────────────
 
 export function useKlineData() {
+  let generation=0
+  let controller=null
+  let context=''
+  const provenance=ref('unknown')
+  if (getCurrentScope()) onScopeDispose(()=>{ generation++; controller?.abort() })
   // K 线原始数据
   const bars = ref([])
 
@@ -71,7 +76,7 @@ export function useKlineData() {
   const totalLoaded = ref(0)      // 已加载 bar 数量
 
   // ── 内部：通用 fetch + 解析 ─────────────────────────────────────────────
-  async function _fetch(symbol, interval, limit, maNums, before = null) {
+  async function _fetch(symbol, interval, limit, maNums, before = null, signal = undefined) {
     const indicatorStr = [
       ...maNums.map(n => `ma${n}`),
       'vol_ma5', 'macd', 'kdj', 'rsi14',
@@ -80,7 +85,7 @@ export function useKlineData() {
     const params = { symbol, interval, limit, indicators: indicatorStr }
     if (before) params.before = before
 
-    const raw = await fetchKline(params)
+    const raw = await fetchKline({...params,signal})
 
     /**
      * 后端实际返回格式（扁平记录数组）：
@@ -122,6 +127,8 @@ export function useKlineData() {
 
     return {
       bars:  parsedBars,
+      hasMore: raw.has_more,
+      source: raw.data_source ?? "unknown",
       ma,
       volMa: pickFromRecords(records, 'vol_ma5', 'vol_ma_5', 'VOL_MA5') ?? [],
       macd: {
@@ -149,12 +156,21 @@ export function useKlineData() {
   async function load(symbol, interval = '1d', limit = 500, maNums = [5, 10, 20, 30]) {
     if (!symbol) return
 
+    const epoch=++generation
+    controller?.abort()
+    controller=new AbortController()
+    context=`${symbol}|${interval}`
+    bars.value=[]; maData.value={}; macdData.value={diff:[],dea:[],hist:[]}
+    kdjData.value={k:[],d:[],j:[]}; rsiData.value=[]; volMaData.value=[]
+    loadingMore.value=false
     loading.value = true
     error.value   = ''
     hasMore.value = true
 
     try {
-      const d = await _fetch(symbol, interval, limit, maNums)
+      const d = await _fetch(symbol, interval, limit, maNums,null,controller.signal)
+      if (epoch!==generation) return false
+      provenance.value=d.source
 
       bars.value      = d.bars
       maData.value    = d.ma
@@ -165,12 +181,13 @@ export function useKlineData() {
       totalLoaded.value = d.bars.length
 
       // 返回条数 < 请求条数 → 没有更多历史了
-      if (d.bars.length < limit) hasMore.value = false
+      hasMore.value=d.hasMore ?? d.bars.length>=limit
+      return true
     } catch (e) {
-      error.value = e.message ?? '数据加载失败'
-      bars.value  = []
+      if (epoch===generation && e.name!=='AbortError') error.value = e.message ?? '数据加载失败'
+      return false
     } finally {
-      loading.value = false
+      if (epoch===generation) loading.value = false
     }
   }
 
@@ -185,7 +202,8 @@ export function useKlineData() {
    * @returns {number} 本次新增的 bar 数量
    */
   async function loadMore(symbol, interval = '1d', pageSize = 300, maNums = [5, 10, 20, 30]) {
-    if (!symbol || loadingMore.value || !hasMore.value) return 0
+    if (!symbol || loading.value || loadingMore.value || !hasMore.value || context!==`${symbol}|${interval}`) return 0
+    const epoch=generation
 
     // 最早的 bar 时间作为分页游标
     const oldestBar = bars.value[0]
@@ -193,7 +211,8 @@ export function useKlineData() {
 
     loadingMore.value = true
     try {
-      const d = await _fetch(symbol, interval, pageSize, maNums, oldestBar.time)
+      const d = await _fetch(symbol, interval, pageSize, maNums, oldestBar.time,controller.signal)
+      if (epoch!==generation) return 0
 
       if (!d.bars.length) {
         hasMore.value = false
@@ -202,7 +221,11 @@ export function useKlineData() {
 
       // 去重：过滤掉已存在的 bar（按 time 判断）
       const existTimes = new Set(bars.value.map(b => b.time))
-      const newBars    = d.bars.filter(b => !existTimes.has(b.time))
+      const indices=d.bars.map((b,i)=>!existTimes.has(b.time) && b.time<oldestBar.time ? i : -1).filter(i=>i>=0)
+      const newBars=indices.map(i=>d.bars[i])
+      for (const key of Object.keys(d.ma)) d.ma[key]=indices.map(i=>d.ma[key][i])
+      for (const key of ['volMa','rsi']) d[key]=indices.map(i=>d[key][i]??null)
+      for (const group of ['macd','kdj']) for (const key of Object.keys(d[group])) d[group][key]=indices.map(i=>d[group][key][i]??null)
 
       if (!newBars.length) {
         hasMore.value = false
@@ -234,19 +257,20 @@ export function useKlineData() {
 
       totalLoaded.value = bars.value.length
 
-      if (d.bars.length < pageSize) hasMore.value = false
+      hasMore.value=(d.hasMore ?? d.bars.length>=pageSize) && bars.value.length<5000
 
       return newBars.length
     } catch (e) {
       console.warn('[useKlineData] loadMore 失败:', e.message)
       return 0
     } finally {
-      loadingMore.value = false
+      if (epoch===generation) loadingMore.value = false
     }
   }
 
   return {
     bars,
+    provenance,
     maData,
     macdData,
     kdjData,

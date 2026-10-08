@@ -1,0 +1,103 @@
+import {expect,test} from '@playwright/test'
+
+test('saved live API defaults allow account/password login without a contract',async({page})=>{
+  const errors=[]
+  page.on('pageerror',error=>errors.push(error.message))
+  await page.goto('/login')
+  await expect(page.getByPlaceholder('如 2071')).toHaveValue('E2E_BROKER')
+  await expect(page.locator('.subtitle')).toContainText('实盘 API')
+  await expect(page.getByText('tcp://127.0.0.1:1',{exact:false}).first()).toBeVisible()
+  await expect(page.getByText('tcp://127.0.0.1:2',{exact:false}).first()).toBeVisible()
+  await page.locator('.advanced-toggle').click()
+  await expect(page.getByLabel('AppID',{exact:true})).toHaveValue('E2E_APP')
+  const authCode=page.getByPlaceholder('已在后端配置，留空使用')
+  await expect(authCode).toHaveValue('')
+  await expect(authCode).toHaveAttribute('type','password')
+  await expect(page.getByText('实盘（生产版 API）',{exact:true}).first()).toBeVisible()
+  await expect(page.getByText(/策略合约|开仓保证金|登录后启动策略/)).toHaveCount(0)
+  expect(await page.content()).not.toContain('E2E_SERVER_ONLY_CODE')
+  await page.screenshot({path:'test-results/login-defaults-desktop.png',fullPage:true})
+  await page.setViewportSize({width:390,height:844})
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth)).toBe(true)
+  await page.screenshot({path:'test-results/login-defaults-mobile.png',fullPage:true})
+  await page.getByPlaceholder('账号',{exact:true}).fill('E2E_ONLY')
+  await page.getByPlaceholder('密码',{exact:true}).fill('fixture')
+  const finished=page.waitForResponse(r=>r.url().endsWith('/api/auth/login'))
+  await page.getByRole('button',{name:'连接交易账户',exact:true}).click()
+  const response=await finished
+  const payload=response.request().postDataJSON()
+  expect(payload).toMatchObject({username:'E2E_ONLY',broker_id:'E2E_BROKER',environment:'实盘',auto_start_strategy:false})
+  for (const field of ['contract_margin_rates','strategy_params','strategy_name','auth_code']) expect(payload).not.toHaveProperty(field)
+  expect(response.status()).toBe(200)
+  await expect(page).toHaveURL(/\/$/)
+  expect((await page.request.post('/api/auth/logout')).status()).toBe(200)
+  expect(errors).toEqual([])
+})
+
+test('saved settings load failure is visible and custom connection remains editable',async({page})=>{
+  await page.route('**/api/auth/servers',route=>route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({detail:'CTP 本地配置无法读取'})}))
+  await page.goto('/login')
+  await expect(page.locator('.error-banner')).toContainText('预留连接配置读取失败')
+  await expect(page.getByRole('button',{name:'连接交易账户',exact:true})).toBeEnabled()
+  await expect(page.getByPlaceholder('tcp://host:port').first()).toBeEditable()
+  await expect(page.locator('.subtitle')).toContainText('实盘 API')
+})
+
+test('saved connection fields can be overridden explicitly',async({page})=>{
+  let submitted
+  await page.route('**/api/auth/login',route=>{
+    submitted=route.request().postDataJSON()
+    return route.fulfill({status:502,contentType:'application/json',body:JSON.stringify({detail:'测试已截获自定义配置'})})
+  })
+  await page.goto('/login')
+  await expect(page.getByPlaceholder('如 2071')).toHaveValue('E2E_BROKER')
+  await page.getByPlaceholder('账号',{exact:true}).fill('CUSTOM_ACCOUNT')
+  await page.getByPlaceholder('密码',{exact:true}).fill('fixture')
+  await page.getByPlaceholder('如 2071').fill('CUSTOM_BROKER')
+  const tdMenu=await page.getByRole('combobox').nth(0).getAttribute('aria-controls')
+  const mdMenu=await page.getByRole('combobox').nth(1).getAttribute('aria-controls')
+  await page.locator('.el-select__wrapper').nth(0).click()
+  await page.locator(`[id="${tdMenu}"]`).getByRole('option',{name:'自定义地址…',exact:true}).click()
+  await page.getByPlaceholder('tcp://host:port').fill('tcp://custom:1')
+  await page.locator('.el-select__wrapper').nth(1).click()
+  await page.locator(`[id="${mdMenu}"]`).getByRole('option',{name:'自定义地址…',exact:true}).click()
+  await page.getByPlaceholder('tcp://host:port').nth(1).fill('tcp://custom:2')
+  await page.locator('.advanced-toggle').click()
+  await page.getByLabel('AppID',{exact:true}).fill('CUSTOM_APP')
+  await page.getByPlaceholder('已在后端配置，留空使用').fill('CUSTOM_AUTH_FIXTURE')
+  await page.locator('.el-select__wrapper').nth(2).click()
+  await page.getByRole('option',{name:'测试',exact:true}).click()
+  await page.getByRole('button',{name:'连接交易账户',exact:true}).click()
+  await expect(page.locator('.error-banner')).toContainText('测试已截获自定义配置')
+  expect(submitted).toMatchObject({broker_id:'CUSTOM_BROKER',td_server:'tcp://custom:1',md_server:'tcp://custom:2',app_id:'CUSTOM_APP',auth_code:'CUSTOM_AUTH_FIXTURE',environment:'测试',auto_start_strategy:false})
+})
+
+test('trading panel shows queried account margin and clears it when contract changes', async ({page}) => {
+  const errors=[]
+  page.on('pageerror',error=>errors.push(error.message))
+  await page.goto('/login')
+  expect((await page.request.post('/api/auth/login',{data:{username:'E2E_ONLY',password:'fixture'}})).status()).toBe(200)
+  await page.evaluate(()=>sessionStorage.setItem('quant_session_active','1'))
+  await page.route('**/api/watch/search?**',route=>route.fulfill({json:{code:0,data:[
+    {symbol:'au2612',name:'黄金验收'}, {symbol:'au2702',name:'另一黄金合约'},
+  ]}}))
+  await page.route('**/api/trading/margin-rate?**',route=>{
+    const symbol=new URL(route.request().url()).searchParams.get('symbol')
+    return route.fulfill({json:symbol==='au2612'
+      ? {status:'ready',trading_day:'20261008',long_margin_rate:.12,short_margin_rate:.15,long_margin_per_lot:0,short_margin_per_lot:20}
+      : {status:'pending',reason:'正在查询账户保证金'}})
+  })
+  await page.goto('/')
+  const input=page.locator('.tp-wrap .el-select input').first()
+  await input.fill('au2612')
+  await page.getByRole('option',{name:'au2612 - 黄金验收',exact:true}).click()
+  await expect(page.locator('.margin-status')).toContainText('多头 12.00%')
+  await expect(page.locator('.margin-status')).toContainText('空头 15.00% + 20.00元/手')
+  await page.locator('.margin-status').screenshot({path:'test-results/account-margin.png'})
+  await input.fill('au2702')
+  await page.getByRole('option',{name:'au2702 - 另一黄金合约',exact:true}).click()
+  await expect(page.locator('.margin-status')).toContainText('正在查询账户保证金')
+  await expect(page.locator('.margin-status')).not.toContainText('12.00%')
+  expect((await page.request.post('/api/auth/logout')).status()).toBe(200)
+  expect(errors).toEqual([])
+})

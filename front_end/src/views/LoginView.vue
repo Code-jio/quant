@@ -14,9 +14,11 @@
           <span class="logo">⚡</span>
           <div>
             <h1 class="title">量化交易系统</h1>
-            <p class="subtitle">连接 CTP 交易/行情通道</p>
+            <p class="subtitle">连接 CTP 交易/行情通道 · {{ form.environment === '实盘' ? '实盘 API' : '测试 API' }}</p>
           </div>
         </div>
+
+        <p class="session-hint">同一账户可在多端登录，共享行情、委托与风控；连接配置需一致。</p>
 
         <!-- 错误横幅 -->
         <el-alert
@@ -36,6 +38,7 @@
           :rules="rules"
           label-position="top"
           class="login-form"
+          :disabled="connecting || loadingDefaults"
           @submit.prevent="handleLogin"
         >
           <!-- ── 账户信息 ── -->
@@ -72,6 +75,7 @@
 
           <!-- ── 服务器配置 ── -->
           <div class="form-section-title">服务器配置</div>
+          <p class="config-hint">{{ loadingDefaults ? '正在读取预留连接配置…' : '已配置的连接参数自动填入，可按需修改。' }}</p>
 
           <div class="form-row">
             <!-- 交易前置 -->
@@ -141,7 +145,7 @@
                 <el-input v-model="form.app_id" :disabled="connecting" />
               </el-form-item>
               <el-form-item label="认证码（AuthCode）">
-                <el-input v-model="form.auth_code" :disabled="connecting" />
+                <el-input v-model="form.auth_code" type="password" show-password :disabled="connecting" :placeholder="authCodeConfigured ? '已在后端配置，留空使用' : '请输入认证码'" />
               </el-form-item>
               <el-form-item label="柜台环境">
                 <el-select v-model="form.environment" :disabled="connecting" style="width:100%">
@@ -150,40 +154,13 @@
                 </el-select>
               </el-form-item>
             </div>
-            <div class="form-row">
-              <el-form-item label="登录后启动策略">
-                <el-switch
-                  v-model="form.auto_start_strategy"
-                  :disabled="connecting"
-                  active-text="启动"
-                  inactive-text="不启动"
-                />
-              </el-form-item>
-              <el-form-item label="策略">
-                <el-select
-                  v-model="form.strategy_name"
-                  :disabled="connecting || !form.auto_start_strategy"
-                  style="width:100%"
-                >
-                  <el-option label="MA 双均线" value="ma_cross" />
-                  <el-option label="RSI 均值回归" value="rsi" />
-                  <el-option label="突破策略" value="breakout" />
-                </el-select>
-              </el-form-item>
-              <el-form-item label="策略合约">
-                <el-input
-                  v-model="form.strategy_symbol"
-                  :disabled="connecting || !form.auto_start_strategy"
-                  placeholder="IF9999"
-                />
-              </el-form-item>
-            </div>
           </div>
 
           <!-- ── 连接按钮 ── -->
           <el-button
             type="primary"
             :loading="connecting"
+            :disabled="loadingDefaults"
             :loading-icon="'Loading'"
             class="connect-btn"
             @click="handleLogin"
@@ -238,18 +215,10 @@ import { login, fetchAuthStatus, fetchServers } from '@/api/index.js'
 const router    = useRouter()
 const authStore = useAuthStore()
 
-// ── 预设服务器（本地备用，会从后端覆盖） ──────────────────────────────────
-const TD_SERVERS_DEFAULT = []
-const MD_SERVERS_DEFAULT = []
-
-const tdServers = ref([...TD_SERVERS_DEFAULT])
-const mdServers = ref([...MD_SERVERS_DEFAULT])
-
-// 加载服务器预设
-fetchServers().then(data => {
-  if (data.td_servers?.length) tdServers.value = data.td_servers
-  if (data.md_servers?.length) mdServers.value = data.md_servers
-}).catch(() => {/* 用本地默认值 */})
+const tdServers = ref([])
+const mdServers = ref([])
+const loadingDefaults = ref(true)
+const authCodeConfigured = ref(false)
 
 // ── 表单数据 ──────────────────────────────────────────────────────────────
 const form = reactive({
@@ -260,12 +229,9 @@ const form = reactive({
   md_server: '',
   app_id:      '',
   auth_code:   '',
-  environment: '测试',
+  environment: '实盘',
   td_custom:   true,
   md_custom:   true,
-  auto_start_strategy: false,
-  strategy_name: 'ma_cross',
-  strategy_symbol: 'IF9999',
 })
 
 const formRef         = ref(null)
@@ -274,6 +240,21 @@ const connecting      = ref(false)
 const errorMsg        = ref('')
 const connectLog      = ref([])
 const logContainer    = ref(null)
+
+fetchServers().then(data => {
+  tdServers.value = data.td_servers ?? []
+  mdServers.value = data.md_servers ?? []
+  const defaults = data.defaults ?? {}
+  for (const key of ['broker_id', 'td_server', 'md_server', 'app_id']) {
+    if (!form[key]) form[key] = defaults[key] ?? ''
+  }
+  form.environment = defaults.environment ?? '实盘'
+  form.td_custom = !tdServers.value.some(server => server.value === form.td_server)
+  form.md_custom = !mdServers.value.some(server => server.value === form.md_server)
+  authCodeConfigured.value = defaults.auth_code_configured === true
+}).catch(error => {
+  errorMsg.value = `预留连接配置读取失败：${error.message}`
+}).finally(() => { loadingDefaults.value = false })
 
 // ── 表单校验规则 ──────────────────────────────────────────────────────────
 const rules = {
@@ -322,9 +303,9 @@ function stopPolling() {
 onUnmounted(stopPolling)
 
 // ── 登录处理 ──────────────────────────────────────────────────────────────
-const LOGIN_TIMEOUT = 35_000
 
 async function handleLogin() {
+  if (connecting.value || loadingDefaults.value) return
   try {
     await formRef.value.validate()
   } catch {
@@ -337,34 +318,24 @@ async function handleLogin() {
   startPolling()
 
   try {
-    const loginPromise = login({
+    const res = await login({
       username:  form.username,
       password:  form.password,
       broker_id: form.broker_id,
       td_server: form.td_server,
       md_server: form.md_server,
       app_id:    form.app_id,
-      auth_code: form.auth_code,
+      ...(form.auth_code.trim() ? { auth_code: form.auth_code.trim() } : {}),
       environment: form.environment,
-      auto_start_strategy: form.auto_start_strategy,
-      strategy_name: form.strategy_name,
-      strategy_params: {
-        symbol: form.strategy_symbol,
-      },
+      auto_start_strategy: false,
     })
-
-    const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => reject(new Error('登录超时（35s），请检查网络和服务器地址')), LOGIN_TIMEOUT)
-    })
-
-    const res = await Promise.race([loginPromise, timeoutPromise])
 
     authStore.setAuth({
       accountId: res.account_id,
       balance:   res.balance,
     })
 
-    ElMessage.success(`登录成功，账户：${res.account_id}`)
+    ElMessage.success(res.connection_reused ? '已加入当前账户，原有终端保持在线' : `登录成功，账户：${res.account_id}`)
     router.push({ name: 'Dashboard' })
 
   } catch (err) {
@@ -378,6 +349,7 @@ async function handleLogin() {
 </script>
 
 <style scoped>
+.session-hint { color: var(--q-muted); font-size: 12px; line-height: 1.7; margin: 0 0 18px; }
 /* ── 全屏背景 ── */
 .login-page {
   min-height: 100vh;
@@ -482,6 +454,10 @@ async function handleLogin() {
   gap: 0 16px;
 }
 .broker-field { grid-column: 1; }
+.config-hint { margin: 0 0 12px; color: var(--q-muted); font-size: 12px; line-height: 1.6; }
+@media (max-width: 520px) {
+  .form-row { grid-template-columns: minmax(0, 1fr); }
+}
 
 /* ── 高级配置折叠 ── */
 .advanced-toggle {

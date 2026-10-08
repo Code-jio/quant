@@ -1,0 +1,14 @@
+[WebServer] (node:12480) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+
+Running 5 tests using 1 worker
+
+(node:40904) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ok 1 [chromium] › tests\e2e\recheck.spec.js:3:1 › login accepts explicit contract margin percentages and rejects incomplete rows (1.1s)
+  ok 2 [chromium] › tests\e2e\remediation.spec.js:3:1 › offline backtest runs with explicit synthetic data and renders result charts (1.1s)
+  ok 3 [chromium] › tests\e2e\remediation.spec.js:23:1 › stored historical bars render through the real worker without auth sockets (802ms)
+  ok 4 [chromium] › tests\e2e\remediation.spec.js:40:1 › authenticated sockets close on logout and trading data loses access (1.2s)
+  ok 5 [chromium] › tests\e2e\smoke.spec.js:3:1 › public pages render without a hard crash (532ms)
+
+  5 passed (7.3s)

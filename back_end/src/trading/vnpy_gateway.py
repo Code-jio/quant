@@ -11,6 +11,10 @@ import logging
 import re
 import threading
 import time
+from collections import deque
+from math import isfinite
+from .ctp_observer import install_observer, EVENT_SNAPSHOT
+from .ctp_margin import MarginRateBook
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -32,27 +36,6 @@ from .types import AccountInfo, MarketData, TradingStatus
 logger = logging.getLogger(__name__)
 
 
-PRODUCT_EXCHANGE = {
-    "IF": "CFFEX", "IC": "CFFEX", "IH": "CFFEX", "IM": "CFFEX",
-    "T": "CFFEX", "TF": "CFFEX", "TS": "CFFEX", "TL": "CFFEX",
-    "CU": "SHFE", "AU": "SHFE", "AG": "SHFE", "RB": "SHFE",
-    "AL": "SHFE", "ZN": "SHFE", "PB": "SHFE", "NI": "SHFE",
-    "SN": "SHFE", "FU": "SHFE", "BU": "SHFE", "HC": "SHFE",
-    "RU": "SHFE", "SP": "SHFE", "SS": "SHFE", "AO": "SHFE",
-    "SC": "INE", "NR": "INE", "BC": "INE", "LU": "INE",
-    "A": "DCE", "B": "DCE", "C": "DCE", "CS": "DCE",
-    "M": "DCE", "Y": "DCE", "P": "DCE", "L": "DCE",
-    "V": "DCE", "PP": "DCE", "J": "DCE", "JM": "DCE",
-    "I": "DCE", "EG": "DCE", "EB": "DCE", "PG": "DCE",
-    "LH": "DCE",
-    "CF": "CZCE", "SR": "CZCE", "TA": "CZCE", "MA": "CZCE",
-    "OI": "CZCE", "RM": "CZCE", "ZC": "CZCE", "FG": "CZCE",
-    "SA": "CZCE", "UR": "CZCE", "AP": "CZCE", "CJ": "CZCE",
-    "PK": "CZCE", "PF": "CZCE", "PX": "CZCE", "SH": "CZCE",
-    "SI": "GFEX", "LC": "GFEX",
-}
-
-
 def _ensure_vnpy_runtime_dir() -> None:
     """Make vn.py use the project-local runtime directory."""
     Path.cwd().joinpath(".vntrader").mkdir(exist_ok=True)
@@ -69,6 +52,17 @@ class VnpyGateway(GatewayBase):
     def __init__(self) -> None:
         super().__init__("VNPY_CTP")
         self._gateway_name = "CTP"
+        self.connection_state = {key: False for key in ("md", "td", "settlement", "contracts", "account", "positions")}
+        self.contract_specs = {}
+        self._margin_book = MarginRateBook(self.contract_specs)
+        self._margin_rates = {}
+        self.trading_day = ""
+        self._cancel_connect = threading.Event()
+        self._refresh_queue = deque()
+        self._position_keys = set()
+        self._last_query = 0.0
+        self._last_refresh = 0.0
+        self._last_snapshot = 0.0
         self._event_engine: Any = None
         self._main_engine: Any = None
         self._connected_event = threading.Event()
@@ -83,6 +77,10 @@ class VnpyGateway(GatewayBase):
 
     def connect(self, config: Dict[str, Any]) -> bool:
         """Connect to CTP through vn.py."""
+        self._cancel_connect.clear()
+        self._margin_book.invalidate()
+        self.connection_state = {key: False for key in self.connection_state}
+        self._margin_rates = dict(config.get("contract_margin_rates", {}))
         self.status = TradingStatus.CONNECTING
         self._connected_event.clear()
         self._error_event.clear()
@@ -91,10 +89,12 @@ class VnpyGateway(GatewayBase):
 
         try:
             _ensure_vnpy_runtime_dir()
-            from vnpy.event import EventEngine
+            from vnpy.event import EventEngine, Event
             from vnpy.trader.engine import MainEngine
             from vnpy.trader.event import (
                 EVENT_ACCOUNT,
+                EVENT_CONTRACT,
+                EVENT_TIMER,
                 EVENT_LOG,
                 EVENT_ORDER,
                 EVENT_POSITION,
@@ -104,12 +104,13 @@ class VnpyGateway(GatewayBase):
             from vnpy_ctp import CtpGateway
         except ImportError as exc:
             self.status = TradingStatus.ERROR
-            raise ImportError(
-                "vn.py CTP 依赖未安装，请执行: pip install vnpy vnpy_ctp"
-            ) from exc
+            raise ImportError("vn.py CTP 依赖未安装，请执行: pip install vnpy vnpy_ctp") from exc
 
         self._event_engine = EventEngine()
         self._event_engine.register(EVENT_LOG, self._on_vnpy_log)
+        self._event_engine.register(EVENT_CONTRACT, self._on_vnpy_contract)
+        self._event_engine.register(EVENT_TIMER, self._on_timer)
+        self._event_engine.register(EVENT_SNAPSHOT, self._on_snapshot)
         self._event_engine.register(EVENT_ACCOUNT, self._on_vnpy_account)
         self._event_engine.register(EVENT_POSITION, self._on_vnpy_position)
         self._event_engine.register(EVENT_ORDER, self._on_vnpy_order)
@@ -118,6 +119,9 @@ class VnpyGateway(GatewayBase):
 
         self._main_engine = MainEngine(self._event_engine)
         self._main_engine.add_gateway(CtpGateway)
+        native = self._main_engine.get_gateway(self._gateway_name)
+        event_engine = self._event_engine
+        install_observer(native, lambda data: event_engine.put(Event(EVENT_SNAPSHOT, data)))
 
         setting = {
             "用户名": config.get("username", ""),
@@ -127,7 +131,7 @@ class VnpyGateway(GatewayBase):
             "行情服务器": config.get("md_server", ""),
             "产品名称": config.get("app_id", ""),
             "授权编码": config.get("auth_code", ""),
-            "柜台环境": config.get("vnpy_environment", config.get("environment", "测试")),
+            "柜台环境": config.get("vnpy_environment", config.get("environment", "实盘")),
         }
 
         if not all([setting["用户名"], setting["密码"], setting["经纪商代码"], setting["交易服务器"]]):
@@ -136,17 +140,20 @@ class VnpyGateway(GatewayBase):
 
         logger.info("[vn.py] connecting CTP gateway")
         self._main_engine.connect(setting, self._gateway_name)
+        # Account/position/margin queries share the adapter's paced queue.
+        self._event_engine.unregister(EVENT_TIMER, native.process_timer_event)
 
         timeout = float(config.get("connect_timeout", 25))
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if self._connected_event.wait(timeout=0.2):
+        while time.monotonic() < deadline and not self._cancel_connect.is_set():
+            if self._connected_event.wait(timeout=0.2) and self.ready:
                 self.status = TradingStatus.CONNECTED
                 return True
             if self._error_event.is_set():
                 self.status = TradingStatus.ERROR
                 return False
 
+        self.disconnect()
         self.status = TradingStatus.ERROR
         return False
 
@@ -156,6 +163,10 @@ class VnpyGateway(GatewayBase):
 
     def disconnect(self) -> None:
         """Disconnect CTP and stop vn.py event engine."""
+        self._cancel_connect.set()
+        self._margin_book.invalidate()
+        self.connection_state = {key: False for key in self.connection_state}
+        self._connected_event.clear()
         try:
             if self._main_engine:
                 self._main_engine.close()
@@ -168,12 +179,19 @@ class VnpyGateway(GatewayBase):
 
     def send_order(self, signal: Signal) -> str:
         """Send an order through vn.py."""
-        if self.status not in (TradingStatus.CONNECTED, TradingStatus.TRADING):
+        if not self.ready:
             logger.warning("vn.py CTP 未连接，无法发送订单")
             return ""
         if not self._main_engine:
             return ""
 
+        spec = self.contract_specs.get(signal.symbol.split(".")[0], {})
+        tick = float(spec.get("pricetick") or 0)
+        unit = int(spec.get("min_volume") or 1)
+        if not spec or signal.order_type != OrderType.LIMIT or not signal.validate():
+            raise ValueError("Only validated limit orders for known contracts are supported")
+        if tick <= 0 or abs(signal.price / tick - round(signal.price / tick)) > 1e-7 or signal.volume % unit:
+            raise ValueError("Invalid contract price tick or minimum volume")
         from vnpy.trader.object import OrderRequest
 
         symbol, exchange = self._split_symbol(signal.symbol)
@@ -219,9 +237,11 @@ class VnpyGateway(GatewayBase):
         return True
 
     def query_account(self) -> AccountInfo:
+        self.request_refresh()
         return self.account
 
     def query_positions(self) -> List[Position]:
+        self.request_refresh()
         return list(self.positions.values())
 
     def query_orders(self) -> List[Order]:
@@ -236,6 +256,8 @@ class VnpyGateway(GatewayBase):
 
         for item in symbols:
             symbol, exchange = self._split_symbol(item)
+            if self.contract_specs[symbol].get("product") == "FUTURES":
+                self.request_margin_rate(symbol)
             vt_key = f"{symbol}.{getattr(exchange, 'value', exchange)}"
             if vt_key in self._subscribed_symbols:
                 continue
@@ -249,12 +271,96 @@ class VnpyGateway(GatewayBase):
         logger.info("[vn.py] %s", msg)
         self._emit_connect_log(msg)
 
-        if self.status == TradingStatus.CONNECTING:
-            if "结算信息确认成功" in msg or "合约信息查询成功" in msg:
-                self._connected_event.set()
-            elif self._is_connect_error(msg):
-                self._remember_connect_error(msg)
-                self._error_event.set()
+        if self.status == TradingStatus.CONNECTING and self._is_connect_error(msg):
+            self._remember_connect_error(msg)
+
+    @property
+    def ready(self):
+        return (
+            all(self.connection_state.values())
+            and self.account.fields_known
+            and bool(self.trading_day)
+            and time.monotonic() - self._last_snapshot < 60
+            and not self._cancel_connect.is_set()
+        )
+
+    def request_refresh(self):
+        if not self._refresh_queue and time.monotonic() - self._last_refresh > 3:
+            self._refresh_queue.extend(("account", "position"))
+            self._last_refresh = time.monotonic()
+
+    def request_margin_rate(self, symbol):
+        symbol, _exchange = self._split_symbol(symbol)
+        if not self.connection_state["td"] or not self.connection_state["contracts"]:
+            raise ValueError("交易柜台或合约资料未就绪")
+        return self._margin_book.request(symbol, self.trading_day)
+
+    def _on_timer(self, _event):
+        self._margin_book.expire(self.trading_day)
+        if self.connection_state["contracts"] and self.connection_state["td"]:
+            if not self._refresh_queue and time.monotonic() - self._last_refresh > 15:
+                self.request_refresh()
+            if time.monotonic() - self._last_query > 1:
+                native = self._main_engine.get_gateway(self._gateway_name) if self._main_engine else None
+                if native:
+                    native.md_api.update_date()
+                    # An outstanding margin reply must finish (or time out)
+                    # before another query is sent to the same CTP session.
+                    if self._margin_book.pending or not self._refresh_queue:
+                        if self._margin_book.dispatch(native.td_api, self.trading_day):
+                            self._last_query = time.monotonic()
+                            return
+                    if self._refresh_queue:
+                        getattr(native, "query_" + self._refresh_queue.popleft())()
+                        self._last_query = time.monotonic()
+
+    def _on_snapshot(self, event):
+        data = event.data
+        kind = data["kind"]
+        if kind == "margin":
+            self._margin_book.on_response(data, self.trading_day)
+            return
+        if data.get("trading_day"):
+            if self.trading_day != data["trading_day"]:
+                self._margin_book.invalidate()
+            self.trading_day = data["trading_day"]
+        self.connection_state[kind] = data.get("ready", True)
+        if kind == "positions" and data.get("ready", True):
+            keys = set(data["keys"])
+            for key in list(self.positions):
+                if key not in keys:
+                    self.positions.pop(key, None)
+            self._last_snapshot = time.monotonic()
+        elif kind in ("td", "md") and not data.get("ready"):
+            self._connected_event.clear()
+            self.connection_state["positions"] = False
+            self.connection_state["account"] = False
+            self._subscribed_symbols.clear()
+            if kind == "td":
+                self._margin_book.invalidate()
+                self.connection_state["settlement"] = False
+        if kind in ("contracts", "td", "settlement") and data.get("ready"):
+            self.request_refresh()
+        if self.ready:
+            self._connected_event.set()
+
+    def _on_vnpy_contract(self, event):
+        data = event.data
+        symbol = data.symbol
+        margin = self._margin_rates.get(symbol)
+        self.contract_specs[symbol] = {
+            "symbol": symbol,
+            "name": data.name,
+            "exchange": getattr(data.exchange, "value", str(data.exchange)),
+            "size": float(data.size),
+            "pricetick": float(data.pricetick),
+            "min_volume": int(getattr(data, "min_volume", 1) or 1),
+            "margin_rate": float(margin) if margin else None,
+            "margin_source": "configured" if margin else None,
+            "product": getattr(getattr(data, "product", None), "name", ""),
+            "source": "ctp",
+            "tradable": True,
+        }
 
     def _emit_connect_log(self, msg: str) -> None:
         if self._connect_log_callback:
@@ -283,15 +389,25 @@ class VnpyGateway(GatewayBase):
 
     def _on_vnpy_account(self, event: Any) -> None:
         data = event.data
+        extra = getattr(data, "extra", None) or {}
         account = AccountInfo(
             account_id=getattr(data, "accountid", ""),
             balance=float(getattr(data, "balance", 0) or 0),
-            available=float(getattr(data, "available", 0) or 0),
-            margin=float(getattr(data, "frozen", 0) or 0),
+            available=float(extra.get("Available", getattr(data, "available", 0)) or 0),
+            margin=float(extra.get("CurrMargin", 0)),
+            commission=float(extra.get("Commission", 0)),
+            position_pnl=float(extra.get("PositionProfit", 0)),
+            total_pnl=float(extra.get("PositionProfit", 0)) + float(extra.get("CloseProfit", 0)),
+            trading_day=str(extra.get("TradingDay") or self.trading_day),
+            fields_known=all(
+                key in extra for key in ("Available", "CurrMargin", "Commission", "PositionProfit", "CloseProfit")
+            ),
         )
         self.account = account
         self.on_account(account)
-        if self.status == TradingStatus.CONNECTING:
+        self.connection_state["account"] = account.fields_known
+        self.trading_day = account.trading_day or self.trading_day
+        if self.ready:
             self._connected_event.set()
 
     def _on_vnpy_position(self, event: Any) -> None:
@@ -303,6 +419,8 @@ class VnpyGateway(GatewayBase):
             symbol=symbol,
             direction=direction,
             volume=volume,
+            yd_volume=int(getattr(data, "yd_volume", 0)),
+            exchange=getattr(getattr(data, "exchange", None), "value", ""),
             frozen=int(getattr(data, "frozen", 0) or 0),
             price=float(getattr(data, "price", 0) or 0),
             cost=float(getattr(data, "price", 0) or 0),
@@ -328,7 +446,6 @@ class VnpyGateway(GatewayBase):
             update_time=datetime.now(),
         )
         self._vn_orders[vt_orderid] = data
-        self.orders[vt_orderid] = order
         self.on_order(order)
 
     def _on_vnpy_trade(self, event: Any) -> None:
@@ -343,7 +460,15 @@ class VnpyGateway(GatewayBase):
             commission=float(getattr(data, "commission", 0) or getattr(data, "fee", 0) or 0),
             pnl=float(getattr(data, "pnl", 0) or getattr(data, "profit", 0) or 0),
             trade_time=getattr(data, "datetime", None) or datetime.now(),
+            offset=self._from_vnpy_offset(getattr(data, "offset", None)),
+            account_id=self.account.account_id,
+            trading_day=(getattr(data, "extra", None) or {}).get("TradingDay", self.trading_day),
+            exchange=getattr(getattr(data, "exchange", None), "value", ""),
+            pnl_known=hasattr(data, "pnl") or hasattr(data, "profit"),
+            commission_known=hasattr(data, "commission") or hasattr(data, "fee"),
         )
+        self.connection_state["positions"] = False
+        self.request_refresh()
         self.on_trade(trade)
 
     def _on_vnpy_tick(self, event: Any) -> None:
@@ -359,6 +484,7 @@ class VnpyGateway(GatewayBase):
             volume=int(getattr(data, "volume", 0) or 0),
             turnover=float(getattr(data, "turnover", 0) or 0),
             timestamp=getattr(data, "datetime", None) or datetime.now(),
+            trading_day=(getattr(data, "extra", None) or {}).get("TradingDay", self.trading_day),
         )
         snapshot = self._tick_to_snapshot(data, tick)
         for key in self._tick_cache_keys(data, symbol):
@@ -402,6 +528,7 @@ class VnpyGateway(GatewayBase):
         snapshot: Dict[str, Any] = {
             "type": "tick",
             "source": "vnpy",
+            "trading_day": tick.trading_day,
             "symbol": tick.symbol,
             "last": last,
             "open": cls._price_field(data, "open_price", 0.0),
@@ -424,21 +551,17 @@ class VnpyGateway(GatewayBase):
             snapshot[f"ask{level}_vol"] = int(getattr(data, f"ask_volume_{level}", 0) or 0)
         return snapshot
 
-    @staticmethod
-    def _split_symbol(symbol: str) -> Tuple[str, Any]:
+    def _split_symbol(self, symbol: str) -> Tuple[str, Any]:
+        parts = symbol.split(".")
+        code = next((part for part in parts if part in self.contract_specs), None)
+        if not code:
+            raise ValueError("Unknown contract: " + symbol)
+        spec = self.contract_specs[code]
+        if len(parts) > 1 and spec["exchange"] not in parts:
+            raise ValueError("Mismatched contract exchange")
         from vnpy.trader.constant import Exchange
 
-        if "." in symbol:
-            left, right = symbol.split(".", 1)
-            if left.upper() in Exchange.__members__:
-                return right, Exchange[left.upper()]
-            for exchange in Exchange:
-                if right.upper() == exchange.value:
-                    return left, exchange
-
-        product = _extract_product(symbol)
-        exchange_code = PRODUCT_EXCHANGE.get(product, "SHFE")
-        return symbol, Exchange(exchange_code)
+        return code, Exchange(spec["exchange"])
 
     @staticmethod
     def _to_vnpy_direction(direction: Direction) -> Any:
@@ -498,7 +621,9 @@ class VnpyGateway(GatewayBase):
             Offset.CLOSETODAY: OffsetFlag.CLOSE_TODAY,
             Offset.CLOSEYESTERDAY: OffsetFlag.CLOSE_YESTERDAY,
         }
-        return mapping.get(offset, OffsetFlag.OPEN)
+        if offset not in mapping:
+            raise ValueError("Unknown broker offset; reconciliation required")
+        return mapping[offset]
 
     @staticmethod
     def _from_vnpy_status(status: Any) -> OrderStatus:

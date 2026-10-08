@@ -52,7 +52,7 @@ const fmt = {
   signed: (v, d = 2) => { const n = Number(v) || 0; return (n >= 0 ? '+' : '') + fmt.money(n, d) },
   rate:   (v, d = 4) => { const n = Number(v) || 0; return (n >= 0 ? '+' : '') + n.toFixed(d) + '%' },
   pct:    (v, d = 2) => (Number(v) || 0).toFixed(d) + '%',
-  num:    (v, d = 3) => (Number(v) || 0).toFixed(d),
+  num:    (v, d = 3) => v==null ? '—' : Number(v).toFixed(d),
 }
 
 const lastUpdate = computed(() => {
@@ -68,6 +68,7 @@ function pnlCss(v) {
 }
 
 function sharpeLevel(v) {
+  if (v==null) return {cls:'',label:'需日终权益样本'}
   if (v >= 2)  return { cls: 'level-excellent', label: '优秀' }
   if (v >= 1)  return { cls: 'level-good',      label: '良好' }
   if (v >= 0)  return { cls: 'level-fair',       label: '一般' }
@@ -90,6 +91,7 @@ function expLevel(v) {
 const lineRef  = ref(null)
 let lineChart  = null
 let echarts    = null
+let disposed = false
 
 function buildLineOption(curve) {
   const xs = curve.map(p => p.ts)
@@ -142,6 +144,7 @@ function buildLineOption(curve) {
 async function initLineChart() {
   if (!lineRef.value) return
   echarts = await loadEcharts()
+  if (disposed || !lineRef.value) return
   lineChart = echarts.init(lineRef.value, null, { renderer: 'svg' })
   lineChart.setOption(buildLineOption(data.equityCurve))
 }
@@ -208,6 +211,7 @@ function buildDonutOption(positions) {
 async function initDonutChart() {
   if (!donutRef.value) return
   echarts = echarts || await loadEcharts()
+  if (disposed || !donutRef.value) return
   donutChart = echarts.init(donutRef.value, null, { renderer: 'svg' })
   donutChart.setOption(buildDonutOption(data.positions))
 }
@@ -229,12 +233,14 @@ const resizeObs = typeof ResizeObserver !== 'undefined'
 onMounted(async () => {
   await nextTick()
   await Promise.all([initLineChart(), initDonutChart()])
+  if (disposed) return
   if (resizeObs && lineRef.value)  resizeObs.observe(lineRef.value)
   if (resizeObs && donutRef.value) resizeObs.observe(donutRef.value)
   window.addEventListener('resize', resizeCharts)
 })
 
 onUnmounted(() => {
+  disposed = true
   lineChart?.dispose()
   donutChart?.dispose()
   resizeObs?.disconnect()
@@ -295,7 +301,7 @@ function dirType(dir)  { return dir === 'long' ? 'success' : 'danger' }
 
       <!-- 夏普比率 -->
       <div class="kpi-card">
-        <div class="kpi-label">夏普比率（滚动）</div>
+        <div class="kpi-label">夏普比率（日终）</div>
         <div class="kpi-val mono" :class="sharpeLevel(data.sharpeRatio).cls">
           {{ fmt.num(data.sharpeRatio) }}
         </div>

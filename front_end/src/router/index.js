@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { useAuthStore } from '@/stores/auth.js'
 
 const routes = [
   {
@@ -47,11 +48,13 @@ const router = createRouter({
 })
 
 // ── 导航守卫 ──────────────────────────────────────────────────────────────
-router.beforeEach((to) => {
+router.beforeEach(async (to) => {
   // 更新页面标题
   if (to.meta.title) document.title = `${to.meta.title} · 量化交易系统`
 
-  const sessionActive = sessionStorage.getItem('quant_session_active')
+  const auth = useAuthStore()
+  await auth.restoreSession()
+  const sessionActive = auth.isLoggedIn
 
   // 需要登录但未登录 → 跳到登录页
   if (to.meta.requiresAuth && !sessionActive) return { name: 'Login' }

@@ -1,0 +1,38 @@
+{
+  "health": {
+    "status": "ok",
+    "timestamp": "2026-10-08T16:17:34",
+    "gateway_status": "connected",
+    "active_sessions": 1,
+    "websockets": {
+      "system": 0,
+      "orders": 1,
+      "dashboard": 1,
+      "positions": 1,
+      "logs": 0
+    }
+  },
+  "margin_route_present": true,
+  "live_query_evidence": {
+    "provenance": "user-copied JSON from authenticated local browser; not assistant HTTP capture",
+    "symbol": "au2612",
+    "status": "ready",
+    "trading_day": "20261008",
+    "margin_source": "ctp_query",
+    "updated_at": "2026-10-08T16:06:30.189918+08:00",
+    "both_direction_rates_valid": true,
+    "both_fixed_amounts_zero": true,
+    "account_specific_rates_omitted": true
+  },
+  "deployment": {
+    "margin_query_and_cancel_transport_guard": "loaded at user restart",
+    "public_search_isolation_and_periodic_snapshot_fairness": "tested; pending restart after final review",
+    "restart_decision": "user chose to preserve the active session; final two fixes await a future restart"
+  },
+  "not_verified_live": [
+    "continuous fresh Tick and browser push",
+    "order submission and cancellation",
+    "cross-day and disconnect recovery"
+  ],
+  "screenshot": "fixture only: synthetic 12%/15% and fixed 20, not real account evidence"
+}

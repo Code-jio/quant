@@ -1,0 +1,4 @@
+# Resolve with Python 3.13 on Windows x64; install requirements-live.lock for the verified native runtime.
+-r requirements-research.lock
+vnpy==4.4.0
+vnpy_ctp==6.7.11.4

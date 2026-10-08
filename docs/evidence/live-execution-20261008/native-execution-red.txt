@@ -1,0 +1,59 @@
+........FFF...                                                           [100%]
+================================== FAILURES ===================================
+___________ test_native_cancel_transport_failure_is_not_success[-1] ___________
+
+bridge = namespace(adapter=<src.trading.vnpy_gateway.VnpyGateway object at 0x00000000047D0E10>, native=<vnpy_ctp.gateway.ctp_ga...eway.ctp_gateway' from 'D:\\mine\\quant\\back_end\\.venv-live\\Lib\\site-packages\\vnpy_ctp\\gateway\\ctp_gateway.py'>)
+code = -1
+
+    @pytest.mark.parametrize("code", [-1, -2, -3])
+    def test_native_cancel_transport_failure_is_not_success(bridge, code):
+        order_id = bridge.adapter.send_order(fixture_signal())
+        bridge.calls.cancel_code = code
+>       with pytest.raises(RuntimeError, match=f"{code}"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE RuntimeError
+
+D:\mine\quant\back_end\tests\test_native_ctp_execution.py:122: Failed
+___________ test_native_cancel_transport_failure_is_not_success[-2] ___________
+
+bridge = namespace(adapter=<src.trading.vnpy_gateway.VnpyGateway object at 0x000000003811B110>, native=<vnpy_ctp.gateway.ctp_ga...eway.ctp_gateway' from 'D:\\mine\\quant\\back_end\\.venv-live\\Lib\\site-packages\\vnpy_ctp\\gateway\\ctp_gateway.py'>)
+code = -2
+
+    @pytest.mark.parametrize("code", [-1, -2, -3])
+    def test_native_cancel_transport_failure_is_not_success(bridge, code):
+        order_id = bridge.adapter.send_order(fixture_signal())
+        bridge.calls.cancel_code = code
+>       with pytest.raises(RuntimeError, match=f"{code}"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE RuntimeError
+
+D:\mine\quant\back_end\tests\test_native_ctp_execution.py:122: Failed
+___________ test_native_cancel_transport_failure_is_not_success[-3] ___________
+
+bridge = namespace(adapter=<src.trading.vnpy_gateway.VnpyGateway object at 0x000000003811A850>, native=<vnpy_ctp.gateway.ctp_ga...eway.ctp_gateway' from 'D:\\mine\\quant\\back_end\\.venv-live\\Lib\\site-packages\\vnpy_ctp\\gateway\\ctp_gateway.py'>)
+code = -3
+
+    @pytest.mark.parametrize("code", [-1, -2, -3])
+    def test_native_cancel_transport_failure_is_not_success(bridge, code):
+        order_id = bridge.adapter.send_order(fixture_signal())
+        bridge.calls.cancel_code = code
+>       with pytest.raises(RuntimeError, match=f"{code}"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE RuntimeError
+
+D:\mine\quant\back_end\tests\test_native_ctp_execution.py:122: Failed
+============================== warnings summary ===============================
+.venv-live\Lib\site-packages\_pytest\cacheprovider.py:469
+  D:\mine\quant\back_end\.venv-live\Lib\site-packages\_pytest\cacheprovider.py:469: PytestCacheWarning: cache could not write path D:\mine\quant\back_end\.pytest_cache\v\cache\nodeids: [Errno 13] Permission denied: 'D:\\mine\\quant\\back_end\\.pytest_cache\\v\\cache\\nodeids'
+    config.cache.set("cache/nodeids", sorted(self.cached_nodeids))
+
+.venv-live\Lib\site-packages\_pytest\cacheprovider.py:423
+  D:\mine\quant\back_end\.venv-live\Lib\site-packages\_pytest\cacheprovider.py:423: PytestCacheWarning: could not create cache path D:\mine\quant\back_end\.pytest_cache\v\cache\lastfailed: [WinError 5] 拒绝访问。: 'D:\\mine\\quant\\back_end\\.pytest_cache\\v\\cache'
+    config.cache.set("cache/lastfailed", self.lastfailed)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_native_ctp_execution.py::test_native_cancel_transport_failure_is_not_success[-1]
+FAILED tests/test_native_ctp_execution.py::test_native_cancel_transport_failure_is_not_success[-2]
+FAILED tests/test_native_ctp_execution.py::test_native_cancel_transport_failure_is_not_success[-3]
+3 failed, 11 passed, 2 warnings in 0.42s

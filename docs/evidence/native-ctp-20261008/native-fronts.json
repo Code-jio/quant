@@ -1,0 +1,27 @@
+{
+  "python": "3.13.15",
+  "architecture": "AMD64",
+  "packages": {
+    "vnpy": "4.4.0",
+    "vnpy_ctp": "6.7.11.4"
+  },
+  "runtime": {
+    "native_imports": true,
+    "observer_installed": true,
+    "production_environment_supported": true
+  },
+  "td": {
+    "kind": "td",
+    "front_connected": true,
+    "disconnect_reason": null,
+    "production_mode": true,
+    "account_login_attempted": false
+  },
+  "md": {
+    "kind": "md",
+    "front_connected": true,
+    "disconnect_reason": null,
+    "production_mode": true,
+    "account_login_attempted": false
+  }
+}

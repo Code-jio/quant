@@ -1,0 +1,2177 @@
+{
+  "native": {
+    "counts": {
+      "passed": 214
+    },
+    "cases": [
+      {
+        "group": "tests.test_analysis_metrics",
+        "name": "test_risk_metrics_match_known_sample",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_analysis_metrics",
+        "name": "test_performance_metrics_use_trade_pnl_values",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_api_auth",
+        "name": "test_protected_endpoint_requires_session",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_api_auth",
+        "name": "test_health_and_metrics_are_public_and_structured",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_api_auth",
+        "name": "test_websocket_requires_session",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_api_auth",
+        "name": "test_websocket_query_token_is_disabled_by_default",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_api_auth",
+        "name": "test_vnpy_login_sets_cookie_and_allows_protected_endpoint",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_api_auth",
+        "name": "test_login_can_auto_start_strategy_runtime",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_api_auth",
+        "name": "test_emergency_stop_blocks_manual_orders_and_can_resume",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_api_auth",
+        "name": "test_runtime_risk_config_can_be_tightened",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_api_auth",
+        "name": "test_default_runtime_risk_blocks_market_orders",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_api_auth",
+        "name": "test_trading_reconcile_reports_account_orders_and_positions",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_api_auth",
+        "name": "test_audit_events_are_available_after_login",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_backtest_accounting",
+        "name": "test_backtest_equity_uses_margin_multiplier_and_unrealized_pnl",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_backtest_accounting",
+        "name": "test_market_slippage_is_directional",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_backtest_accounting",
+        "name": "test_backtest_result_counts_realized_trade_pnl_after_commission",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_backtest_accounting",
+        "name": "test_backtest_on_bar_sees_only_prior_history",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_account_query_uses_exact_contract_and_waits_for_final_packet",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_relative_rates_wait_for_exchange_base_and_include_fixed_amounts",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_invalid_or_wrong_account_response_never_unlocks_opening[override0]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_invalid_or_wrong_account_response_never_unlocks_opening[override1]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_invalid_or_wrong_account_response_never_unlocks_opening[override2]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_invalid_or_wrong_account_response_never_unlocks_opening[override3]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_invalid_or_wrong_account_response_never_unlocks_opening[override4]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_invalid_or_wrong_account_response_never_unlocks_opening[override5]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_invalid_or_wrong_account_response_never_unlocks_opening[override6]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_invalid_or_wrong_account_response_never_unlocks_opening[override7]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_invalid_or_wrong_account_response_never_unlocks_opening[override8]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_invalid_or_wrong_account_response_never_unlocks_opening[override9]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_disconnect_and_day_rollover_invalidate_rates_and_late_callbacks",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_timeouts_failed_sends_empty_and_error_replies_fail_closed",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_expired_rate_is_not_used_while_refreshing",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_timer_expires_rates_even_without_new_requests",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_margin_api_requires_session_and_public_search_hides_account_terms",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_gateway_timer_serializes_margin_and_account_queries",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_many_margin_queries_do_not_starve_account_and_position_refresh",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_data_governance",
+        "name": "test_cache_expires_entries",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_data_governance",
+        "name": "test_detect_daily_bar_gap",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_data_governance",
+        "name": "test_save_bars_records_metadata_and_quality",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_data_governance",
+        "name": "test_database_manager_upgrades_legacy_bars_table_with_ingested_at",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_data_governance",
+        "name": "test_generate_sample_data_marks_synthetic_source",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_data_governance",
+        "name": "test_generate_sample_data_can_be_disabled_for_production",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_strategy_detail_parameter_weight_and_start_stop_workflow",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_dashboard_account_snapshots_and_log_search",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_kline_indicators_pagination_quality_and_cache_command",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_every_websocket_channel_rejects_anonymous_access[system]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_every_websocket_channel_rejects_anonymous_access[orders]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_every_websocket_channel_rejects_anonymous_access[positions]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_every_websocket_channel_rejects_anonymous_access[dashboard]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_every_websocket_channel_rejects_anonymous_access[logs]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_every_websocket_channel_rejects_anonymous_access[watch]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_authenticated_websocket_initial_snapshot[system]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_authenticated_websocket_initial_snapshot[positions]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_authenticated_websocket_initial_snapshot[dashboard]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_authenticated_websocket_initial_snapshot[logs]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_watch_websocket_heartbeat_and_subscription",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_maintenance_cli_import_backup_restore_round_trip",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_json_performance_report_contains_finite_metrics",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_gateway_registry",
+        "name": "test_unknown_gateway_is_rejected",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_gateway_registry",
+        "name": "test_default_gateway_uses_vnpy_gateway",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_gateway_registry",
+        "name": "test_ctp_alias_uses_vnpy_gateway",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_gateway_registry",
+        "name": "test_vnpy_gateway_registered_directly",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_login_defaults",
+        "name": "test_public_defaults_and_openapi_never_disclose_credentials",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_login_defaults",
+        "name": "test_account_password_only_login_inherits_saved_config_without_contract[False]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_login_defaults",
+        "name": "test_account_password_only_login_inherits_saved_config_without_contract[True]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_login_defaults",
+        "name": "test_request_overrides_environment_overrides_saved_config",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_login_defaults",
+        "name": "test_local_file_refresh_and_margin_config_are_explicit",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_login_defaults",
+        "name": "test_bad_config_returns_sanitized_error[{\"auth_code\":\"SECRET_BROKEN]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_login_defaults",
+        "name": "test_bad_config_returns_sanitized_error[[]]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_login_defaults",
+        "name": "test_bad_config_returns_sanitized_error[{\"trading\": []}]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_login_defaults",
+        "name": "test_presets_env_override_and_default_address_are_both_available",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_login_defaults",
+        "name": "test_missing_default_config_is_safe_and_independent_of_working_directory",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_login_defaults",
+        "name": "test_invalid_environment_and_margin_config_do_not_connect",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_manual_trading",
+        "name": "test_manual_order_rejects_invalid_payloads",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_manual_trading",
+        "name": "test_manual_market_order_forces_zero_price_and_strips_symbol",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_manual_trading",
+        "name": "test_quick_close_short_position_uses_buy_direction_and_requested_offset",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_manual_trading",
+        "name": "test_quick_close_rejects_ambiguous_direction_and_over_volume",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_manual_trading",
+        "name": "test_cancel_all_counts_active_orders_once",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_manual_trading",
+        "name": "test_cancel_transport_error_reaches_api_without_marking_order_cancelled",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_market_ticks",
+        "name": "test_watch_tick_requires_connected_gateway",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_market_ticks",
+        "name": "test_watch_tick_returns_real_cached_ticks_and_subscribes",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_market_ticks",
+        "name": "test_watch_tick_reports_missing_without_fabricated_price",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_native_ctp_compat",
+        "name": "test_native_package_maps_environment_to_both_api_factories[\\u5b9e\\u76d8-True]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_native_ctp_compat",
+        "name": "test_native_package_maps_environment_to_both_api_factories[\\u6d4b\\u8bd5-False]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_native_ctp_compat",
+        "name": "test_observer_wraps_installed_native_callbacks",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_native_ctp_compat",
+        "name": "test_observer_captures_installed_margin_callbacks",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_limit_request_and_cancel_wait_for_native_receipt[OffsetFlag.OPEN-0-Direction.LONG-0]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_limit_request_and_cancel_wait_for_native_receipt[OffsetFlag.OPEN-0-Direction.SHORT-1]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_limit_request_and_cancel_wait_for_native_receipt[OffsetFlag.CLOSE-1-Direction.LONG-0]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_limit_request_and_cancel_wait_for_native_receipt[OffsetFlag.CLOSE-1-Direction.SHORT-1]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_limit_request_and_cancel_wait_for_native_receipt[OffsetFlag.CLOSE_TODAY-3-Direction.LONG-0]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_limit_request_and_cancel_wait_for_native_receipt[OffsetFlag.CLOSE_TODAY-3-Direction.SHORT-1]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_limit_request_and_cancel_wait_for_native_receipt[OffsetFlag.CLOSE_YESTERDAY-4-Direction.LONG-0]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_limit_request_and_cancel_wait_for_native_receipt[OffsetFlag.CLOSE_YESTERDAY-4-Direction.SHORT-1]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_native_cancel_transport_failure_is_not_success[-1]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_native_cancel_transport_failure_is_not_success[-2]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_native_cancel_transport_failure_is_not_success[-3]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_native_insert_transport_failure_has_no_order_id",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_native_insert_rejection_is_not_cancellation",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_native_cancel_rejection_keeps_order_active",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_native_tick_callback_updates_timestamp_and_cache",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_account_transition_discards_old_equity[False]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_account_transition_discards_old_equity[True]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_late_account_snapshot_and_queued_broadcast_are_discarded",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config[risk0]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config[risk1]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config[risk2]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config[risk3]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config[risk4]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config[risk5]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_login_passes_explicit_margin_rates_to_gateway",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_invalid_margin_configuration_does_not_replace_account[rates0]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_invalid_margin_configuration_does_not_replace_account[rates1]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_invalid_margin_configuration_does_not_replace_account[rates2]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_invalid_margin_configuration_does_not_replace_account[rates3]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_breakout_uses_the_last_n_prior_bars_without_skipping_the_latest",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_ma_uses_current_completed_close_without_mutating_history",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_rsi_strategy_uses_current_completed_close",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_builtin_decision_times_match_minute_replay_and_backtest[ma_cross-params0]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_builtin_decision_times_match_minute_replay_and_backtest[rsi-params1]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_builtin_decision_times_match_minute_replay_and_backtest[breakout-params2]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_server_rsi_matches_shared_wilder_fixtures[rising]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_server_rsi_matches_shared_wilder_fixtures[falling]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_server_rsi_matches_shared_wilder_fixtures[flat]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_server_rsi_matches_shared_wilder_fixtures[reversal]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_server_rsi_matches_shared_wilder_fixtures[warmup]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_server_rsi_matches_shared_wilder_fixtures[period_one]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_auth",
+        "name": "test_cli_imports_and_initializes_logging",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_auth",
+        "name": "test_alternate_entrypoint_is_same_factory",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_auth",
+        "name": "test_anonymous_mutations_do_not_disconnect_account",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_auth",
+        "name": "test_switch_revokes_old_cookie_and_websocket",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_auth",
+        "name": "test_failed_authenticated_switch_preserves_account",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_auth",
+        "name": "test_public_status_and_logs_do_not_disclose_account",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_auth",
+        "name": "test_cors_preflight_is_processed_before_auth",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_auth",
+        "name": "test_offline_research_does_not_require_ctp",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_backtest",
+        "name": "test_fills_on_next_bar_and_updates_strategy_position",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_backtest",
+        "name": "test_limit_that_never_crosses_does_not_fill",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_backtest",
+        "name": "test_drawdown_unit_and_short_sample_json",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_backtest",
+        "name": "test_round_trip_net_of_both_fees_is_one_trade",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_backtest",
+        "name": "test_strategy_error_does_not_report_complete_backtest",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_backtest",
+        "name": "test_reported_strategy_errors_are_not_silent_success",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_backtest",
+        "name": "test_multiple_orders_share_each_bars_volume_budget",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_backtest",
+        "name": "test_bankrupt_equity_has_no_undefined_annualization_warning",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_backtest",
+        "name": "test_full_synthetic_research_request_is_finite_json",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_backtest",
+        "name": "test_invalid_backtest_configuration_is_rejected[kwargs0]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_backtest",
+        "name": "test_invalid_backtest_configuration_is_rejected[kwargs1]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_backtest",
+        "name": "test_invalid_backtest_configuration_is_rejected[kwargs2]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_backtest",
+        "name": "test_invalid_backtest_configuration_is_rejected[kwargs3]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_backtest",
+        "name": "test_invalid_backtest_configuration_is_rejected[kwargs4]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_data",
+        "name": "test_date_end_includes_intraday_and_retains_row_provenance",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_data",
+        "name": "test_invalid_data_rejected_before_storage[close-inf]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_data",
+        "name": "test_invalid_data_rejected_before_storage[volume--1]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_data",
+        "name": "test_invalid_data_rejected_before_storage[high-90]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_data",
+        "name": "test_synthetic_is_ephemeral_and_respects_requested_period",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_data",
+        "name": "test_watch_uses_real_intraday_and_before_cursor",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_data",
+        "name": "test_calendar_does_not_claim_heuristic_is_exchange_schedule",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_data",
+        "name": "test_search_does_not_invent_unknown_contracts",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_execution",
+        "name": "test_event_time_bar_aggregation_and_duplicates",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_execution",
+        "name": "test_ledger_survives_restart_and_deduplicates",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_execution",
+        "name": "test_futures_sizing_uses_multiplier_margin_and_weight",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_execution",
+        "name": "test_strategy_parameters_reject_internal_attributes",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_execution",
+        "name": "test_reversal_closes_with_no_opening_budget_and_waits_for_pending_orders",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_execution",
+        "name": "test_close_today_needs_known_inventory",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_execution",
+        "name": "test_stop_strategy_preserves_account_connection",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_gateway",
+        "name": "test_log_or_account_event_cannot_claim_gateway_ready",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_gateway",
+        "name": "test_account_fields_come_from_broker_extras",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_gateway",
+        "name": "test_empty_position_query_clears_old_positions",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_gateway",
+        "name": "test_disconnect_invalidates_snapshots_and_md_td_separately",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_gateway",
+        "name": "test_unknown_symbol_rejected_before_vnpy_import",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_gateway",
+        "name": "test_native_observer_reports_empty_query_completion_and_login",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_runtime",
+        "name": "test_audit_survives_reopen_and_redacts_credentials",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_runtime",
+        "name": "test_metrics_labels_are_bounded_and_escaped",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_runtime",
+        "name": "test_single_instance_lock_rejects_second_owner",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_runtime",
+        "name": "test_backup_and_restore_execution_database",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_emergency_stop_is_independent_of_optional_limits",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_nonfinite_signal_is_rejected[nan]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_nonfinite_signal_is_rejected[inf]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_nonfinite_signal_is_rejected[-inf]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_net_short_preserves_sign",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_pending_opens_reserve_position_capacity",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_acknowledged_order_reserves_margin_until_account_catches_up",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_fixed_margin_is_reserved_for_new_and_pending_orders[0.1-20]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_fixed_margin_is_reserved_for_new_and_pending_orders[0-120]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_fixed_margin_is_included_in_strategy_sizing",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_operator_emergency_stop_is_restored",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_close_selects_opposite_leg_and_deducts_frozen",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_loss_limit_allows_reduction_but_unknown_account_blocks_open",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_preorder_cannot_bypass_emergency_or_open_instead_of_close",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_cancel_waits_for_broker_and_modify_preserves_remaining_close",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_strategy_filters_symbols_and_stopped_callbacks",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_duplicate_trade_is_retained_once_and_applied_once",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_exception_wrapper_executes_target[handle_network_request]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_exception_wrapper_executes_target[handle_trading_operation]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_security_and_risk.SafeDefaultsTest",
+        "name": "test_ctp_defaults_do_not_embed_production_credentials",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_security_and_risk.SessionStoreTest",
+        "name": "test_expired_session_is_rejected",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_security_and_risk.SessionStoreTest",
+        "name": "test_session_create_validate_and_revoke",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_security_and_risk.RiskManagerTest",
+        "name": "test_allows_valid_open_order",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_security_and_risk.RiskManagerTest",
+        "name": "test_configure_reads_nested_risk_config",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_security_and_risk.RiskManagerTest",
+        "name": "test_duplicate_signal_is_rejected_within_window",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_security_and_risk.RiskManagerTest",
+        "name": "test_emergency_stop_rejects_all_orders",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_security_and_risk.RiskManagerTest",
+        "name": "test_rejects_close_volume_above_position",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_security_and_risk.RiskManagerTest",
+        "name": "test_rejects_close_without_position",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_security_and_risk.RiskManagerTest",
+        "name": "test_rejects_limit_order_far_from_latest_price",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_security_and_risk.RiskManagerTest",
+        "name": "test_rejects_order_value_above_limit",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_security_and_risk.RiskManagerTest",
+        "name": "test_rejects_order_volume_above_limit",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_security_and_risk.RiskManagerTest",
+        "name": "test_rejects_stale_market_data_before_opening",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_strategy_position_accounting",
+        "name": "test_strategy_capital_does_not_double_count_commission_when_trade_pnl_is_net",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_strategy_position_accounting",
+        "name": "test_strategy_capital_deducts_commission_when_trade_has_no_pnl",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_strategy_position_accounting",
+        "name": "test_partial_close_keeps_remaining_long_cost_unchanged",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_strategy_position_accounting",
+        "name": "test_reversal_uses_new_trade_price_as_cost_for_new_side",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_strategy_position_accounting",
+        "name": "test_strategy_position_source_overrides_internal_state_when_available",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_trading_engine_auto_strategy",
+        "name": "test_live_ticks_update_strategy_data_and_dispatch_new_signals_once",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_trading_engine_auto_strategy",
+        "name": "test_live_on_bar_sees_only_prior_ticks_in_strategy_data",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_trading_engine_auto_strategy",
+        "name": "test_broker_order_callback_updates_order_manager_books",
+        "result": "passed"
+      }
+    ]
+  },
+  "research": {
+    "counts": {
+      "passed": 195,
+      "skipped": 19
+    },
+    "cases": [
+      {
+        "group": "tests.test_analysis_metrics",
+        "name": "test_risk_metrics_match_known_sample",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_analysis_metrics",
+        "name": "test_performance_metrics_use_trade_pnl_values",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_api_auth",
+        "name": "test_protected_endpoint_requires_session",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_api_auth",
+        "name": "test_health_and_metrics_are_public_and_structured",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_api_auth",
+        "name": "test_websocket_requires_session",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_api_auth",
+        "name": "test_websocket_query_token_is_disabled_by_default",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_api_auth",
+        "name": "test_vnpy_login_sets_cookie_and_allows_protected_endpoint",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_api_auth",
+        "name": "test_login_can_auto_start_strategy_runtime",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_api_auth",
+        "name": "test_emergency_stop_blocks_manual_orders_and_can_resume",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_api_auth",
+        "name": "test_runtime_risk_config_can_be_tightened",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_api_auth",
+        "name": "test_default_runtime_risk_blocks_market_orders",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_api_auth",
+        "name": "test_trading_reconcile_reports_account_orders_and_positions",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_api_auth",
+        "name": "test_audit_events_are_available_after_login",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_backtest_accounting",
+        "name": "test_backtest_equity_uses_margin_multiplier_and_unrealized_pnl",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_backtest_accounting",
+        "name": "test_market_slippage_is_directional",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_backtest_accounting",
+        "name": "test_backtest_result_counts_realized_trade_pnl_after_commission",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_backtest_accounting",
+        "name": "test_backtest_on_bar_sees_only_prior_history",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_account_query_uses_exact_contract_and_waits_for_final_packet",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_relative_rates_wait_for_exchange_base_and_include_fixed_amounts",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_invalid_or_wrong_account_response_never_unlocks_opening[override0]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_invalid_or_wrong_account_response_never_unlocks_opening[override1]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_invalid_or_wrong_account_response_never_unlocks_opening[override2]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_invalid_or_wrong_account_response_never_unlocks_opening[override3]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_invalid_or_wrong_account_response_never_unlocks_opening[override4]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_invalid_or_wrong_account_response_never_unlocks_opening[override5]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_invalid_or_wrong_account_response_never_unlocks_opening[override6]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_invalid_or_wrong_account_response_never_unlocks_opening[override7]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_invalid_or_wrong_account_response_never_unlocks_opening[override8]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_invalid_or_wrong_account_response_never_unlocks_opening[override9]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_disconnect_and_day_rollover_invalidate_rates_and_late_callbacks",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_timeouts_failed_sends_empty_and_error_replies_fail_closed",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_expired_rate_is_not_used_while_refreshing",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_timer_expires_rates_even_without_new_requests",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_margin_api_requires_session_and_public_search_hides_account_terms",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_gateway_timer_serializes_margin_and_account_queries",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_ctp_margin",
+        "name": "test_many_margin_queries_do_not_starve_account_and_position_refresh",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_data_governance",
+        "name": "test_cache_expires_entries",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_data_governance",
+        "name": "test_detect_daily_bar_gap",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_data_governance",
+        "name": "test_save_bars_records_metadata_and_quality",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_data_governance",
+        "name": "test_database_manager_upgrades_legacy_bars_table_with_ingested_at",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_data_governance",
+        "name": "test_generate_sample_data_marks_synthetic_source",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_data_governance",
+        "name": "test_generate_sample_data_can_be_disabled_for_production",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_strategy_detail_parameter_weight_and_start_stop_workflow",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_dashboard_account_snapshots_and_log_search",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_kline_indicators_pagination_quality_and_cache_command",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_every_websocket_channel_rejects_anonymous_access[system]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_every_websocket_channel_rejects_anonymous_access[orders]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_every_websocket_channel_rejects_anonymous_access[positions]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_every_websocket_channel_rejects_anonymous_access[dashboard]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_every_websocket_channel_rejects_anonymous_access[logs]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_every_websocket_channel_rejects_anonymous_access[watch]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_authenticated_websocket_initial_snapshot[system]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_authenticated_websocket_initial_snapshot[positions]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_authenticated_websocket_initial_snapshot[dashboard]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_authenticated_websocket_initial_snapshot[logs]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_watch_websocket_heartbeat_and_subscription",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_maintenance_cli_import_backup_restore_round_trip",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_feature_inventory",
+        "name": "test_json_performance_report_contains_finite_metrics",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_gateway_registry",
+        "name": "test_unknown_gateway_is_rejected",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_gateway_registry",
+        "name": "test_default_gateway_uses_vnpy_gateway",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_gateway_registry",
+        "name": "test_ctp_alias_uses_vnpy_gateway",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_gateway_registry",
+        "name": "test_vnpy_gateway_registered_directly",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_login_defaults",
+        "name": "test_public_defaults_and_openapi_never_disclose_credentials",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_login_defaults",
+        "name": "test_account_password_only_login_inherits_saved_config_without_contract[False]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_login_defaults",
+        "name": "test_account_password_only_login_inherits_saved_config_without_contract[True]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_login_defaults",
+        "name": "test_request_overrides_environment_overrides_saved_config",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_login_defaults",
+        "name": "test_local_file_refresh_and_margin_config_are_explicit",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_login_defaults",
+        "name": "test_bad_config_returns_sanitized_error[{\"auth_code\":\"SECRET_BROKEN]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_login_defaults",
+        "name": "test_bad_config_returns_sanitized_error[[]]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_login_defaults",
+        "name": "test_bad_config_returns_sanitized_error[{\"trading\": []}]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_login_defaults",
+        "name": "test_presets_env_override_and_default_address_are_both_available",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_login_defaults",
+        "name": "test_missing_default_config_is_safe_and_independent_of_working_directory",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_login_defaults",
+        "name": "test_invalid_environment_and_margin_config_do_not_connect",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_manual_trading",
+        "name": "test_manual_order_rejects_invalid_payloads",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_manual_trading",
+        "name": "test_manual_market_order_forces_zero_price_and_strips_symbol",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_manual_trading",
+        "name": "test_quick_close_short_position_uses_buy_direction_and_requested_offset",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_manual_trading",
+        "name": "test_quick_close_rejects_ambiguous_direction_and_over_volume",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_manual_trading",
+        "name": "test_cancel_all_counts_active_orders_once",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_manual_trading",
+        "name": "test_cancel_transport_error_reaches_api_without_marking_order_cancelled",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_market_ticks",
+        "name": "test_watch_tick_requires_connected_gateway",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_market_ticks",
+        "name": "test_watch_tick_returns_real_cached_ticks_and_subscribes",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_market_ticks",
+        "name": "test_watch_tick_reports_missing_without_fabricated_price",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_native_ctp_compat",
+        "name": "test_native_package_maps_environment_to_both_api_factories[\\u5b9e\\u76d8-True]",
+        "result": "skipped"
+      },
+      {
+        "group": "tests.test_native_ctp_compat",
+        "name": "test_native_package_maps_environment_to_both_api_factories[\\u6d4b\\u8bd5-False]",
+        "result": "skipped"
+      },
+      {
+        "group": "tests.test_native_ctp_compat",
+        "name": "test_observer_wraps_installed_native_callbacks",
+        "result": "skipped"
+      },
+      {
+        "group": "tests.test_native_ctp_compat",
+        "name": "test_observer_captures_installed_margin_callbacks",
+        "result": "skipped"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_limit_request_and_cancel_wait_for_native_receipt[OffsetFlag.OPEN-0-Direction.LONG-0]",
+        "result": "skipped"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_limit_request_and_cancel_wait_for_native_receipt[OffsetFlag.OPEN-0-Direction.SHORT-1]",
+        "result": "skipped"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_limit_request_and_cancel_wait_for_native_receipt[OffsetFlag.CLOSE-1-Direction.LONG-0]",
+        "result": "skipped"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_limit_request_and_cancel_wait_for_native_receipt[OffsetFlag.CLOSE-1-Direction.SHORT-1]",
+        "result": "skipped"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_limit_request_and_cancel_wait_for_native_receipt[OffsetFlag.CLOSE_TODAY-3-Direction.LONG-0]",
+        "result": "skipped"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_limit_request_and_cancel_wait_for_native_receipt[OffsetFlag.CLOSE_TODAY-3-Direction.SHORT-1]",
+        "result": "skipped"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_limit_request_and_cancel_wait_for_native_receipt[OffsetFlag.CLOSE_YESTERDAY-4-Direction.LONG-0]",
+        "result": "skipped"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_limit_request_and_cancel_wait_for_native_receipt[OffsetFlag.CLOSE_YESTERDAY-4-Direction.SHORT-1]",
+        "result": "skipped"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_native_cancel_transport_failure_is_not_success[-1]",
+        "result": "skipped"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_native_cancel_transport_failure_is_not_success[-2]",
+        "result": "skipped"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_native_cancel_transport_failure_is_not_success[-3]",
+        "result": "skipped"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_native_insert_transport_failure_has_no_order_id",
+        "result": "skipped"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_native_insert_rejection_is_not_cancellation",
+        "result": "skipped"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_native_cancel_rejection_keeps_order_active",
+        "result": "skipped"
+      },
+      {
+        "group": "tests.test_native_ctp_execution",
+        "name": "test_native_tick_callback_updates_timestamp_and_cache",
+        "result": "skipped"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_account_transition_discards_old_equity[False]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_account_transition_discards_old_equity[True]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_late_account_snapshot_and_queued_broadcast_are_discarded",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config[risk0]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config[risk1]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config[risk2]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config[risk3]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config[risk4]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_invalid_risk_update_returns_422_and_preserves_current_and_saved_config[risk5]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_login_passes_explicit_margin_rates_to_gateway",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_invalid_margin_configuration_does_not_replace_account[rates0]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_invalid_margin_configuration_does_not_replace_account[rates1]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_invalid_margin_configuration_does_not_replace_account[rates2]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_invalid_margin_configuration_does_not_replace_account[rates3]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_breakout_uses_the_last_n_prior_bars_without_skipping_the_latest",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_ma_uses_current_completed_close_without_mutating_history",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_rsi_strategy_uses_current_completed_close",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_builtin_decision_times_match_minute_replay_and_backtest[ma_cross-params0]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_builtin_decision_times_match_minute_replay_and_backtest[rsi-params1]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_builtin_decision_times_match_minute_replay_and_backtest[breakout-params2]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_server_rsi_matches_shared_wilder_fixtures[rising]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_server_rsi_matches_shared_wilder_fixtures[falling]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_server_rsi_matches_shared_wilder_fixtures[flat]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_server_rsi_matches_shared_wilder_fixtures[reversal]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_server_rsi_matches_shared_wilder_fixtures[warmup]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_recheck_regressions",
+        "name": "test_server_rsi_matches_shared_wilder_fixtures[period_one]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_auth",
+        "name": "test_cli_imports_and_initializes_logging",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_auth",
+        "name": "test_alternate_entrypoint_is_same_factory",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_auth",
+        "name": "test_anonymous_mutations_do_not_disconnect_account",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_auth",
+        "name": "test_switch_revokes_old_cookie_and_websocket",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_auth",
+        "name": "test_failed_authenticated_switch_preserves_account",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_auth",
+        "name": "test_public_status_and_logs_do_not_disclose_account",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_auth",
+        "name": "test_cors_preflight_is_processed_before_auth",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_auth",
+        "name": "test_offline_research_does_not_require_ctp",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_backtest",
+        "name": "test_fills_on_next_bar_and_updates_strategy_position",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_backtest",
+        "name": "test_limit_that_never_crosses_does_not_fill",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_backtest",
+        "name": "test_drawdown_unit_and_short_sample_json",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_backtest",
+        "name": "test_round_trip_net_of_both_fees_is_one_trade",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_backtest",
+        "name": "test_strategy_error_does_not_report_complete_backtest",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_backtest",
+        "name": "test_reported_strategy_errors_are_not_silent_success",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_backtest",
+        "name": "test_multiple_orders_share_each_bars_volume_budget",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_backtest",
+        "name": "test_bankrupt_equity_has_no_undefined_annualization_warning",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_backtest",
+        "name": "test_full_synthetic_research_request_is_finite_json",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_backtest",
+        "name": "test_invalid_backtest_configuration_is_rejected[kwargs0]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_backtest",
+        "name": "test_invalid_backtest_configuration_is_rejected[kwargs1]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_backtest",
+        "name": "test_invalid_backtest_configuration_is_rejected[kwargs2]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_backtest",
+        "name": "test_invalid_backtest_configuration_is_rejected[kwargs3]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_backtest",
+        "name": "test_invalid_backtest_configuration_is_rejected[kwargs4]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_data",
+        "name": "test_date_end_includes_intraday_and_retains_row_provenance",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_data",
+        "name": "test_invalid_data_rejected_before_storage[close-inf]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_data",
+        "name": "test_invalid_data_rejected_before_storage[volume--1]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_data",
+        "name": "test_invalid_data_rejected_before_storage[high-90]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_data",
+        "name": "test_synthetic_is_ephemeral_and_respects_requested_period",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_data",
+        "name": "test_watch_uses_real_intraday_and_before_cursor",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_data",
+        "name": "test_calendar_does_not_claim_heuristic_is_exchange_schedule",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_data",
+        "name": "test_search_does_not_invent_unknown_contracts",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_execution",
+        "name": "test_event_time_bar_aggregation_and_duplicates",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_execution",
+        "name": "test_ledger_survives_restart_and_deduplicates",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_execution",
+        "name": "test_futures_sizing_uses_multiplier_margin_and_weight",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_execution",
+        "name": "test_strategy_parameters_reject_internal_attributes",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_execution",
+        "name": "test_reversal_closes_with_no_opening_budget_and_waits_for_pending_orders",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_execution",
+        "name": "test_close_today_needs_known_inventory",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_execution",
+        "name": "test_stop_strategy_preserves_account_connection",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_gateway",
+        "name": "test_log_or_account_event_cannot_claim_gateway_ready",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_gateway",
+        "name": "test_account_fields_come_from_broker_extras",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_gateway",
+        "name": "test_empty_position_query_clears_old_positions",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_gateway",
+        "name": "test_disconnect_invalidates_snapshots_and_md_td_separately",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_gateway",
+        "name": "test_unknown_symbol_rejected_before_vnpy_import",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_gateway",
+        "name": "test_native_observer_reports_empty_query_completion_and_login",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_runtime",
+        "name": "test_audit_survives_reopen_and_redacts_credentials",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_runtime",
+        "name": "test_metrics_labels_are_bounded_and_escaped",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_runtime",
+        "name": "test_single_instance_lock_rejects_second_owner",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_runtime",
+        "name": "test_backup_and_restore_execution_database",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_emergency_stop_is_independent_of_optional_limits",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_nonfinite_signal_is_rejected[nan]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_nonfinite_signal_is_rejected[inf]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_nonfinite_signal_is_rejected[-inf]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_net_short_preserves_sign",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_pending_opens_reserve_position_capacity",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_acknowledged_order_reserves_margin_until_account_catches_up",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_fixed_margin_is_reserved_for_new_and_pending_orders[0.1-20]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_fixed_margin_is_reserved_for_new_and_pending_orders[0-120]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_fixed_margin_is_included_in_strategy_sizing",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_operator_emergency_stop_is_restored",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_close_selects_opposite_leg_and_deducts_frozen",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_loss_limit_allows_reduction_but_unknown_account_blocks_open",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_preorder_cannot_bypass_emergency_or_open_instead_of_close",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_cancel_waits_for_broker_and_modify_preserves_remaining_close",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_strategy_filters_symbols_and_stopped_callbacks",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_duplicate_trade_is_retained_once_and_applied_once",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_exception_wrapper_executes_target[handle_network_request]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_review_trading",
+        "name": "test_exception_wrapper_executes_target[handle_trading_operation]",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_security_and_risk.SafeDefaultsTest",
+        "name": "test_ctp_defaults_do_not_embed_production_credentials",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_security_and_risk.SessionStoreTest",
+        "name": "test_expired_session_is_rejected",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_security_and_risk.SessionStoreTest",
+        "name": "test_session_create_validate_and_revoke",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_security_and_risk.RiskManagerTest",
+        "name": "test_allows_valid_open_order",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_security_and_risk.RiskManagerTest",
+        "name": "test_configure_reads_nested_risk_config",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_security_and_risk.RiskManagerTest",
+        "name": "test_duplicate_signal_is_rejected_within_window",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_security_and_risk.RiskManagerTest",
+        "name": "test_emergency_stop_rejects_all_orders",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_security_and_risk.RiskManagerTest",
+        "name": "test_rejects_close_volume_above_position",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_security_and_risk.RiskManagerTest",
+        "name": "test_rejects_close_without_position",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_security_and_risk.RiskManagerTest",
+        "name": "test_rejects_limit_order_far_from_latest_price",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_security_and_risk.RiskManagerTest",
+        "name": "test_rejects_order_value_above_limit",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_security_and_risk.RiskManagerTest",
+        "name": "test_rejects_order_volume_above_limit",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_security_and_risk.RiskManagerTest",
+        "name": "test_rejects_stale_market_data_before_opening",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_strategy_position_accounting",
+        "name": "test_strategy_capital_does_not_double_count_commission_when_trade_pnl_is_net",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_strategy_position_accounting",
+        "name": "test_strategy_capital_deducts_commission_when_trade_has_no_pnl",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_strategy_position_accounting",
+        "name": "test_partial_close_keeps_remaining_long_cost_unchanged",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_strategy_position_accounting",
+        "name": "test_reversal_uses_new_trade_price_as_cost_for_new_side",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_strategy_position_accounting",
+        "name": "test_strategy_position_source_overrides_internal_state_when_available",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_trading_engine_auto_strategy",
+        "name": "test_live_ticks_update_strategy_data_and_dispatch_new_signals_once",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_trading_engine_auto_strategy",
+        "name": "test_live_on_bar_sees_only_prior_ticks_in_strategy_data",
+        "result": "passed"
+      },
+      {
+        "group": "tests.test_trading_engine_auto_strategy",
+        "name": "test_broker_order_callback_updates_order_manager_books",
+        "result": "passed"
+      }
+    ]
+  },
+  "frontend": {
+    "unit_passed": 26,
+    "browser_passed": 11,
+    "logs": [
+      "frontend-quality.txt",
+      "browser-e2e.txt"
+    ]
+  },
+  "routes": {
+    "count": 43,
+    "methods": {
+      "GET": 23,
+      "POST": 9,
+      "PUT": 3,
+      "DELETE": 2,
+      "WEBSOCKET": 6
+    },
+    "executed_handler_bodies": 43,
+    "limitation": "Handler execution does not prove all branches or native broker behavior."
+  }
+}

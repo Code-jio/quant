@@ -1,0 +1,25 @@
+{
+  "scope": "Read-only health; no restart, account change or broker orders",
+  "checks": {
+    "backend": {
+      "http_status": 200,
+      "status": "ok",
+      "timestamp": "2026-10-08T16:44:55",
+      "gateway_status": "connected",
+      "active_sessions": 1
+    },
+    "frontend_proxy": {
+      "http_status": 200,
+      "status": "ok",
+      "timestamp": "2026-10-08T16:44:55",
+      "gateway_status": "connected",
+      "active_sessions": 1
+    }
+  },
+  "backend_pid_verified": 33720,
+  "backend_start_local_verified": "2026-10-08T16:03:51+08:00",
+  "pending_restart": [
+    "public search margin isolation",
+    "independent account refresh scheduling"
+  ]
+}

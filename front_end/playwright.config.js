@@ -7,24 +7,30 @@ export default defineConfig({
   testDir: './tests/e2e',
   timeout: 30_000,
   expect: { timeout: 5_000 },
-  fullyParallel: true,
+  fullyParallel: false,
+  workers: 1,
   reporter: [['list']],
   use: {
     baseURL,
     trace: 'on-first-retry',
   },
-  webServer: {
-    command: `npm run dev -- --host 127.0.0.1 --port ${port} --strictPort`,
+  webServer: [{
+    command: `${process.env.QUANT_TEST_PYTHON || 'python'} ../back_end/tests/e2e_backend.py`,
+    url: 'http://127.0.0.1:8000/health',
+    reuseExistingServer: false,
+    timeout: 60_000,
+  }, {
+    command: `node node_modules/vite/bin/vite.js --host 127.0.0.1 --port ${port} --strictPort`,
     url: baseURL,
     reuseExistingServer: false,
     timeout: 60_000,
-  },
+  }],
   projects: [
     {
-      name: 'msedge',
+      name: 'chromium',
       use: {
         ...devices['Desktop Chrome'],
-        channel: 'msedge',
+        channel: process.env.CI ? undefined : 'msedge',
       },
     },
   ],

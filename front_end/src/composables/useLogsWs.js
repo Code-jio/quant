@@ -96,7 +96,7 @@ export function useLogsWs(url = buildWsUrl('/ws/logs')) {
 
     ws.onmessage = onMessage
 
-    ws.onclose = (e) => {
+    ws.onclose = (_e) => {
       connected.value = false
       stopHeartbeat()
       if (!destroyed) {

@@ -1,0 +1,18 @@
+编号,优先级,范围,问题,验证方式,状态,关联历史事项,修复日期,验证证据
+R01,P1,账户隔离,切换账户后权益历史残留并产生虚假回撤,真实API路径加FakeGateway,已修复（离线验证）,Q04/Q52,2026-10-08,test_recheck_regressions.py：切换/注销/迟到快照和广播
+R02,P1,前后端集成,网页登录缺少经核实保证金率配置通路,本地配置读取及显式API保证金参数正反校验,已修复；无合约登录已实测；当前账户单合约保证金查询已实测（见R08）,Q18/Q19,2026-10-08,test_login_defaults.py；test_recheck_regressions.py；recheck.spec.js；CTP_MARGIN_QUERY_2026-10-08.md
+R03,P1,策略与回测,已完成bar窗口错位导致错误或延迟信号,固定行情逐bar信号验证,已修复（离线验证）,Q09既有剩余问题,2026-10-08,test_recheck_regressions.py：固定样本和三策略分钟回放/回测一致性
+R04,P2,前端实时数据,快照失败后已收到的成交推送未重放,Vue组件加FakeWebSocket定向失败断言,已修复（离线验证）,Q44,2026-10-08,review-ws.spec.js：失败后重放/重试/销毁
+R05,P2,技术指标,RSI单边行情和横盘边界错误且前后端不一致,同一收盘序列调用真实Python和Worker函数,已修复（离线验证）,新增,2026-10-08,共享 rsi_cases.json；Python 与 Worker 参数化回归
+R06,P2,后端API,无效风控配置返回500而非参数校验错误,登录后PUT风控配置,已修复（离线验证）,Q14校验反馈补充,2026-10-08,test_recheck_regressions.py：六类无效输入返回422且配置不变
+R07,P1,CTP撤单,原生reqOrderAction即时失败码被忽略并报告请求成功,原生安装包拦截发送及FakeGateway API异常回归,已修复并经用户重启加载；真实撤单回报待人工验收,新增,2026-10-08,test_native_ctp_execution.py；test_manual_trading.py；CTP_MARGIN_QUERY_2026-10-08.md
+R08,P1,CTP保证金,未自动查询账户合约保证金导致缺少手工配置时不能开仓,安装包回调兼容性及隔离API/风控/UI回归；用户本地复制真实柜台响应,已修复；au2612查询ready且来源ctp_query；其他账户/品种/跨日仍待验收,新增,2026-10-08,test_ctp_margin.py；test_native_ctp_compat.py；test_review_trading.py；recheck.spec.js；CTP_MARGIN_QUERY_2026-10-08.md
+R09,P1,账户隔离,公开搜索依据锁外身份快照返回保证金可能在账户切换时混用,搜索带会话和不带会话都隐藏保证金；受保护接口独立验证,已修复并通过回归；最后补充代码待重启加载,新增,2026-10-08,test_ctp_margin.py；CTP_MARGIN_QUERY_2026-10-08.md
+R10,P1,查询调度,连续保证金队列重置查询时间导致账户持仓刷新饥饿,60合约连续查询期间账户及持仓持续刷新,已修复并通过回归；最后补充代码待重启加载,新增,2026-10-08,test_ctp_margin.py；CTP_MARGIN_QUERY_2026-10-08.md
+R11,P2,盯盘告警,高频Tick以显示更新时间限流导致告警检测永久推迟,100ms及600ms事件序列覆盖价格和量阈值及冷却,已修复（隔离验证）；刷新前端加载,新增,2026-10-08,feature-inventory.spec.js单测；FEATURE_INVENTORY_2026-10-08.md
+R12,P2,图表偏好,副图选择及均线嵌套属性直接修改未保存,选择RSI和关闭首条均线后刷新页面验证持久化,已修复（浏览器验证）；刷新前端加载,新增,2026-10-08,feature-inventory.spec.js单测和E2E；FEATURE_INVENTORY_2026-10-08.md
+R13,P2,图表画线,清除按钮仅清状态而ECharts合并保留旧图形,实际绘制水平线并检查清除后graphic元素为0及截图,已修复（浏览器验证）；刷新前端加载,新增,2026-10-08,feature-inventory.spec.js E2E；FEATURE_INVENTORY_2026-10-08.md
+R14,P3,K线周期,自定义周期输入超出后端八种支持周期时不能生成K线,7d请求返回400且页面显示错误,能力限制已记录；任意周期聚合尚未实现,新增,,test_feature_inventory.py；feature-inventory.spec.js E2E；FEATURE_INVENTORY_2026-10-08.md
+R15,P2,交易台布局,固定1600px宽度且纵向堆叠导致2K屏两侧留白和下单区低于首屏,2560及1920及1366首屏几何检查和截图；合约联动及取消确认不发送写请求,已完成（隔离浏览器验证）；刷新前端加载,新增,2026-10-08,trading-layout.spec.js；TRADING_LAYOUT_2026-10-08.md
+R16,P2,盘口显示,卖盘档位标签与价格错配且CSS反转使最优卖价远离买一,逐档样本核对卖五202与卖一200及上下位置,已修复（浏览器验证）；完整实盘多档来源仍待验收,新增,2026-10-08,trading-layout.spec.js；TRADING_LAYOUT_2026-10-08.md
+R17,P2,同账户多端登录,已连接账户会拒绝另一浏览器且原退出会断开全部,双独立Cookie及单引擎回归；单端退出和全局断开及新标签恢复；密码和配置拒绝测试,已实现（隔离验证）；保留实盘会话待重启启用,新增,2026-10-08,test_multi_device_auth.py；multi-device.spec.js；MULTI_DEVICE_LOGIN_2026-10-08.md

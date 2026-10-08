@@ -4,6 +4,7 @@ REST API 模块 - FastAPI + WebSocket + 身份认证
 端点总览：
   POST /auth/login            — CTP 账户登录（连接交易/行情前置）
   POST /auth/logout           — 断开连接并注销会话
+  POST /auth/session/logout   — 仅注销当前端，保留共享连接
   GET  /auth/status           — 当前连接状态（无需鉴权）
   GET  /auth/servers          — 预设服务器列表
   GET  /system/status         — 系统健康状态
@@ -40,15 +41,16 @@ import traceback
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Literal, Optional, Set
 
 import numpy as np
 import pandas as pd
 import psutil
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from ..strategy import Direction, StrategyBase
 from ..trading import AccountInfo, TradingEngine, TradingStatus
@@ -57,137 +59,152 @@ from ..observability import audit_log, metrics, new_request_id, structured_json
 from ..settings import (
     ctp_defaults,
     ctp_server_presets,
+    load_ctp_config,
     runtime_risk_defaults,
     secure_session_cookie_enabled,
     websocket_query_token_enabled,
 )
 from .backtest_service import STRATEGY_CATALOG, run_backtest_sync
-from .security import SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME, is_open_path, session_store
+from .security import AccountCredential, LoginThrottle, SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME, is_open_path, session_store
 
 logger = logging.getLogger(__name__)
-_CTP_DEFAULTS = ctp_defaults()
 _DEFAULT_RUNTIME_RISK = runtime_risk_defaults()
 
-_DEFAULT_CORS_ORIGINS = (
-    "http://localhost:5173,"
-    "http://127.0.0.1:5173,"
-    "http://localhost:5174,"
-    "http://127.0.0.1:5174"
-)
+_DEFAULT_CORS_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174"
 
 
 def _cors_origins() -> List[str]:
     raw = os.getenv("QUANT_CORS_ORIGINS", _DEFAULT_CORS_ORIGINS)
     return [item.strip() for item in raw.split(",") if item.strip()]
 
+
 # ---------------------------------------------------------------------------
 # Pydantic 模型
 # ---------------------------------------------------------------------------
 
+
 class LoginRequest(BaseModel):
-    username:   str
-    password:   str
-    broker_id:  str = _CTP_DEFAULTS["broker_id"]
-    td_server:  str = _CTP_DEFAULTS["td_server"]
-    md_server:  str = _CTP_DEFAULTS["md_server"]
-    app_id:     str = _CTP_DEFAULTS["app_id"]
-    auth_code:  str = _CTP_DEFAULTS["auth_code"]
-    gateway_type: str = "vnpy"   # "vnpy" | "ctp"
-    environment: str = _CTP_DEFAULTS["vnpy_environment"]     # vn.py CTP 柜台环境："实盘" | "测试"
+    username: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=1, max_length=1024, repr=False)
+    broker_id: str = ""
+    td_server: str = ""
+    md_server: str = ""
+    app_id: str = ""
+    auth_code: str = ""
+    gateway_type: str = "vnpy"  # "vnpy" | "ctp"
+    environment: Literal["实盘", "测试"] | None = None
     auto_start_strategy: bool = False
     strategy_name: str = "ma_cross"
     strategy_params: Dict[str, Any] = Field(default_factory=dict)
     risk: Dict[str, Any] = Field(default_factory=dict)
+    contract_margin_rates: Dict[str, float] = Field(default_factory=dict)
+
+    @field_validator("contract_margin_rates", mode="before")
+    @classmethod
+    def validate_margin_rates(cls, value):
+        import math
+
+        if not isinstance(value, dict):
+            raise ValueError("保证金率必须按合约填写")
+        for symbol, rate in value.items():
+            if not isinstance(symbol, str) or not symbol.strip() or symbol != symbol.strip():
+                raise ValueError("保证金率需要有效的合约代码")
+            if isinstance(rate, bool) or not isinstance(rate, (int, float)) or not math.isfinite(rate) or not 0 < rate <= 1:
+                raise ValueError(f"{symbol} 保证金比例必须在 (0,1]")
+        return value
 
 
 class LoginResponse(BaseModel):
-    success:        bool
-    message:        str
+    success: bool
+    message: str
     gateway_status: str
-    account_id:     str = ""
-    balance:        float = 0.0
+    account_id: str = ""
+    balance: float = 0.0
     strategy_started: bool = False
-    strategy_id:      str = ""
+    strategy_id: str = ""
+    connection_reused: bool = False
 
 
 class AuthStatusResponse(BaseModel):
-    logged_in:         bool
+    logged_in: bool
     gateway_connected: bool
-    gateway_status:    str
-    gateway_name:      str
-    account_id:        str
-    connect_log:       List[str]
+    gateway_status: str
+    gateway_name: str
+    account_id: str
+    connect_log: List[str]
+    multi_device_supported: bool = True
+    active_sessions: int = 0
 
 
 class SystemStatusResponse(BaseModel):
-    timestamp:        str
+    timestamp: str
     market_connected: bool
-    gateway_status:   str
-    gateway_name:     str
-    cpu_percent:      float
-    memory_percent:   float
+    gateway_status: str
+    gateway_name: str
+    cpu_percent: float
+    memory_percent: float
     active_strategies: int
-    account:          Optional[Dict[str, Any]] = None
+    account: Optional[Dict[str, Any]] = None
 
 
 class PositionInfo(BaseModel):
-    symbol:     str
-    direction:  str
-    volume:     int
-    frozen:     int
+    symbol: str
+    direction: str
+    volume: int
+    frozen: int
     cost_price: float
-    pnl:        float
+    pnl: float
 
 
 class StrategyInfo(BaseModel):
     strategy_id: str
-    name:        str
-    status:      str
-    symbol:      Optional[str]
-    pnl:         float
-    positions:   List[PositionInfo]
+    name: str
+    status: str
+    symbol: Optional[str]
+    pnl: float
+    positions: List[PositionInfo]
     trade_count: int
     error_count: int
 
 
 class ActionRequest(BaseModel):
-    action: str   # "start" | "stop"
+    action: str  # "start" | "stop"
 
 
 class ActionResponse(BaseModel):
-    success:     bool
+    success: bool
     strategy_id: str
-    action:      str
-    message:     str
+    action: str
+    message: str
 
 
 class SignalSchema(BaseModel):
-    symbol:     str
-    time:       str
-    direction:  str
-    price:      float
-    volume:     int
-    comment:    str
+    symbol: str
+    time: str
+    direction: str
+    price: float
+    volume: int
+    comment: str
     order_type: str
 
 
 class StrategyDetailResponse(BaseModel):
-    strategy_id:    str
-    name:           str
-    status:         str
-    symbol:         Optional[str]
-    pnl:            float
-    trade_count:    int
-    error_count:    int
-    positions:      List[PositionInfo]
-    weight:         float
-    params:         Dict[str, Any]
+    strategy_id: str
+    name: str
+    status: str
+    symbol: Optional[str]
+    pnl: float
+    trade_count: int
+    error_count: int
+    positions: List[PositionInfo]
+    weight: float
+    params: Dict[str, Any]
     recent_signals: List[SignalSchema]
 
 
 class ParamsUpdateRequest(BaseModel):
-    params:  Dict[str, Any]
-    restart: bool = False   # 如果策略正在运行，是否重启使新参数生效
+    params: Dict[str, Any]
+    restart: bool = False  # 如果策略正在运行，是否重启使新参数生效
 
 
 class WeightRequest(BaseModel):
@@ -195,41 +212,62 @@ class WeightRequest(BaseModel):
 
 
 class BacktestRunRequest(BaseModel):
-    strategy_name:   str            = "ma_cross"
+    strategy_name: str = "ma_cross"
     strategy_params: Dict[str, Any] = Field(default_factory=dict)
-    start_date:      str            = "2023-01-01"
-    end_date:        str            = "2024-12-31"
-    initial_capital: float          = 1_000_000
-    commission_rate: float          = 0.0003
-    slip_rate:       float          = 0.0001
-    margin_rate:     float          = 0.12
-    contract_multiplier: float      = 1.0
-    max_errors:      int            = 100
-    sample_days:     int            = 700   # 模拟数据天数
-    allow_synthetic_data: bool      = False
+    start_date: str = "2023-01-01"
+    end_date: str = "2024-12-31"
+    initial_capital: float = 1_000_000
+    commission_rate: float = 0.0003
+    slip_rate: float = 0.0001
+    margin_rate: float = 0.12
+    contract_multiplier: float = 1.0
+    max_errors: int = 100
+    sample_days: int = Field(default=700, ge=2, le=10000)  # 模拟数据天数
+    allow_synthetic_data: bool = False
+
+    @model_validator(mode="after")
+    def valid_backtest(self):
+        from ..backtest import BacktestConfig
+        from ..strategy import create_strategy
+
+        BacktestConfig(
+            start_date=self.start_date,
+            end_date=self.end_date,
+            initial_capital=self.initial_capital,
+            commission_rate=self.commission_rate,
+            slip_rate=self.slip_rate,
+            margin_rate=self.margin_rate,
+            contract_multiplier=self.contract_multiplier,
+            max_errors=self.max_errors,
+        )
+        create_strategy(self.strategy_name, self.strategy_params).on_init()
+        return self
 
 
 class ManualOrderRequest(BaseModel):
     """手动下单请求"""
-    symbol:     str
-    direction:  str         # "long" | "short"
-    offset:     str = "open"  # "open" | "close" | "close_today" | "close_yesterday"
-    price:      float = 0   # 0 = 市价
-    volume:     int = 1
+
+    symbol: str
+    direction: str  # "long" | "short"
+    offset: str = "open"  # "open" | "close" | "close_today" | "close_yesterday"
+    price: float = 0  # 0 = 市价
+    volume: int = 1
     order_type: str = "market"  # "market" | "limit"
 
 
 class ClosePositionRequest(BaseModel):
     """快捷平仓请求"""
-    volume:     int = 0         # 0 = 全部平仓
-    price:      float = 0       # 0 = 市价
-    direction:  str = ""        # 可选："long" | "short"，用于锁定要平的持仓方向
-    offset:     str = "close"   # "close" | "close_today" | "close_yesterday"
-    order_type: str = ""        # "" 自动按 price 推断；也可传 "market" | "limit"
+
+    volume: int = 0  # 0 = 全部平仓
+    price: float = 0  # 0 = 市价
+    direction: str = ""  # 可选："long" | "short"，用于锁定要平的持仓方向
+    offset: str = "close"  # "close" | "close_today" | "close_yesterday"
+    order_type: str = ""  # "" 自动按 price 推断；也可传 "market" | "limit"
 
 
 class EmergencyStopRequest(BaseModel):
     """交易急停请求。"""
+
     reason: str = ""
     cancel_orders: bool = True
     stop_strategies: bool = False
@@ -237,7 +275,18 @@ class EmergencyStopRequest(BaseModel):
 
 class RiskConfigRequest(BaseModel):
     """运行时风控配置更新请求。"""
+
     risk: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_risk(self):
+        from ..trading.risk import RiskConfig
+
+        try:
+            RiskConfig.from_mapping({**_DEFAULT_RUNTIME_RISK, **self.risk})
+        except (TypeError, OverflowError) as exc:
+            raise ValueError(f"无效风控参数: {exc}") from exc
+        return self
 
 
 _MANUAL_DIRECTION_MAP = {"long": Direction.LONG, "short": Direction.SHORT}
@@ -349,25 +398,27 @@ def _close_direction_for_position(pos) -> Direction:
 
 
 # ---------------------------------------------------------------------------
-# 预设服务器列表从环境变量读取：
+# 预设服务器列表从本地配置读取，环境变量可覆盖：
 # QUANT_CTP_TD_PRESETS="label=tcp://host:port,label2=tcp://host:port"
 # QUANT_CTP_MD_PRESETS="label=tcp://host:port,label2=tcp://host:port"
 # ---------------------------------------------------------------------------
 
-_PRESET_TD = ctp_server_presets("td")
-_PRESET_MD = ctp_server_presets("md")
-
 # ---------------------------------------------------------------------------
 # WebSocket 连接管理器
 # ---------------------------------------------------------------------------
+
 
 class ConnectionManager:
     def __init__(self, channel: str, send_timeout: float = 1.0):
         self.channel = channel
         self.send_timeout = send_timeout
         self._connections: Set[WebSocket] = set()
+        self._pending = set()
 
     async def connect(self, ws: WebSocket):
+        if len(self._connections) >= 100:
+            await ws.close(code=1013)
+            return
         await ws.accept()
         self._connections.add(ws)
         metrics.record_ws_connect(self.channel)
@@ -379,50 +430,68 @@ class ConnectionManager:
             metrics.record_ws_disconnect(self.channel)
             logger.info(f"[WS:{self.channel}] 连接断开，剩余: {len(self._connections)} 条")
 
-    async def broadcast(self, payload: dict):
-        if not self._connections:
+    async def broadcast(self, payload: dict, *, generation=None):
+        generation = trading_state.generation if generation is None else generation
+        if generation != trading_state.generation:
             return
+        payload = {"revision": time.monotonic_ns() // 1000, **payload}
         text = _json.dumps(payload, ensure_ascii=False, default=str)
-        dead: Set[WebSocket] = set()
-        for ws in list(self._connections):
-            try:
-                await asyncio.wait_for(ws.send_text(text), timeout=self.send_timeout)
-            except Exception:
-                dead.add(ws)
-        for ws in dead:
-            self.disconnect(ws)
-        metrics.record_ws_broadcast(self.channel, dropped=len(dead))
 
-    def broadcast_sync(self, payload: dict, loop: asyncio.AbstractEventLoop):
+        async def send(ws):
+            try:
+                if generation != trading_state.generation:
+                    return 1
+                if not session_store.is_valid(_websocket_session_token(ws)):
+                    await ws.close(code=1008)
+                    self.disconnect(ws)
+                    return 1
+                await asyncio.wait_for(ws.send_text(text), timeout=self.send_timeout)
+                return 0
+            except Exception:
+                self.disconnect(ws)
+                return 1
+
+        dropped = await asyncio.gather(*(send(ws) for ws in list(self._connections)))
+        metrics.record_ws_broadcast(self.channel, dropped=sum(dropped))
+
+    def broadcast_sync(self, payload: dict, loop: asyncio.AbstractEventLoop, *, generation=None):
         if loop and not loop.is_closed():
-            asyncio.run_coroutine_threadsafe(self.broadcast(payload), loop)
+            if len(self._pending) >= 100:
+                metrics.record_ws_broadcast(self.channel, dropped=1)
+                return
+            payload = {"revision": time.monotonic_ns() // 1000, **payload}
+            generation = trading_state.generation if generation is None else generation
+            future = asyncio.run_coroutine_threadsafe(self.broadcast(payload, generation=generation), loop)
+            self._pending.add(future)
+            future.add_done_callback(self._pending.discard)
 
     @property
     def count(self) -> int:
         return len(self._connections)
 
 
-system_manager    = ConnectionManager("system")
-orders_manager    = ConnectionManager("orders")
+system_manager = ConnectionManager("system")
+orders_manager = ConnectionManager("orders")
 dashboard_manager = ConnectionManager("dashboard")
 positions_manager = ConnectionManager("positions")
-log_manager       = ConnectionManager("logs")
+log_manager = ConnectionManager("logs")
+watch_connections: set = set()
 
 _event_loop: Optional[asyncio.AbstractEventLoop] = None
 
 # ── 网络速率差分计算 ──────────────────────────────────────────────────────────
-_last_net_io: Optional[tuple] = None   # (bytes_sent, bytes_recv, monotonic_ts)
+_last_net_io: Optional[tuple] = None  # (bytes_sent, bytes_recv, monotonic_ts)
 
 
 def _get_network_speed() -> tuple:
     """返回 (send_bps, recv_bps)，单位 字节/秒。"""
     global _last_net_io
     try:
-        io  = psutil.net_io_counters()
+        io = psutil.net_io_counters()
         now = time.monotonic()
         if _last_net_io:
             sent, recv, ts = _last_net_io
-            dt       = max(now - ts, 0.001)
+            dt = max(now - ts, 0.001)
             send_bps = (io.bytes_sent - sent) / dt
             recv_bps = (io.bytes_recv - recv) / dt
         else:
@@ -432,23 +501,28 @@ def _get_network_speed() -> tuple:
     except Exception:
         return 0.0, 0.0
 
+
 # ---------------------------------------------------------------------------
 # 全局状态注册表
 # ---------------------------------------------------------------------------
 
+
 class _StrategyEntry:
     def __init__(self, strategy_id, strategy, engine, config):
         self.strategy_id = strategy_id
-        self.strategy    = strategy
-        self.engine      = engine
-        self.config      = config
+        self.strategy = strategy
+        self.engine = engine
+        self.config = config
 
     @property
     def status(self) -> str:
         es = self.engine.status
-        if es == TradingStatus.TRADING:    return "running"
-        if es == TradingStatus.ERROR:      return "error"
-        if es == TradingStatus.CONNECTING: return "connecting"
+        if es == TradingStatus.TRADING:
+            return "running"
+        if es == TradingStatus.ERROR:
+            return "error"
+        if es == TradingStatus.CONNECTING:
+            return "connecting"
         return "stopped"
 
 
@@ -460,22 +534,39 @@ class TradingState:
     策略注册后调用 register() 绑定到具体策略。
     """
 
-    EQUITY_MAXLEN = 300   # 保留最近 300 个快照（1s 间隔 ≈ 5 分钟窗口）
+    EQUITY_MAXLEN = 300  # 保留最近 300 个快照（1s 间隔 ≈ 5 分钟窗口）
 
     def __init__(self):
         self._lock = threading.RLock()
-        self._entries:             Dict[str, _StrategyEntry]  = {}
-        self._main_engine:         Optional[TradingEngine]    = None
-        self._main_config:         Dict[str, Any]             = {}
-        self._connect_log:         List[str]                  = []
-        self._equity_curve:        deque                      = deque(maxlen=self.EQUITY_MAXLEN)
-        self._day_open_balance:    float                      = 0.0
-        self._weights:             Dict[str, float]           = {}   # strategy_id → 0.0~1.0
-        self._last_gw_callback_ts: float                      = 0.0  # time.monotonic() 上次网关回调时间
+        self._entries: Dict[str, _StrategyEntry] = {}
+        self._main_engine: Optional[TradingEngine] = None
+        self._main_config: Dict[str, Any] = {}
+        self._connect_log: List[str] = []
+        self._equity_curve: deque = deque(maxlen=self.EQUITY_MAXLEN)
+        self._day_open_balance: float = 0.0
+        self._weights: Dict[str, float] = {}  # strategy_id → 0.0~1.0
+        self._last_gw_callback_ts: float = 0.0  # time.monotonic() 上次网关回调时间
+        self._generation = 0
+
+    @property
+    def generation(self) -> int:
+        # Immutable epoch reads must not acquire the state lock inside gateway callbacks,
+        # which may already hold the execution lock. Writers are serialized by _lock.
+        return self._generation
+
+    def _reset_account_state(self):
+        """Called with _lock held. Invalidate snapshots produced by a previous account."""
+        self._generation += 1
+        self._equity_curve.clear()
+        self._day_open_balance = 0.0
+        self._last_gw_callback_ts = 0.0
+        self._connect_log.clear()
 
     # ── 主引擎（登录产生的 CTP 引擎）────────────────────────────────────────
     def set_main_engine(self, engine: TradingEngine, config: Dict[str, Any] = None):
         with self._lock:
+            if engine is not self._main_engine:
+                self._reset_account_state()
             self._main_engine = engine
             self._main_config = config or {}
         # 安装订单广播钩子
@@ -491,15 +582,16 @@ class TradingState:
             self._main_config = {}
             self._entries.clear()
             self._weights.clear()
+            self._reset_account_state()
         if engine:
             try:
-                engine.stop()
+                engine.close()
             except Exception:
-                pass
+                logger.exception("关闭账户引擎失败")
 
     # ── 连接日志 ──────────────────────────────────────────────────────────────
     def add_log(self, msg: str):
-        ts = datetime.now().strftime("%H:%M:%S")
+        ts = datetime.now().isoformat(timespec="seconds")
         entry = f"[{ts}] {msg}"
         with self._lock:
             self._connect_log.append(entry)
@@ -517,9 +609,19 @@ class TradingState:
 
     # ── 策略权重 ──────────────────────────────────────────────────────────────
     def set_weights(self, weights: Dict[str, float]):
+        import math
+
         with self._lock:
-            for sid, w in weights.items():
-                self._weights[sid] = max(0.0, min(1.0, float(w)))
+            merged = {**self.all_weights(), **weights}
+            if any(not math.isfinite(w) or not 0 <= w <= 1 for w in merged.values()) or sum(merged.values()) > 1 + 1e-9:
+                raise ValueError("权重必须在 0..1 且总和不超过 1")
+            self._weights = merged
+            for sid, w in merged.items():
+                entry = self._entries[sid]
+                with entry.engine.order_manager.lock:
+                    entry.strategy.allocation_weight = w
+                if entry.engine.ledger:
+                    entry.engine.ledger.save_setting("weights", merged)
 
     def get_weight(self, strategy_id: str) -> float:
         with self._lock:
@@ -539,14 +641,22 @@ class TradingState:
             return {sid: w for sid in ids}
 
     # ── 权益曲线历史 ──────────────────────────────────────────────────────────
-    def push_equity(self, pnl: float, balance: float):
+    def push_equity(self, pnl: float, balance: float, *, generation=None) -> bool:
         """记录一个权益快照（每秒由广播循环调用）。"""
-        ts = datetime.now().strftime("%H:%M:%S")
+        ts = datetime.now().isoformat(timespec="seconds")
         with self._lock:
+            if generation is not None and generation != self._generation:
+                return False
+            engine = self.primary_engine()
+            if engine is None:
+                return False
             self._equity_curve.append({"ts": ts, "p": round(pnl, 2), "b": round(balance, 2)})
+            if engine and engine.ledger and balance > 0:
+                engine.ledger.record_equity(ts, balance, pnl, engine.gateway.account.trading_day)
             # 记录当天首次有效余额作为日内基准
             if self._day_open_balance == 0.0 and balance > 0:
                 self._day_open_balance = balance
+            return True
 
     def get_equity_data(self) -> list:
         with self._lock:
@@ -557,6 +667,14 @@ class TradingState:
         entry = _StrategyEntry(strategy_id, strategy, engine, config or {})
         with self._lock:
             self._entries[strategy_id] = entry
+            saved = engine.ledger.load_setting("weights", {}) if engine.ledger else {}
+            if strategy_id in saved:
+                self._weights[strategy_id] = saved[strategy_id]
+            effective = self.all_weights()
+            total = sum(effective.values())
+            for sid, value in effective.items():
+                self._weights[sid] = value / max(1, total)
+                self._entries[sid].strategy.allocation_weight = self._weights[sid]
         if _event_loop and not _event_loop.is_closed():
             _install_order_hook(entry)
         logger.info(f"[API] 策略已注册: {strategy_id}")
@@ -601,12 +719,31 @@ def _websocket_session_token(ws: WebSocket) -> str:
     return ""
 
 
+def _request_session_token(request: Request) -> str:
+    auth = request.headers.get("authorization", "")
+    return auth[7:] if auth.lower().startswith("bearer ") else request.cookies.get(SESSION_COOKIE_NAME, "")
+
+
 async def _require_websocket_session(ws: WebSocket) -> bool:
     token = _websocket_session_token(ws)
-    if token and session_store.is_valid(token):
+    origin = ws.headers.get("origin")
+    if token and session_store.is_valid(token) and (not origin or origin in _cors_origins()):
         return True
     await ws.close(code=1008)
     return False
+
+
+async def _session_receive_text(ws: WebSocket) -> str:
+    while session_store.is_valid(_websocket_session_token(ws)):
+        try:
+            text = await asyncio.wait_for(ws.receive_text(), timeout=0.25)
+            if session_store.is_valid(_websocket_session_token(ws)):
+                return text
+            break
+        except asyncio.TimeoutError:
+            continue
+    await ws.close(code=1008)
+    raise WebSocketDisconnect(code=1008)
 
 
 def _record_audit(
@@ -623,7 +760,7 @@ def _record_audit(
         event_type,
         action,
         status,
-        actor=actor,
+        actor=(getattr(request.state, "identity", {}).get("account_id") or actor) if request else actor,
         resource=resource,
         request_id=_request_id(request),
         detail=detail,
@@ -635,20 +772,21 @@ def _record_audit(
 # 订单广播钩子
 # ---------------------------------------------------------------------------
 
+
 def _order_to_dict(order) -> dict:
     return {
-        "type":          "order_update",
-        "timestamp":     datetime.now().isoformat(),
-        "order_id":      order.order_id,
-        "symbol":        order.symbol,
-        "direction":     order.direction.value if hasattr(order.direction, "value") else str(order.direction),
-        "order_type":    order.order_type.value if hasattr(order.order_type, "value") else str(order.order_type),
-        "offset":        order.offset.value if hasattr(order, "offset") and hasattr(order.offset, "value") else "open",
-        "price":         order.price,
-        "volume":        order.volume,
+        "type": "order_update",
+        "timestamp": datetime.now().isoformat(),
+        "order_id": order.order_id,
+        "symbol": order.symbol,
+        "direction": order.direction.value if hasattr(order.direction, "value") else str(order.direction),
+        "order_type": order.order_type.value if hasattr(order.order_type, "value") else str(order.order_type),
+        "offset": order.offset.value if hasattr(order, "offset") and hasattr(order.offset, "value") else "open",
+        "price": order.price,
+        "volume": order.volume,
         "traded_volume": order.traded_volume,
-        "status":        order.status.value if hasattr(order.status, "value") else str(order.status),
-        "error_msg":     getattr(order, "error_msg", ""),
+        "status": order.status.value if hasattr(order.status, "value") else str(order.status),
+        "error_msg": getattr(order, "error_msg", ""),
     }
 
 
@@ -660,22 +798,26 @@ def _install_order_hook(entry: _StrategyEntry):
 def _trade_to_dict(trade) -> dict:
     ts = getattr(trade, "trade_time", None)
     if hasattr(ts, "strftime"):
-        time_str  = ts.strftime("%H:%M:%S")
-        ts_iso    = ts.isoformat()
+        time_str = ts.strftime("%H:%M:%S")
+        ts_iso = ts.isoformat()
     else:
-        time_str  = str(ts)[-8:] if ts else "--"
-        ts_iso    = datetime.now().isoformat()
+        time_str = str(ts)[-8:] if ts else "--"
+        ts_iso = datetime.now().isoformat()
     return {
-        "type":       "trade_event",
-        "timestamp":  ts_iso,
-        "trade_id":   getattr(trade, "trade_id",   ""),
-        "order_id":   getattr(trade, "order_id",   ""),
-        "symbol":     getattr(trade, "symbol",     ""),
-        "direction":  trade.direction.value if hasattr(trade.direction, "value") else str(trade.direction),
-        "price":      getattr(trade, "price",      0.0),
-        "volume":     getattr(trade, "volume",     0),
-        "commission": round(getattr(trade, "commission", 0.0), 4),
-        "pnl":        round(getattr(trade, "pnl",  0.0), 2),
+        "type": "trade_event",
+        "timestamp": ts_iso,
+        "trade_id": getattr(trade, "trade_id", ""),
+        "order_id": getattr(trade, "order_id", ""),
+        "symbol": getattr(trade, "symbol", ""),
+        "direction": trade.direction.value if hasattr(trade.direction, "value") else str(trade.direction),
+        "price": getattr(trade, "price", 0.0),
+        "volume": getattr(trade, "volume", 0),
+        "commission": round(getattr(trade, "commission", 0.0), 4) if trade.commission_known else None,
+        "pnl": round(getattr(trade, "pnl", 0.0), 2) if trade.pnl_known else None,
+        "offset": getattr(getattr(trade, "offset", None), "value", None),
+        "trading_day": trade.trading_day,
+        "exchange": trade.exchange,
+        "account_id": trade.account_id,
         "trade_time": time_str,
     }
 
@@ -688,15 +830,18 @@ def _install_hook_on_engine(engine: TradingEngine):
 
     # ── 订单钩子 ────────────────────────────────────────────────────────────
     _orig_order = gw.on_order_callback
+    generation = trading_state.generation
 
     def _order_chained(order):
+        if generation != trading_state.generation:
+            return
         trading_state._last_gw_callback_ts = time.monotonic()
         _record_audit("order", "gateway_order_update", "received", resource=getattr(order, "order_id", ""))
         if _orig_order:
             _orig_order(order)
         loop = _event_loop
         if loop and not loop.is_closed():
-            orders_manager.broadcast_sync(_order_to_dict(order), loop)
+            orders_manager.broadcast_sync(_order_to_dict(order), loop, generation=generation)
 
     gw.on_order_callback = _order_chained
 
@@ -704,21 +849,25 @@ def _install_hook_on_engine(engine: TradingEngine):
     _orig_trade = gw.on_trade_callback
 
     def _trade_chained(trade):
+        if generation != trading_state.generation:
+            return
         trading_state._last_gw_callback_ts = time.monotonic()
         _record_audit("trade", "gateway_trade_update", "received", resource=getattr(trade, "trade_id", ""))
         if _orig_trade:
             _orig_trade(trade)
         loop = _event_loop
         if loop and not loop.is_closed():
-            orders_manager.broadcast_sync(_trade_to_dict(trade), loop)
+            orders_manager.broadcast_sync(_trade_to_dict(trade), loop, generation=generation)
 
     gw.on_trade_callback = _trade_chained
     setattr(gw, "_quant_api_hooks_installed", True)
     logger.info(f"[API] 订单/成交广播钩子已安装: 网关={gw.name}")
 
+
 # ---------------------------------------------------------------------------
 # 辅助函数
 # ---------------------------------------------------------------------------
+
 
 def _position_to_schema(pos) -> PositionInfo:
     return PositionInfo(
@@ -738,13 +887,13 @@ def _signal_to_schema(sig) -> SignalSchema:
     else:
         time_str = str(ts)[-8:] if ts else "--"
     return SignalSchema(
-        symbol    = sig.symbol,
-        time      = time_str,
-        direction = sig.direction.value if hasattr(sig.direction, "value") else str(sig.direction),
-        price     = float(sig.price),
-        volume    = int(sig.volume),
-        comment   = sig.comment or "",
-        order_type= sig.order_type.value if hasattr(sig.order_type, "value") else "market",
+        symbol=sig.symbol,
+        time=time_str,
+        direction=sig.direction.value if hasattr(sig.direction, "value") else str(sig.direction),
+        price=float(sig.price),
+        volume=int(sig.volume),
+        comment=sig.comment or "",
+        order_type=sig.order_type.value if hasattr(sig.order_type, "value") else "market",
     )
 
 
@@ -754,13 +903,15 @@ def _calc_strategy_pnl(entry: _StrategyEntry) -> float:
 
 def _account_to_dict(account: AccountInfo) -> Dict[str, Any]:
     return {
-        "account_id":   account.account_id,
-        "balance":      account.balance,
-        "available":    account.available,
-        "margin":       account.margin,
-        "commission":   account.commission,
+        "account_id": account.account_id,
+        "balance": account.balance,
+        "available": account.available,
+        "margin": account.margin,
+        "commission": account.commission,
         "position_pnl": account.position_pnl,
-        "total_pnl":    account.total_pnl,
+        "total_pnl": account.total_pnl if account.fields_known else None,
+        "fields_known": account.fields_known,
+        "trading_day": account.trading_day,
     }
 
 
@@ -867,24 +1018,26 @@ async def _wait_for_gateway_ticks(
 def _build_system_snapshot() -> dict:
     engine = trading_state.primary_engine()
     market_connected = False
-    td_connected     = False
-    gateway_status   = TradingStatus.STOPPED.value
-    gateway_name     = "N/A"
-    total_pnl        = 0.0
-    balance          = 0.0
-    initial_capital  = 1_000_000.0
+    td_connected = False
+    gateway_status = TradingStatus.STOPPED.value
+    gateway_name = "N/A"
+    total_pnl = 0.0
+    balance = 0.0
+    initial_capital = 1_000_000.0
 
     if engine is not None:
         gw = engine.gateway
-        gateway_name     = gw.name
-        gateway_status   = gw.status.value if isinstance(gw.status, TradingStatus) else str(gw.status)
-        td_connected     = gw.status in (TradingStatus.CONNECTED, TradingStatus.TRADING)
-        market_connected = td_connected   # CTP 单网关：行情与交易共享状态
+        gateway_name = gw.name
+        gateway_status = gw.status.value if isinstance(gw.status, TradingStatus) else str(gw.status)
+        td_connected = gw.status in (TradingStatus.CONNECTED, TradingStatus.TRADING)
+        connection = getattr(gw, "connection_state", {})
+        td_connected = connection.get("td", td_connected)
+        market_connected = connection.get("md", td_connected)
         try:
             account = engine.get_account()
             if not account.error_msg:
                 total_pnl = account.total_pnl
-                balance   = account.balance
+                balance = account.balance
         except Exception:
             pass
 
@@ -897,7 +1050,7 @@ def _build_system_snapshot() -> dict:
     if trading_state._main_config:
         initial_capital = trading_state._main_config.get("initial_capital", initial_capital)
 
-    return_rate  = (total_pnl / initial_capital * 100) if initial_capital else 0.0
+    return_rate = (total_pnl / initial_capital * 100) if initial_capital else 0.0
     active_count = sum(1 for e in trading_state.all_entries() if e.status == "running")
 
     # 网关延迟：上次回调距今毫秒数（0 = 尚未收到任何回调）
@@ -910,36 +1063,41 @@ def _build_system_snapshot() -> dict:
     send_bps, recv_bps = _get_network_speed()
 
     return {
-        "type":                "system_status",
-        "timestamp":           datetime.now().isoformat(),
-        "market_connected":    market_connected,
-        "td_connected":        td_connected,
-        "md_connected":        market_connected,
-        "gateway_status":      gateway_status,
-        "gateway_name":        gateway_name,
-        "gateway_latency_ms":  gateway_latency_ms,
-        "cpu_percent":         psutil.cpu_percent(interval=None),
-        "memory_percent":      psutil.virtual_memory().percent,
-        "network_send_bps":    send_bps,
-        "network_recv_bps":    recv_bps,
-        "active_strategies":   active_count,
-        "total_pnl":           round(total_pnl, 2),
-        "return_rate":         round(return_rate, 4),
-        "balance":             round(balance, 2),
+        "type": "system_status",
+        "timestamp": datetime.now().isoformat(),
+        "market_connected": market_connected,
+        "td_connected": td_connected,
+        "md_connected": market_connected,
+        "gateway_status": gateway_status,
+        "gateway_name": gateway_name,
+        "gateway_latency_ms": None,
+        "callback_age_ms": gateway_latency_ms if gateway_latency_ms >= 0 else None,
+        "gateway_ready": bool(getattr(engine.gateway, "ready", False)) if engine else False,
+        "cpu_percent": psutil.cpu_percent(interval=None),
+        "memory_percent": psutil.virtual_memory().percent,
+        "network_send_bps": send_bps,
+        "network_recv_bps": recv_bps,
+        "active_strategies": active_count,
+        "total_pnl": round(total_pnl, 2),
+        "return_rate": round(return_rate, 4),
+        "balance": round(balance, 2),
     }
+
 
 # ---------------------------------------------------------------------------
 # 后台广播任务
 # ---------------------------------------------------------------------------
 
+
 async def _system_broadcast_loop():
     while True:
         try:
+            generation = trading_state.generation
             snapshot = _build_system_snapshot()
             # 同步记录到权益历史（夏普/回撤计算用）
-            trading_state.push_equity(snapshot["total_pnl"], snapshot["balance"])
-            if system_manager.count > 0:
-                await system_manager.broadcast(snapshot)
+            recorded = trading_state.push_equity(snapshot["total_pnl"], snapshot["balance"], generation=generation)
+            if recorded and system_manager.count > 0:
+                await system_manager.broadcast(snapshot, generation=generation)
         except Exception as exc:
             logger.warning(f"[WS:system] 广播异常: {exc}")
         await asyncio.sleep(1)
@@ -949,24 +1107,25 @@ async def _system_broadcast_loop():
 # 全局仪表盘指标构建（含夏普比率、最大回撤、权益曲线）
 # ---------------------------------------------------------------------------
 
+
 def _build_dashboard_metrics() -> dict:
     """计算实时 PnL、收益率、夏普比率、最大回撤、仓位概览。"""
-    engine          = trading_state.primary_engine()
-    total_pnl       = 0.0
-    balance         = 0.0
-    available       = 0.0
-    margin          = 0.0
-    account_id      = ""
+    engine = trading_state.primary_engine()
+    total_pnl = 0.0
+    balance = 0.0
+    available = 0.0
+    margin = 0.0
+    account_id = ""
     initial_capital = trading_state._main_config.get("initial_capital", 1_000_000.0)
 
     if engine:
         try:
             account = engine.get_account()
             if not account.error_msg:
-                total_pnl  = account.total_pnl
-                balance    = account.balance
-                available  = account.available
-                margin     = getattr(account, "margin", 0.0)
+                total_pnl = account.total_pnl
+                balance = account.balance
+                available = account.available
+                margin = getattr(account, "margin", 0.0)
                 account_id = account.account_id
         except Exception:
             pass
@@ -976,8 +1135,8 @@ def _build_dashboard_metrics() -> dict:
         total_pnl = sum(_calc_strategy_pnl(e) for e in trading_state.all_entries())
 
     # 收益率
-    return_rate  = total_pnl / initial_capital * 100 if initial_capital else 0.0
-    day_open     = trading_state._day_open_balance or initial_capital
+    return_rate = total_pnl / initial_capital * 100 if initial_capital else 0.0
+    day_open = trading_state._day_open_balance or initial_capital
     today_return = (balance - day_open) / day_open * 100 if day_open > 0 else return_rate
 
     # 持仓列表
@@ -985,65 +1144,59 @@ def _build_dashboard_metrics() -> dict:
     if engine:
         for symbol, pos in engine.gateway.positions.items():
             if getattr(pos, "volume", 0) != 0:
-                positions_list.append({
-                    "symbol":    symbol,
-                    "direction": pos.direction.value if hasattr(pos.direction, "value") else str(pos.direction),
-                    "volume":    abs(pos.volume),
-                    "cost":      round(getattr(pos, "cost", 0.0), 2),
-                    "pnl":       round(getattr(pos, "pnl", 0.0), 2),
-                })
+                positions_list.append(
+                    {
+                        "symbol": symbol,
+                        "direction": pos.direction.value if hasattr(pos.direction, "value") else str(pos.direction),
+                        "volume": abs(pos.volume),
+                        "cost": round(getattr(pos, "cost", 0.0), 2),
+                        "pnl": round(getattr(pos, "pnl", 0.0), 2),
+                    }
+                )
 
     total_exposure = sum(p["cost"] * p["volume"] for p in positions_list)
-    exposure_pct   = total_exposure / balance * 100 if balance > 0 else 0.0
+    exposure_pct = total_exposure / balance * 100 if balance > 0 else 0.0
 
     # 夏普比率 / 最大回撤（滚动权益历史）
-    sharpe_ratio     = 0.0
+    sharpe_ratio = None
     max_drawdown_pct = 0.0
     equity_curve_data: list = []
 
     curve = trading_state.get_equity_data()
-    n     = len(curve)
+    n = len(curve)
     if n >= 10:
         bal_arr = pd.Series([c["b"] for c in curve], dtype=float)
 
-        # 夏普：日内年化（252 交易日 × 14400 秒交易时段）
-        bal_returns = bal_arr.pct_change().dropna()
-        if len(bal_returns) > 1 and bal_returns.std() > 1e-12:
-            ann_factor   = np.sqrt(252 * 14400)
-            sharpe_ratio = float(
-                np.clip(bal_returns.mean() / bal_returns.std() * ann_factor, -20.0, 20.0)
-            )
-
+        # Intraday snapshots are monitoring data, not independent daily returns.
         # 最大回撤
-        peak             = bal_arr.cummax()
-        dd               = (bal_arr - peak) / peak.replace(0, np.nan) * 100
+        peak = bal_arr.cummax()
+        dd = (bal_arr - peak) / peak.replace(0, np.nan) * 100
         max_drawdown_pct = float(abs(dd.min())) if not dd.empty else 0.0
 
         # 权益曲线降采样（前端图表用，≤60 点）
         step = max(1, n // 60)
-        equity_curve_data = [
-            {"ts": c["ts"], "v": c["p"]} for c in curve[::step]
-        ][-60:]
+        equity_curve_data = [{"ts": c["ts"], "v": c["p"]} for c in curve[::step]][-60:]
 
     active_cnt = sum(1 for e in trading_state.all_entries() if e.status == "running")
 
     return {
-        "type":             "dashboard_metrics",
-        "timestamp":        datetime.now().isoformat(),
-        "account_id":       account_id,
-        "total_pnl":        round(total_pnl, 2),
-        "return_rate":      round(return_rate, 4),
-        "today_return":     round(today_return, 4),
-        "balance":          round(balance, 2),
-        "available":        round(available, 2),
-        "margin":           round(margin, 2),
-        "initial_capital":  round(initial_capital, 2),
-        "sharpe_ratio":     round(sharpe_ratio, 3),
+        "type": "dashboard_metrics",
+        "timestamp": datetime.now().isoformat(),
+        "account_id": account_id,
+        "total_pnl": round(total_pnl, 2),
+        "return_rate": round(return_rate, 4),
+        "today_return": round(today_return, 4),
+        "balance": round(balance, 2),
+        "available": round(available, 2),
+        "margin": round(margin, 2),
+        "initial_capital": round(initial_capital, 2),
+        "sharpe_ratio": sharpe_ratio,
+        "performance_note": "日内监控窗口；夏普需足够的日终权益样本",
         "max_drawdown_pct": round(max_drawdown_pct, 3),
-        "total_exposure":   round(total_exposure, 2),
-        "exposure_pct":     round(exposure_pct, 2),
-        "positions":        positions_list,
-        "equity_curve":     equity_curve_data,
+        "total_exposure": round(total_exposure, 2),
+        "exposure_pct": round(exposure_pct, 2),
+        "positions": positions_list,
+        "equity_curve": equity_curve_data,
         "active_strategies": active_cnt,
     }
 
@@ -1052,7 +1205,8 @@ async def _dashboard_broadcast_loop():
     while True:
         try:
             if dashboard_manager.count > 0:
-                await dashboard_manager.broadcast(_build_dashboard_metrics())
+                generation = trading_state.generation
+                await dashboard_manager.broadcast(_build_dashboard_metrics(), generation=generation)
         except Exception as exc:
             logger.warning(f"[WS:dashboard] 广播异常: {exc}")
         await asyncio.sleep(2)
@@ -1062,9 +1216,10 @@ async def _dashboard_broadcast_loop():
 # 订单簿 / 持仓簿辅助
 # ---------------------------------------------------------------------------
 
+
 def _collect_all_orders() -> list:
     """从主引擎和各策略引擎收集所有订单，去重并按时间倒序。"""
-    seen:   set  = set()
+    seen: set = set()
     result: list = []
 
     def _add(order):
@@ -1075,7 +1230,7 @@ def _collect_all_orders() -> list:
             d = _order_to_dict(order)
             ct = getattr(order, "create_time", None)
             d["create_time"] = ct.strftime("%H:%M:%S") if hasattr(ct, "strftime") else str(ct)[-8:]
-            d["create_ts"]   = ct.isoformat()          if hasattr(ct, "isoformat") else ""
+            d["create_ts"] = ct.isoformat() if hasattr(ct, "isoformat") else ""
             result.append(d)
 
     engine = trading_state.primary_engine()
@@ -1091,17 +1246,13 @@ def _collect_all_orders() -> list:
 
 
 def _collect_all_trades() -> list:
-    """从各策略的成交记录收集，去重并按时间倒序。"""
-    seen:   set  = set()
-    result: list = []
-    for entry in trading_state.all_entries():
-        for t in getattr(entry.strategy, "trades", []):
-            tid = getattr(t, "trade_id", None)
-            if tid and tid not in seen:
-                seen.add(tid)
-                result.append(_trade_to_dict(t))
-    result.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
-    return result
+    result = {}
+    for engine in _unique_engines():
+        trades = engine.ledger.trades() if engine.ledger else list(engine.trades.values())
+        for trade in trades:
+            key = (trade.account_id, trade.trading_day, trade.exchange, trade.trade_id)
+            result[key] = _trade_to_dict(trade)
+    return sorted(result.values(), key=lambda x: x.get("timestamp", ""), reverse=True)[:500]
 
 
 def _unique_engines() -> list:
@@ -1142,7 +1293,7 @@ def _cancel_all_active_orders() -> dict:
 
 def _build_positions_snapshot() -> dict:
     """构建完整持仓快照，含市值估算。"""
-    engine    = trading_state.primary_engine()
+    engine = trading_state.primary_engine()
     positions = []
     seen: set = set()
 
@@ -1151,27 +1302,29 @@ def _build_positions_snapshot() -> dict:
         if sym in seen or getattr(pos, "volume", 0) == 0:
             return
         seen.add(sym)
-        cost_price   = round(getattr(pos, "cost",  0.0), 4)
-        cur_price    = round(getattr(pos, "price", 0.0), 4)
-        volume       = abs(pos.volume)
-        pnl          = round(getattr(pos, "pnl",   0.0), 2)
+        cost_price = round(getattr(pos, "cost", 0.0), 4)
+        cur_price = round(getattr(pos, "price", 0.0), 4)
+        volume = abs(pos.volume)
+        pnl = round(getattr(pos, "pnl", 0.0), 2)
         # 若有当前价则估算市值，否则用成本价
         market_price = cur_price if cur_price > 0 else cost_price
         market_value = round(market_price * volume, 2)
-        cost_value   = round(cost_price   * volume, 2)
-        pnl_pct      = round(pnl / cost_value * 100, 3) if cost_value else 0.0
-        positions.append({
-            "symbol":       sym,
-            "direction":    pos.direction.value if hasattr(pos.direction, "value") else str(pos.direction),
-            "volume":       volume,
-            "frozen":       getattr(pos, "frozen", 0),
-            "cost_price":   cost_price,
-            "cur_price":    cur_price,
-            "market_value": market_value,
-            "cost_value":   cost_value,
-            "pnl":          pnl,
-            "pnl_pct":      pnl_pct,
-        })
+        cost_value = round(cost_price * volume, 2)
+        pnl_pct = round(pnl / cost_value * 100, 3) if cost_value else 0.0
+        positions.append(
+            {
+                "symbol": sym,
+                "direction": pos.direction.value if hasattr(pos.direction, "value") else str(pos.direction),
+                "volume": volume,
+                "frozen": getattr(pos, "frozen", 0),
+                "cost_price": cost_price,
+                "cur_price": cur_price,
+                "market_value": market_value,
+                "cost_value": cost_value,
+                "pnl": pnl,
+                "pnl_pct": pnl_pct,
+            }
+        )
 
     if engine:
         for pos in engine.gateway.positions.values():
@@ -1181,7 +1334,7 @@ def _build_positions_snapshot() -> dict:
             _add_pos(pos)
 
     return {
-        "type":      "positions_update",
+        "type": "positions_update",
         "timestamp": datetime.now().isoformat(),
         "positions": positions,
     }
@@ -1191,7 +1344,8 @@ async def _positions_broadcast_loop():
     while True:
         try:
             if positions_manager.count > 0:
-                await positions_manager.broadcast(_build_positions_snapshot())
+                generation = trading_state.generation
+                await positions_manager.broadcast(_build_positions_snapshot(), generation=generation)
         except Exception as exc:
             logger.warning(f"[WS:positions] 广播异常: {exc}")
         await asyncio.sleep(2)
@@ -1208,41 +1362,49 @@ async def _logs_broadcast_loop():
             if log_manager.count > 0:
                 await log_manager.broadcast({"type": "log_entry", **entry})
         except asyncio.TimeoutError:
-            pass   # 无新日志，继续等待
+            pass  # 无新日志，继续等待
         except Exception as exc:
-            await asyncio.sleep(0.5)   # 短暂退避
+            await asyncio.sleep(0.5)  # 短暂退避
 
 
 # ---------------------------------------------------------------------------
 # 日志缓冲区与实时推送
 # ---------------------------------------------------------------------------
 
+
 class _LogBuffer(logging.Handler):
     """拦截所有 Python 日志，存入环形缓冲并推送到 WS /ws/logs。"""
+
     MAX_ENTRIES = 500
 
     def __init__(self):
         super().__init__()
-        self._buf: deque                       = deque(maxlen=self.MAX_ENTRIES)
-        self._queue: Optional[asyncio.Queue]   = None   # 在 lifespan 中初始化
+        self._buf: deque = deque(maxlen=self.MAX_ENTRIES)
+        self._queue: Optional[asyncio.Queue] = None  # 在 lifespan 中初始化
 
     def emit(self, record: logging.LogRecord):
         try:
             entry = {
-                "ts":      datetime.fromtimestamp(record.created).isoformat(timespec="milliseconds"),
-                "level":   record.levelname,
-                "name":    record.name,
+                "ts": datetime.fromtimestamp(record.created).isoformat(timespec="milliseconds"),
+                "level": record.levelname,
+                "name": record.name,
                 "message": record.getMessage(),
                 "request_id": getattr(record, "request_id", ""),
             }
             self._buf.append(entry)
             if self._queue is not None:
                 try:
-                    self._queue.put_nowait(entry)
+
+                    def enqueue():
+                        if self._queue is not None and not self._queue.full():
+                            self._queue.put_nowait(entry)
+
+                    if _event_loop and not _event_loop.is_closed():
+                        _event_loop.call_soon_threadsafe(enqueue)
                 except asyncio.QueueFull:
                     pass
         except Exception:
-            pass   # 绝不让日志处理器自身抛异常
+            pass  # 绝不让日志处理器自身抛异常
 
     def query(self, level: str = "", q: str = "", limit: int = 200) -> list:
         entries = list(self._buf)
@@ -1269,11 +1431,17 @@ log_buffer.setFormatter(logging.Formatter("%(message)s"))
 # FastAPI 应用工厂
 # ---------------------------------------------------------------------------
 
+
 def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         global _event_loop
+        from ..runtime import InstanceLock
+
+        instance = InstanceLock(os.getenv("QUANT_INSTANCE_LOCK", "data/runtime/executor.lock"))
+        if os.getenv("QUANT_ENV") != "test":
+            instance.acquire()
         _event_loop = asyncio.get_running_loop()
         for entry in trading_state.all_entries():
             _install_order_hook(entry)
@@ -1283,19 +1451,25 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         log_buffer._queue = asyncio.Queue(maxsize=1000)
         logging.getLogger().addHandler(log_buffer)
 
-        broadcast_task   = asyncio.create_task(_system_broadcast_loop())
-        dashboard_task   = asyncio.create_task(_dashboard_broadcast_loop())
-        positions_task   = asyncio.create_task(_positions_broadcast_loop())
-        logs_task        = asyncio.create_task(_logs_broadcast_loop())
+        broadcast_task = asyncio.create_task(_system_broadcast_loop())
+        dashboard_task = asyncio.create_task(_dashboard_broadcast_loop())
+        positions_task = asyncio.create_task(_positions_broadcast_loop())
+        logs_task = asyncio.create_task(_logs_broadcast_loop())
         logger.info("[API] WebSocket 广播任务已启动（system / dashboard / positions / logs）")
-        yield
-        logging.getLogger().removeHandler(log_buffer)
-        for task in (broadcast_task, dashboard_task, positions_task, logs_task):
-            task.cancel()
+        try:
+            yield
+        finally:
             try:
-                await task
-            except asyncio.CancelledError:
-                pass
+                session_store.revoke_all()
+                await asyncio.to_thread(trading_state.clear_main)
+            finally:
+                logging.getLogger().removeHandler(log_buffer)
+                tasks = (broadcast_task, dashboard_task, positions_task, logs_task)
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                log_buffer._queue = None
+                instance.release()
 
     app = FastAPI(
         title=title,
@@ -1303,6 +1477,42 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         description="量化交易系统 API：CTP 登录 · REST 控制 · WebSocket 实时推送",
         lifespan=lifespan,
     )
+
+    # Serialize account transitions with all authenticated actions. Validate after acquiring.
+    account_lock = asyncio.Lock()
+    login_throttle = LoginThrottle()
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, exc: RequestValidationError):
+        if request.url.path == "/auth/login":
+            # FastAPI's default validation payload includes the rejected password input.
+            return JSONResponse({"detail": "登录参数无效，请检查账号、密码长度及连接配置"}, status_code=422)
+        from fastapi.exception_handlers import request_validation_exception_handler
+
+        return await request_validation_exception_handler(request, exc)
+
+    @app.middleware("http")
+    async def auth_middleware(request: Request, call_next):
+        token = _request_session_token(request)
+        request.state.identity = session_store.identity(token)
+        path = request.url.path
+        if path != "/auth/login" and is_open_path(path):
+            return await call_next(request)
+        async with account_lock:
+            request.state.identity = session_store.identity(token)
+            if path != "/auth/login" and not request.state.identity:
+                return JSONResponse({"detail": "未登录或会话已失效"}, status_code=401)
+            if path == "/auth/login":
+                peer = request.client.host if request.client else "unknown"
+                retry_after = login_throttle.retry_after(peer)
+                if retry_after:
+                    return JSONResponse({"detail": "登录尝试过于频繁，请稍后重试"}, status_code=429,
+                                        headers={"Retry-After": str(retry_after)})
+                result = await call_next(request)
+                if result.status_code < 400 or result.status_code in (400, 401, 403, 409, 422):
+                    login_throttle.record(peer, result.status_code < 400)
+                return result
+            return await call_next(request)
 
     app.add_middleware(
         CORSMiddleware,
@@ -1315,7 +1525,10 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
     # ── 可观测性中间件：request id + 结构化访问日志 + 基础指标 ───────────────
     @app.middleware("http")
     async def observability_middleware(request: Request, call_next):
-        request_id = request.headers.get("x-request-id") or new_request_id()
+        import re
+
+        supplied = request.headers.get("x-request-id", "")
+        request_id = supplied if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", supplied) else new_request_id()
         request.state.request_id = request_id
         started = time.perf_counter()
         status_code = 500
@@ -1335,7 +1548,17 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             raise
         finally:
             elapsed = time.perf_counter() - started
-            metrics.record_http(request.method, request.url.path, status_code, elapsed)
+            route = getattr(request.scope.get("route"), "path", "/unmatched")
+            metrics.record_http(request.method, route, status_code, elapsed)
+            if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+                _record_audit(
+                    "http",
+                    request.method,
+                    "success" if status_code < 400 else "rejected",
+                    request=request,
+                    resource=route,
+                    detail={"status_code": status_code},
+                )
             logger.info(
                 structured_json(
                     "http.request",
@@ -1350,32 +1573,6 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             response.headers["X-Request-ID"] = request_id
         return response
 
-    # ── 鉴权中间件 ────────────────────────────────────────────────────────────
-    @app.middleware("http")
-    async def auth_middleware(request: Request, call_next):
-        path = request.url.path
-        # 开放路径（登录、状态查询、文档、WebSocket 握手）
-        if is_open_path(path):
-            return await call_next(request)
-
-        auth = request.headers.get("authorization", "")
-        token = auth[7:] if auth.lower().startswith("bearer ") else request.cookies.get(SESSION_COOKIE_NAME, "")
-        if not token:
-            return JSONResponse(
-                {"detail": "未登录，请先连接交易账户"},
-                status_code=401,
-            )
-        if not session_store.is_valid(token):
-            return JSONResponse(
-                {"detail": "会话已过期，请重新登录"},
-                status_code=401,
-            )
-        response = await call_next(request)
-        request_id = getattr(request.state, "request_id", "")
-        if request_id:
-            response.headers["X-Request-ID"] = request_id
-        return response
-
     # ==================================================================
     # Auth 端点
     # ==================================================================
@@ -1385,7 +1582,9 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         engine = trading_state.primary_engine()
         gateway_status = "stopped"
         if engine:
-            gateway_status = engine.gateway.status.value if hasattr(engine.gateway.status, "value") else str(engine.gateway.status)
+            gateway_status = (
+                engine.gateway.status.value if hasattr(engine.gateway.status, "value") else str(engine.gateway.status)
+            )
         return {
             "status": "ok",
             "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -1410,8 +1609,21 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
 
     @app.get("/auth/servers", summary="获取预设服务器列表", tags=["认证"])
     def get_servers():
-        """返回 CTP 交易/行情前置预设地址列表，供前端选择器使用。"""
-        return {"td_servers": _PRESET_TD, "md_servers": _PRESET_MD}
+        """Only publish allowlisted connection defaults, never the auth code."""
+        try:
+            local_config = load_ctp_config()
+            defaults = ctp_defaults(local_config)
+            return {
+                "td_servers": ctp_server_presets("td", local_config),
+                "md_servers": ctp_server_presets("md", local_config),
+                "defaults": {
+                    **{key: defaults[key] for key in ("broker_id", "td_server", "md_server", "app_id")},
+                    "environment": defaults["vnpy_environment"],
+                    "auth_code_configured": bool(defaults["auth_code"]),
+                },
+            }
+        except ValueError as exc:
+            raise HTTPException(503, str(exc)) from None
 
     @app.get(
         "/auth/status",
@@ -1419,28 +1631,38 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         summary="当前连接状态（无需鉴权）",
         tags=["认证"],
     )
-    def get_auth_status():
+    def get_auth_status(request: Request):
         """返回当前 CTP 网关的连接状态及连接日志，可在登录页面轮询。"""
+        if not session_store.is_valid(_request_session_token(request)):
+            return AuthStatusResponse(
+                logged_in=False,
+                gateway_connected=False,
+                gateway_status="stopped",
+                gateway_name="",
+                account_id="",
+                connect_log=[],
+            )
         engine = trading_state.primary_engine()
-        connected    = False
-        gw_status    = TradingStatus.STOPPED.value
-        gw_name      = "N/A"
-        account_id   = ""
+        connected = False
+        gw_status = TradingStatus.STOPPED.value
+        gw_name = "N/A"
+        account_id = ""
 
         if engine:
-            gw         = engine.gateway
-            gw_name    = gw.name
-            gw_status  = gw.status.value if isinstance(gw.status, TradingStatus) else str(gw.status)
-            connected  = gw.status in (TradingStatus.CONNECTED, TradingStatus.TRADING)
+            gw = engine.gateway
+            gw_name = gw.name
+            gw_status = gw.status.value if isinstance(gw.status, TradingStatus) else str(gw.status)
+            connected = gw.status in (TradingStatus.CONNECTED, TradingStatus.TRADING)
             account_id = gw.account.account_id if hasattr(gw, "account") else ""
 
         return AuthStatusResponse(
-            logged_in         = session_store.has_active_sessions(),
-            gateway_connected = connected,
-            gateway_status    = gw_status,
-            gateway_name      = gw_name,
-            account_id        = account_id,
-            connect_log       = trading_state.get_log(),
+            logged_in=session_store.has_active_sessions(),
+            gateway_connected=connected,
+            gateway_status=gw_status,
+            gateway_name=gw_name,
+            account_id=account_id,
+            connect_log=trading_state.get_log(),
+            active_sessions=session_store.active_count(),
         )
 
     @app.post(
@@ -1450,187 +1672,182 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         tags=["认证"],
     )
     async def do_login(body: LoginRequest, response: Response, request: Request):
-        """
-        接受 CTP 账户配置，连接交易前置和行情前置。
-        连接过程最长等待 35 秒。成功后返回会话 token。
-        当前仅支持 vn.py/CTP 网关；登录成功后返回会话 token。
-        """
         from ..trading import create_gateway
+        from ..strategy import create_strategy
 
-        trading_state.clear_log()
-        trading_state.add_log(f"开始连接账户: {body.username}")
-        _record_audit(
-            "auth",
-            "login_attempt",
-            "started",
-            actor=body.username,
-            request=request,
-            detail={"gateway_type": body.gateway_type},
+        try:
+            local_config = load_ctp_config()
+            connection = ctp_defaults(local_config)
+        except ValueError as exc:
+            raise HTTPException(503, str(exc)) from None
+        # Empty legacy UI fields inherit saved defaults instead of erasing them.
+        for key in ("broker_id", "td_server", "md_server", "app_id", "auth_code"):
+            override = getattr(body, key).strip()
+            if override:
+                connection[key] = override
+        if body.environment is not None:
+            connection["vnpy_environment"] = body.environment
+        margin_rates = (
+            body.contract_margin_rates if "contract_margin_rates" in body.model_fields_set
+            else local_config.get("contract_margin_rates", {})
         )
-
-        # 若已有连接先断开
-        if trading_state._main_engine:
-            trading_state.add_log("检测到已有连接，正在断开…")
-            trading_state.clear_main()
-
-        # 确定网关类型：ctp 作为 vn.py CTP 网关别名保留，便于兼容旧配置。
-        requested_gateway = (body.gateway_type or "vnpy").lower()
-        if requested_gateway not in {"vnpy", "ctp"}:
-            trading_state.add_log(f"不支持的网关类型: {body.gateway_type}")
-            raise HTTPException(status_code=400, detail="仅支持 vn.py/CTP 网关")
-        gateway_type = "vnpy"
-        trading_state.add_log("使用 vn.py CTP 网关登录")
-
-        config: Dict[str, Any] = {
-            "gateway":    gateway_type,
-            "username":   body.username,
-            "password":   body.password,
-            "broker_id":  body.broker_id,
-            "td_server":  body.td_server,
-            "md_server":  body.md_server,
-            "app_id":     body.app_id,
-            "auth_code":  body.auth_code,
-            "vnpy_environment": body.environment,
+        try:
+            LoginRequest.validate_margin_rates(margin_rates)
+        except ValueError:
+            raise HTTPException(422, "CTP 合约保证金配置无效，请检查 contract_margin_rates") from None
+        if body.gateway_type.lower() not in {"vnpy", "ctp"}:
+            raise HTTPException(400, "仅支持 vn.py/CTP 网关")
+        existing = trading_state.primary_engine()
+        join_config = {"username": body.username, "password": body.password, **connection}
+        credential = session_store._credential
+        reconfigure = body.auto_start_strategy or bool(body.risk) or (
+            "contract_margin_rates" in body.model_fields_set
+            and body.contract_margin_rates != trading_state._main_config.get("contract_margin_rates", {})
+        )
+        if existing:
+            same_connection = credential is not None and credential.matches(join_config)
+            if same_connection:
+                if not await asyncio.to_thread(credential.verify, body.password):
+                    raise HTTPException(401, "账号或密码不正确")
+                if not reconfigure:
+                    old_token = _request_session_token(request)
+                    current_is_valid = session_store.is_valid(old_token)
+                    if session_store.active_count() - int(current_is_valid) >= session_store.max_sessions:
+                        raise HTTPException(429, "当前账户登录端数量已达上限，请先退出不使用的终端")
+                    account = existing.get_account()
+                    account_id = account.account_id or body.username
+                    token = session_store.create(account_id=account_id)
+                    session_store.revoke(old_token)
+                    response.set_cookie(SESSION_COOKIE_NAME, token, max_age=SESSION_COOKIE_MAX_AGE,
+                                        httponly=True, samesite="lax", secure=secure_session_cookie_enabled())
+                    _record_audit("auth", "join", "success", actor=body.username, request=request,
+                                  detail={"account_id": account_id})
+                    return LoginResponse(success=True, message="已加入当前账户，共用柜台连接",
+                                         gateway_status=existing.gateway.status.value, account_id=account_id,
+                                         balance=account.balance, connection_reused=True)
+            if not request.state.identity:
+                raise HTTPException(409, "当前已有账户连接；仅允许同一账户及连接配置登录，不能修改运行参数")
+        strategy = None
+        if body.auto_start_strategy:
+            if not body.strategy_params.get("symbol") and not body.strategy_params.get("symbols"):
+                raise HTTPException(400, "自动启动策略需要合约")
+            try:
+                strategy = create_strategy(body.strategy_name, dict(body.strategy_params))
+                strategy.on_init()
+            except Exception as exc:
+                raise HTTPException(422, f"策略参数无效: {exc}") from exc
+        config = {
+            "gateway": "vnpy",
+            "username": body.username,
+            "password": body.password,
+            **connection,
             "connect_timeout": 25,
-            "initial_capital": 0.0,
-            "risk": {**_DEFAULT_RUNTIME_RISK, **dict(body.risk or {})},
+            "risk": {**runtime_risk_defaults(), **body.risk},
+            "contract_margin_rates": margin_rates,
             "log_callback": trading_state.add_log,
         }
+        from ..trading.risk import RiskConfig
 
-        trading_state.add_log(f"交易前置: {body.td_server}")
-        trading_state.add_log(f"行情前置: {body.md_server}")
-
-        gateway = None
         try:
-            gateway = create_gateway(gateway_type)
-            loop    = asyncio.get_running_loop()
-            trading_state.add_log("正在连接，请稍候（最长 35 秒）…")
-
-            success = await asyncio.wait_for(
-                loop.run_in_executor(None, gateway.connect, config),
-                timeout=35,
-            )
-        except asyncio.TimeoutError:
-            if gateway:
-                try:
-                    gateway.disconnect()
-                except Exception:
-                    logger.exception("[API] 登录超时后断开网关异常")
-            trading_state.add_log("✘ 连接超时（35s）")
-            logger.error("[API] 登录超时（35s），请检查网络和服务器地址")
-            raise HTTPException(status_code=408, detail="连接超时，请检查服务器地址或网络")
-        except Exception as exc:
-            if gateway:
-                try:
-                    gateway.disconnect()
-                except Exception:
-                    logger.exception("[API] 登录异常后断开网关异常")
-            trading_state.add_log(f"✘ 连接异常: {exc}")
-            raise HTTPException(status_code=500, detail=f"连接异常: {exc}")
-
-        if not success:
-            if gateway:
-                try:
-                    gateway.disconnect()
-                except Exception:
-                    logger.exception("[API] 登录失败后断开网关异常")
-            error_summary = ""
-            if gateway and hasattr(gateway, "connection_error_summary"):
-                error_summary = gateway.connection_error_summary()
-            if error_summary:
-                detail = f"vn.py/CTP 连接失败：{error_summary}"
-                trading_state.add_log(f"✘ {detail}")
-                raise HTTPException(status_code=502, detail=detail)
-
-            trading_state.add_log("✘ 登录失败，请检查账户信息")
-            raise HTTPException(status_code=401, detail="登录失败，请检查账户/密码/经纪商ID")
-
-        # 构建 TradingEngine 并注册
+            RiskConfig.from_mapping(config["risk"])
+            if any(not 0 < v <= 1 for v in body.contract_margin_rates.values()):
+                raise ValueError("保证金比例必须在 (0,1]")
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+        gateway = create_gateway("vnpy")
         engine = TradingEngine(gateway)
-
-        # 查询真实账户信息，用当前余额作为初始资金基准
+        connect_task = asyncio.create_task(asyncio.to_thread(gateway.connect, config))
         try:
-            account    = gateway.query_account()
-            account_id = account.account_id if account else ""
-            balance    = account.balance    if account else 0.0
-        except Exception:
-            account_id, balance = "", 0.0
-
-        # 用真实余额覆盖 initial_capital，并重置当日基准
-        if balance > 0:
+            success = await asyncio.wait_for(asyncio.shield(connect_task), 35)
+            if not success:
+                raise HTTPException(502, "柜台连接未就绪，原账户连接保持不变")
+            account = gateway.query_account()
+            balance = account.balance if account else 0.0
+            account_id = account.account_id if account else body.username
             config["initial_capital"] = balance
-        engine.configure_risk(config)
-        trading_state.set_main_engine(engine, config)
-        trading_state._day_open_balance = balance  # 以登录时余额作为日内基准
-        engine.risk_manager.set_day_open_balance(balance)
+            engine.configure_risk(config)
+            strategy_id = ""
+            if strategy:
+                saved_params = (
+                    engine.ledger.load_setting(f"strategy:{body.strategy_name}_main", {}) if engine.ledger else {}
+                )
+                strategy = create_strategy(body.strategy_name, {**saved_params, **body.strategy_params})
+                from dataclasses import asdict
 
-        strategy_started = False
-        strategy_id = ""
-        if body.auto_start_strategy:
-            from ..strategy import create_strategy
+                config["risk"] = asdict(engine.risk_manager.config)
+                strategy.initial_capital = strategy.current_capital = balance
+                engine.set_strategy(strategy)
+                if not engine.start(config):
+                    raise HTTPException(500, "策略启动失败，原账户连接保持不变")
+                strategy_id = f"{body.strategy_name}_main"
+            new_credential = await asyncio.to_thread(AccountCredential.from_config, config)
+        except BaseException as exc:
+            await asyncio.to_thread(gateway.disconnect)
+            # A cancelled await must not leave the connection worker able to commit late.
+            try:
+                await asyncio.shield(connect_task)
+            except Exception:
+                logger.debug("连接工作线程结束", exc_info=True)
+            await asyncio.to_thread(gateway.disconnect)
+            if isinstance(exc, asyncio.TimeoutError):
+                raise HTTPException(408, "连接超时，原账户连接保持不变") from exc
+            if isinstance(exc, (HTTPException, asyncio.CancelledError)):
+                raise
+            logger.exception("新账户连接失败")
+            raise HTTPException(502, "柜台连接失败，原账户连接保持不变") from exc
 
-            strategy_params = dict(body.strategy_params or {})
-            if not strategy_params.get("symbol") and not strategy_params.get("symbols"):
-                raise HTTPException(status_code=400, detail="自动启动策略需要 strategy_params.symbol 或 symbols")
-            strategy = create_strategy(body.strategy_name, strategy_params)
-            strategy.initial_capital = config.get("initial_capital", 0.0) or balance or 1_000_000.0
-            engine.set_strategy(strategy)
-
-            strategy_config = {
-                **config,
-                "strategy_name": body.strategy_name,
-                "strategy_params": strategy_params,
-            }
-            if not engine.start(strategy_config):
-                raise HTTPException(status_code=500, detail="策略运行时启动失败")
-
-            strategy_id = f"{body.strategy_name}_main"
-            trading_state.register(strategy_id, strategy, engine, strategy_config)
-            symbols = strategy_params.get("symbols") or [strategy_params.get("symbol")]
-            _subscribe_market_ticks(engine, [s for s in symbols if s])
-            strategy_started = True
-            trading_state.add_log(f"策略已自动启动: {strategy_id}")
-
-        trading_state.add_log(f"✔ 登录成功，账户: {account_id}，当前余额: ¥{balance:,.2f}（用作初始资金基准）")
-
-        token = session_store.create()
+        # Commit only after the replacement is ready. Old cookies and sockets lose access.
+        session_store.revoke_all()
+        await asyncio.to_thread(trading_state.clear_main)
+        stored_config = {k: v for k, v in config.items() if k not in {"password", "auth_code"}}
+        trading_state.set_main_engine(engine, stored_config)
+        session_store._credential = new_credential
+        trading_state._day_open_balance = engine.risk_manager.day_open_balance
+        if strategy:
+            stored_config.update(strategy_name=body.strategy_name, strategy_params=dict(body.strategy_params))
+            trading_state.register(strategy_id, strategy, engine, stored_config)
+            symbols = strategy.params.get("symbols") or [strategy.params.get("symbol")]
+            _subscribe_market_ticks(engine, [symbol for symbol in symbols if symbol])
+        token = session_store.create(account_id=account_id)
         response.set_cookie(
-            key=SESSION_COOKIE_NAME,
-            value=token,
+            SESSION_COOKIE_NAME,
+            token,
             max_age=SESSION_COOKIE_MAX_AGE,
             httponly=True,
             samesite="lax",
             secure=secure_session_cookie_enabled(),
         )
-
         _record_audit(
-            "auth",
-            "login",
-            "success",
-            actor=body.username,
-            request=request,
-            detail={"gateway_type": gateway_type, "account_id": account_id},
+            "auth", "login", "success", actor=body.username, request=request, detail={"account_id": account_id}
         )
-
         return LoginResponse(
-            success        = True,
-            message        = "登录成功，策略已启动" if strategy_started else "登录成功",
-            gateway_status = gateway.status.value,
-            account_id     = account_id,
-            balance        = balance,
-            strategy_started = strategy_started,
-            strategy_id      = strategy_id,
+            success=True,
+            message="登录成功",
+            gateway_status=gateway.status.value,
+            account_id=account_id,
+            balance=balance,
+            strategy_started=strategy is not None,
+            strategy_id=strategy_id,
         )
 
-    @app.post("/auth/logout", summary="断开连接并注销会话", tags=["认证"])
+    @app.post("/auth/session/logout", summary="退出当前端，保留共享柜台连接", tags=["认证"])
+    async def logout_session(request: Request):
+        session_store.revoke(_request_session_token(request))
+        response = JSONResponse({"success": True, "message": "已退出当前端，柜台连接及其他终端保持运行"})
+        response.delete_cookie(SESSION_COOKIE_NAME)
+        _record_audit("auth", "logout_session", "success", request=request)
+        return response
+
+    @app.post("/auth/logout", summary="断开账户并注销全部终端", tags=["认证"])
     async def do_logout(request: Request):
-        auth  = request.headers.get("authorization", "")
+        auth = request.headers.get("authorization", "")
         token = auth[7:] if auth.lower().startswith("bearer ") else ""
         if token:
             session_store.revoke(token)
         request_token = request.cookies.get(SESSION_COOKIE_NAME, "")
         if request_token:
             session_store.revoke(request_token)
+        session_store.revoke_all()
         response = JSONResponse({"success": True, "message": "已断开连接"})
         response.delete_cookie(SESSION_COOKIE_NAME)
         trading_state.add_log("用户主动断开连接")
@@ -1650,15 +1867,15 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         tags=["系统"],
     )
     def get_system_status():
-        engine          = trading_state.primary_engine()
+        engine = trading_state.primary_engine()
         market_connected = False
-        gateway_status   = TradingStatus.STOPPED.value
-        gateway_name     = "N/A"
-        account_dict     = None
+        gateway_status = TradingStatus.STOPPED.value
+        gateway_name = "N/A"
+        account_dict = None
 
         if engine:
-            gw             = engine.gateway
-            gateway_name   = gw.name
+            gw = engine.gateway
+            gateway_name = gw.name
             gateway_status = gw.status.value if isinstance(gw.status, TradingStatus) else str(gw.status)
             market_connected = gw.status in (TradingStatus.CONNECTED, TradingStatus.TRADING)
             try:
@@ -1670,32 +1887,34 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
 
         active_count = sum(1 for e in trading_state.all_entries() if e.status == "running")
         return SystemStatusResponse(
-            timestamp        = datetime.now().isoformat(),
-            market_connected = market_connected,
-            gateway_status   = gateway_status,
-            gateway_name     = gateway_name,
-            cpu_percent      = psutil.cpu_percent(interval=None),
-            memory_percent   = psutil.virtual_memory().percent,
-            active_strategies = active_count,
-            account          = account_dict,
+            timestamp=datetime.now().isoformat(),
+            market_connected=market_connected,
+            gateway_status=gateway_status,
+            gateway_name=gateway_name,
+            cpu_percent=psutil.cpu_percent(interval=None),
+            memory_percent=psutil.virtual_memory().percent,
+            active_strategies=active_count,
+            account=account_dict,
         )
 
     @app.get("/strategies", response_model=List[StrategyInfo], summary="策略列表", tags=["策略"])
     def list_strategies():
         result: List[StrategyInfo] = []
         for entry in trading_state.all_entries():
-            s         = entry.strategy
+            s = entry.strategy
             positions = [_position_to_schema(p) for p in s.positions.values() if p.volume != 0]
-            result.append(StrategyInfo(
-                strategy_id = entry.strategy_id,
-                name        = s.name,
-                status      = entry.status,
-                symbol      = getattr(s, "symbol", None),
-                pnl         = _calc_strategy_pnl(entry),
-                positions   = positions,
-                trade_count = len(s.trades),
-                error_count = s._error_count,
-            ))
+            result.append(
+                StrategyInfo(
+                    strategy_id=entry.strategy_id,
+                    name=s.name,
+                    status=entry.status,
+                    symbol=getattr(s, "symbol", None),
+                    pnl=_calc_strategy_pnl(entry),
+                    positions=positions,
+                    trade_count=len(s.trades),
+                    error_count=s._error_count,
+                )
+            )
         return result
 
     @app.get(
@@ -1708,21 +1927,21 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         entry = trading_state.get(strategy_id)
         if entry is None:
             raise HTTPException(status_code=404, detail=f"策略不存在: {strategy_id}")
-        s         = entry.strategy
+        s = entry.strategy
         positions = [_position_to_schema(p) for p in s.positions.values() if p.volume != 0]
-        signals   = [_signal_to_schema(sig) for sig in list(s.signals)[-10:]]
+        signals = [_signal_to_schema(sig) for sig in list(s.signals)[-10:]]
         return StrategyDetailResponse(
-            strategy_id    = entry.strategy_id,
-            name           = s.name,
-            status         = entry.status,
-            symbol         = getattr(s, "symbol", None),
-            pnl            = _calc_strategy_pnl(entry),
-            trade_count    = len(s.trades),
-            error_count    = s._error_count,
-            positions      = positions,
-            weight         = trading_state.get_weight(strategy_id),
-            params         = dict(s.params),
-            recent_signals = signals,
+            strategy_id=entry.strategy_id,
+            name=s.name,
+            status=entry.status,
+            symbol=getattr(s, "symbol", None),
+            pnl=_calc_strategy_pnl(entry),
+            trade_count=len(s.trades),
+            error_count=s._error_count,
+            positions=positions,
+            weight=trading_state.get_weight(strategy_id),
+            params=dict(s.params),
+            recent_signals=signals,
         )
 
     @app.put(
@@ -1739,41 +1958,44 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         if entry is None:
             raise HTTPException(status_code=404, detail=f"策略不存在: {strategy_id}")
 
-        s = entry.strategy
-        # 更新 params 字典
-        s.params.update(body.params)
-        entry.config.update(body.params)
+        from ..strategy import create_strategy
 
-        # 尝试热更新策略实例属性
-        for key, val in body.params.items():
-            if hasattr(s, key):
-                try:
-                    setattr(s, key, type(getattr(s, key))(val))
-                except Exception:
-                    setattr(s, key, val)
-
-        was_running = entry.status == "running"
-        if body.restart and was_running:
-            try:
+        try:
+            candidate = create_strategy(entry.strategy.name, {**entry.strategy.params, **body.params})
+            candidate.on_init()
+        except Exception as exc:
+            raise HTTPException(422, f"策略参数无效: {exc}") from exc
+        if entry.status == "running" and not body.restart:
+            raise HTTPException(409, "运行中的参数变更需要 restart=true")
+        with entry.engine.order_manager.lock:
+            old_strategy = entry.strategy
+            was_running = entry.status == "running"
+            if was_running:
                 entry.engine.stop()
-                entry.engine.start(entry.config)
-                logger.info(f"[API] 策略 {strategy_id} 参数更新后重启")
+            candidate.current_capital = old_strategy.current_capital
+            candidate.initial_capital = old_strategy.initial_capital
+            candidate.allocation_weight = old_strategy.allocation_weight
+            entry.engine.set_strategy(candidate)
+            try:
+                if was_running and not entry.engine.start(entry.config):
+                    raise RuntimeError("策略重启失败")
             except Exception as exc:
-                raise HTTPException(status_code=500, detail=f"重启失败: {exc}")
-
-        return {
-            "success":     True,
-            "strategy_id": strategy_id,
-            "params":      dict(s.params),
-            "restarted":   body.restart and was_running,
-        }
+                entry.engine.set_strategy(old_strategy)
+                raise HTTPException(500, "参数未提交，策略已停止，请检查状态后重启") from exc
+            entry.strategy = candidate
+            entry.config["strategy_params"] = dict(candidate.params)
+            _subscribe_market_ticks(entry.engine, candidate.params.get("symbols") or [candidate.params.get("symbol")])
+            if entry.engine.ledger:
+                entry.engine.ledger.save_setting(f"strategy:{strategy_id}", candidate.params)
+        _record_audit("strategy", "params", "success", resource=strategy_id)
+        return {"success": True, "strategy_id": strategy_id, "params": dict(candidate.params)}
 
     @app.put(
         "/strategies/weights",
         summary="批量更新策略权重",
         tags=["策略"],
     )
-    def update_weights(body: WeightRequest):
+    def update_weights(body: WeightRequest, request: Request):
         """
         更新所有策略的权重分配（0.0~1.0）。权重用于后续资金分配计算。
         """
@@ -1781,7 +2003,11 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         unknown = [sid for sid in body.weights if trading_state.get(sid) is None]
         if unknown:
             raise HTTPException(status_code=404, detail=f"未知策略: {unknown}")
-        trading_state.set_weights(body.weights)
+        try:
+            trading_state.set_weights(body.weights)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        _record_audit("strategy", "weights", "success", request=request, detail=body.weights)
         return {
             "success": True,
             "weights": trading_state.all_weights(),
@@ -1811,6 +2037,20 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         """返回所有已成交记录，按时间倒序，最多 500 条。"""
         return _collect_all_trades()[:500]
 
+    @app.get("/trading/snapshot")
+    def trading_snapshot():
+        engine = trading_state.primary_engine()
+        if not engine:
+            raise HTTPException(503, "交易引擎未连接")
+        with engine.order_manager.lock:
+            revision = time.monotonic_ns() // 1000
+            return {
+                "revision": revision,
+                "orders": list_orders(),
+                "trades": list_trades(),
+                "positions": [p.model_dump() for p in list_positions()],
+            }
+
     @app.get("/risk/status", summary="风控状态", tags=["风控"])
     def risk_status():
         engine = trading_state.primary_engine()
@@ -1818,7 +2058,9 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             return {"connected": False, "risk": None}
         return {
             "connected": True,
-            "gateway_status": engine.gateway.status.value if hasattr(engine.gateway.status, "value") else str(engine.gateway.status),
+            "gateway_status": engine.gateway.status.value
+            if hasattr(engine.gateway.status, "value")
+            else str(engine.gateway.status),
             "risk": engine.risk_manager.status(),
             "last_reject_reason": getattr(engine, "last_reject_reason", ""),
         }
@@ -1830,7 +2072,10 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             raise HTTPException(status_code=503, detail="交易引擎未连接")
         merged = {**_DEFAULT_RUNTIME_RISK, **dict(body.risk or {})}
         for engine in engines:
-            engine.configure_risk({"risk": merged})
+            with engine.order_manager.lock:
+                engine.configure_risk({"risk": merged})
+                if engine.ledger:
+                    engine.ledger.save_setting("risk", merged)
         if trading_state._main_config is not None:
             trading_state._main_config["risk"] = merged
         _record_audit("risk", "update_config", "success", request=request, detail={"risk": merged})
@@ -1844,7 +2089,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
 
         reason = body.reason.strip() or "operator emergency stop"
         for engine in engines:
-            engine.risk_manager.set_emergency_stop(True, reason)
+            engine.set_emergency_stop(True, reason)
 
         cancel_result = _cancel_all_active_orders() if body.cancel_orders else {"cancelled": 0, "failed": 0}
         stopped = 0
@@ -1878,10 +2123,25 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         if not engines:
             raise HTTPException(status_code=503, detail="交易引擎未连接")
         for engine in engines:
-            engine.risk_manager.set_emergency_stop(False, "")
+            if engine.missing_order_replays or (engine.ledger and engine.ledger.unresolved()):
+                raise HTTPException(409, "存在未核对的报单结果，请先对账")
+            if hasattr(engine.gateway, "ready") and not engine.gateway.ready:
+                raise HTTPException(409, "柜台快照未就绪")
+            engine.set_emergency_stop(False, "")
         trading_state.add_log("交易急停已解除")
         _record_audit("risk", "resume", "success", request=request)
         return {"success": True, "emergency_stop": False}
+
+    @app.get("/trading/margin-rate", summary="查询当前账户的合约保证金", tags=["风控"])
+    def trading_margin_rate(symbol: str):
+        engine = trading_state.primary_engine()
+        query_margin = getattr(engine.gateway, "request_margin_rate", None) if engine else None
+        if not callable(query_margin):
+            raise HTTPException(503, "当前网关尚不支持保证金查询")
+        try:
+            return query_margin(symbol.strip())
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
 
     @app.get("/trading/reconcile", summary="账户/委托/持仓对账快照", tags=["风控"])
     def trading_reconcile():
@@ -1894,9 +2154,20 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         active_orders = [order for order in orders if order.get("status") in {"submitting", "submitted", "partfilled"}]
         return {
             "timestamp": datetime.now().isoformat(),
+            "snapshot_only": True,
+            "reconciled": bool(getattr(engine.gateway, "ready", False))
+            and not engine.missing_order_replays
+            and not bool(engine.ledger and engine.ledger.unresolved()),
+            "unresolved_intents": engine.ledger.unresolved() if engine.ledger else [],
+            "missing_order_replays": sorted(engine.missing_order_replays),
+            "connection_state": getattr(engine.gateway, "connection_state", {}),
             "connected": engine.gateway.status in (TradingStatus.CONNECTED, TradingStatus.TRADING),
-            "gateway_status": engine.gateway.status.value if hasattr(engine.gateway.status, "value") else str(engine.gateway.status),
-            "account": _account_to_dict(account) if not getattr(account, "error_msg", "") else {"error_msg": account.error_msg},
+            "gateway_status": engine.gateway.status.value
+            if hasattr(engine.gateway.status, "value")
+            else str(engine.gateway.status),
+            "account": _account_to_dict(account)
+            if not getattr(account, "error_msg", "")
+            else {"error_msg": account.error_msg},
             "risk": engine.risk_manager.status(),
             "orders": {
                 "active_count": len(active_orders),
@@ -2032,7 +2303,9 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         except HTTPException:
             raise
         except Exception as exc:
-            _record_audit("order", "manual_order", "error", resource=symbol, request=request, detail={"error": str(exc)})
+            _record_audit(
+                "order", "manual_order", "error", resource=symbol, request=request, detail={"error": str(exc)}
+            )
             raise HTTPException(status_code=500, detail=f"下单失败: {exc}")
 
     @app.post("/orders/cancel-all", summary="一键撤销所有活跃委托", tags=["手动交易"])
@@ -2086,10 +2359,17 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             raise
 
         if pos is None:
-            _record_audit("order", "manual_close_position", "rejected", resource=symbol, request=request, detail={"reason": "position_not_found"})
+            _record_audit(
+                "order",
+                "manual_close_position",
+                "rejected",
+                resource=symbol,
+                request=request,
+                detail={"reason": "position_not_found"},
+            )
             raise HTTPException(status_code=404, detail=f"未找到 {symbol} 的持仓")
 
-        available_volume = abs(int(getattr(pos, "volume", 0) or 0))
+        available_volume = max(0, abs(int(getattr(pos, "volume", 0) or 0)) - int(getattr(pos, "frozen", 0) or 0))
         close_volume = requested_volume if requested_volume > 0 else available_volume
         if close_volume > available_volume:
             _record_audit(
@@ -2098,7 +2378,11 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
                 "rejected",
                 resource=clean_symbol,
                 request=request,
-                detail={"reason": "close_volume_exceeds_position", "requested": close_volume, "available": available_volume},
+                detail={
+                    "reason": "close_volume_exceeds_position",
+                    "requested": close_volume,
+                    "available": available_volume,
+                },
             )
             raise HTTPException(status_code=400, detail=f"平仓数量 {close_volume} 超过当前持仓 {available_volume}")
 
@@ -2120,7 +2404,14 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             if not order_id:
                 reason = getattr(engine, "last_reject_reason", "")
                 if reason:
-                    _record_audit("order", "manual_close_position", "rejected", resource=clean_symbol, request=request, detail={"reason": reason})
+                    _record_audit(
+                        "order",
+                        "manual_close_position",
+                        "rejected",
+                        resource=clean_symbol,
+                        request=request,
+                        detail={"reason": reason},
+                    )
                     raise HTTPException(status_code=400, detail=f"风控拒单: {reason}")
                 raise HTTPException(status_code=500, detail="平仓下单失败")
             _record_audit(
@@ -2129,7 +2420,12 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
                 "success",
                 resource=order_id,
                 request=request,
-                detail={"symbol": clean_symbol, "volume": close_volume, "offset": offset_name, "direction": close_direction.value},
+                detail={
+                    "symbol": clean_symbol,
+                    "volume": close_volume,
+                    "offset": offset_name,
+                    "direction": close_direction.value,
+                },
             )
             return {
                 "success": True,
@@ -2144,7 +2440,9 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         except HTTPException:
             raise
         except Exception as exc:
-            _record_audit("order", "manual_close_position", "error", resource=symbol, request=request, detail={"error": str(exc)})
+            _record_audit(
+                "order", "manual_close_position", "error", resource=symbol, request=request, detail={"error": str(exc)}
+            )
             raise HTTPException(status_code=500, detail=f"平仓失败: {exc}")
 
     @app.post(
@@ -2163,19 +2461,17 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         try:
             if action == "start":
                 if entry.status == "running":
-                    return ActionResponse(success=True, strategy_id=strategy_id, action=action,
-                                         message="策略已在运行中")
+                    return ActionResponse(
+                        success=True, strategy_id=strategy_id, action=action, message="策略已在运行中"
+                    )
                 if not entry.engine.start(entry.config):
                     raise HTTPException(status_code=500, detail="策略启动失败")
-                return ActionResponse(success=True, strategy_id=strategy_id, action=action,
-                                      message="策略已启动")
+                return ActionResponse(success=True, strategy_id=strategy_id, action=action, message="策略已启动")
             else:
                 if entry.status == "stopped":
-                    return ActionResponse(success=True, strategy_id=strategy_id, action=action,
-                                         message="策略已停止")
+                    return ActionResponse(success=True, strategy_id=strategy_id, action=action, message="策略已停止")
                 entry.engine.stop()
-                return ActionResponse(success=True, strategy_id=strategy_id, action=action,
-                                      message="策略已停止")
+                return ActionResponse(success=True, strategy_id=strategy_id, action=action, message="策略已停止")
         except HTTPException:
             raise
         except Exception as exc:
@@ -2230,7 +2526,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         try:
             await ws.send_text(_json.dumps(_build_system_snapshot(), ensure_ascii=False, default=str))
             while True:
-                await ws.receive_text()
+                await _session_receive_text(ws)
         except WebSocketDisconnect:
             pass
         except Exception as exc:
@@ -2245,7 +2541,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         await orders_manager.connect(ws)
         try:
             while True:
-                await ws.receive_text()
+                await _session_receive_text(ws)
         except WebSocketDisconnect:
             pass
         except Exception as exc:
@@ -2260,11 +2556,9 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         await positions_manager.connect(ws)
         try:
             # 连接时立即推送当前持仓快照
-            await ws.send_text(
-                _json.dumps(_build_positions_snapshot(), ensure_ascii=False, default=str)
-            )
+            await ws.send_text(_json.dumps(_build_positions_snapshot(), ensure_ascii=False, default=str))
             while True:
-                await ws.receive_text()
+                await _session_receive_text(ws)
         except WebSocketDisconnect:
             pass
         except Exception as exc:
@@ -2279,11 +2573,9 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         await dashboard_manager.connect(ws)
         try:
             # 连接时立即推送一次快照
-            await ws.send_text(
-                _json.dumps(_build_dashboard_metrics(), ensure_ascii=False, default=str)
-            )
+            await ws.send_text(_json.dumps(_build_dashboard_metrics(), ensure_ascii=False, default=str))
             while True:
-                await ws.receive_text()
+                await _session_receive_text(ws)
         except WebSocketDisconnect:
             pass
         except Exception as exc:
@@ -2294,6 +2586,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
     @app.get("/ws-demo", response_class=HTMLResponse, include_in_schema=False)
     def ws_demo_page():
         from pathlib import Path
+
         demo = Path(__file__).parent.parent.parent / "static" / "ws_demo.html"
         return demo.read_text(encoding="utf-8") if demo.exists() else "<h3>演示页面未找到</h3>"
 
@@ -2302,7 +2595,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
     async def get_system_logs(
         request: Request,
         level: str = "",
-        q:     str = "",
+        q: str = "",
         limit: int = 200,
     ):
         """
@@ -2325,11 +2618,12 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             await ws.send_text(
                 _json.dumps(
                     {"type": "log_history", "logs": history},
-                    ensure_ascii=False, default=str,
+                    ensure_ascii=False,
+                    default=str,
                 )
             )
             while True:
-                await ws.receive_text()
+                await _session_receive_text(ws)
         except WebSocketDisconnect:
             pass
         except Exception as exc:
@@ -2343,31 +2637,40 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         """返回可用策略列表及默认参数。"""
         return JSONResponse({"strategies": STRATEGY_CATALOG})
 
+    backtest_slots = asyncio.Semaphore(2)
+
     @app.post("/backtest/run")
     async def bt_run(body: BacktestRunRequest, request: Request):
-        """运行回测，返回完整结果（资金曲线、交易标记、指标、热力图数据）。"""
-        loop = asyncio.get_event_loop()
-        try:
-            result = await asyncio.wait_for(
-                loop.run_in_executor(None, run_backtest_sync, body),
-                timeout=120,
-            )
-        except asyncio.TimeoutError:
-            return JSONResponse({"success": False, "error": "回测超时（>120s），请缩短日期范围"}, status_code=504)
-        except Exception as exc:
-            logger.error(f"[backtest] 运行失败: {exc}\n{traceback.format_exc()}")
-            return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
-        return JSONResponse(result)
+        if backtest_slots.locked():
+            raise HTTPException(429, "回测并发数已达上限")
+        async with backtest_slots:
+            cancelled = threading.Event()
+            task = asyncio.create_task(asyncio.to_thread(run_backtest_sync, body, cancelled))
+            try:
+                result = await asyncio.wait_for(asyncio.shield(task), timeout=120)
+                return JSONResponse(result)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                cancelled.set()
+                # Keep the slot occupied until cooperative cancellation reaches the engine.
+                try:
+                    await asyncio.shield(task)
+                except Exception:
+                    logger.exception("回测取消失败")
+                raise HTTPException(504, "回测已取消或超时")
+            except Exception:
+                logger.exception("回测失败")
+                raise HTTPException(500, "回测失败，请查看带请求 ID 的日志")
 
     # ── K线数据 ───────────────────────────────────────────────────────────────
     @app.get("/watch/kline", summary="K线数据 + 技术指标", tags=["行情"])
     async def watch_kline(
-        request:    Request,
-        symbol:     str           = "rb2501",
-        interval:   str           = "1d",
-        limit:      int           = 100,
-        indicators: str           = "",
-        since:      Optional[str] = None,
+        request: Request,
+        symbol: str = "rb2501",
+        interval: str = "1d",
+        limit: int = 100,
+        indicators: str = "",
+        since: Optional[str] = None,
+        before: Optional[str] = None,
     ):
         """
         获取 K 线数据并计算技术指标。
@@ -2388,15 +2691,17 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         缓存 TTL：1m=10s / 1h=120s / 1d=600s。
         """
         from ..watch.kline import get_kline
+
         try:
             result = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: get_kline(
-                    symbol     = symbol,
-                    interval   = interval,
-                    limit      = min(limit, 1000),
-                    indicators = indicators,
-                    since      = since,
+                    symbol=symbol,
+                    interval=interval,
+                    limit=min(limit, 1000),
+                    indicators=indicators,
+                    since=since,
+                    before=before,
                 ),
             )
             if result.get("code") != 0:
@@ -2410,6 +2715,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
     async def clear_kline_cache(request: Request, symbol: str = ""):
         """清除指定合约（或全部）的 K 线缓存。"""
         from ..watch.kline import kline_cache
+
         prefix = f"kline:{symbol}" if symbol else "kline:"
         n = kline_cache.invalidate(prefix)
         return JSONResponse({"code": 0, "cleared": n})
@@ -2467,7 +2773,12 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
     async def ws_watch(ws: WebSocket):
         if not await _require_websocket_session(ws):
             return
+        if len(watch_connections) >= 100:
+            await ws.close(code=1013)
+            return
         await ws.accept()
+        watch_connections.add(ws)
+        metrics.record_ws_connect("watch")
         logger.info("[WS:watch] 新连接")
 
         # 每个连接的订阅状态：symbol → set(channels)
@@ -2478,7 +2789,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         async def _recv_loop():
             try:
                 while True:
-                    raw = await ws.receive_text()
+                    raw = await _session_receive_text(ws)
                     if raw == "ping":
                         await ws.send_text("pong")
                         continue
@@ -2488,17 +2799,38 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
                         continue
 
                     mtype = msg.get("type", "")
-                    syms  = msg.get("symbols", [])
-                    chs   = msg.get("channels", ["tick"])
+                    syms = msg.get("symbols", [])
+                    chs = msg.get("channels", ["tick"])
 
+                    valid_channels = {
+                        "tick",
+                        *[f"kline_{iv}" for iv in ("1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w")],
+                    }
+                    if (
+                        not isinstance(syms, list)
+                        or not isinstance(chs, list)
+                        or len(syms) > 50
+                        or len(subscriptions) + len(set(syms) - set(subscriptions)) > 50
+                        or not set(chs) <= valid_channels
+                    ):
+                        await ws.close(code=1008)
+                        return
                     if mtype == "subscribe" and syms:
                         engine = trading_state.primary_engine()
-                        if engine is None or engine.gateway.status not in (TradingStatus.CONNECTED, TradingStatus.TRADING):
-                            await ws.send_text(_json.dumps({
-                                "type": "error",
-                                "code": "gateway_not_connected",
-                                "msg": "行情网关未连接，请先登录 CTP 账户",
-                            }, ensure_ascii=False))
+                        if engine is None or engine.gateway.status not in (
+                            TradingStatus.CONNECTED,
+                            TradingStatus.TRADING,
+                        ):
+                            await ws.send_text(
+                                _json.dumps(
+                                    {
+                                        "type": "error",
+                                        "code": "gateway_not_connected",
+                                        "msg": "行情网关未连接，请先登录 CTP 账户",
+                                    },
+                                    ensure_ascii=False,
+                                )
+                            )
                             continue
 
                         for s in syms:
@@ -2506,9 +2838,15 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
                                 subscriptions[s] = set()
                             subscriptions[s].update(chs)
                         _subscribe_market_ticks(engine, syms)
-                        await ws.send_text(_json.dumps({
-                            "type": "subscribed", "symbols": syms,
-                        }, ensure_ascii=False))
+                        await ws.send_text(
+                            _json.dumps(
+                                {
+                                    "type": "subscribed",
+                                    "symbols": syms,
+                                },
+                                ensure_ascii=False,
+                            )
+                        )
                         logger.info(f"[WS:watch] 订阅: {syms} channels={chs}")
 
                     elif mtype == "unsubscribe" and syms:
@@ -2527,20 +2865,25 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             except Exception as e:
                 logger.debug(f"[WS:watch] recv_loop 异常: {e}")
 
+        from ..trading.bars import BarAggregator
+        from types import SimpleNamespace
+
+        aggregators = {}
+
         # 推送 tick 循环（每 500ms 推送一次）
         async def _push_loop():
             try:
                 while True:
                     await asyncio.sleep(0.5)
+                    if not session_store.is_valid(_websocket_session_token(ws)):
+                        return
                     if not subscriptions:
                         continue
                     engine = trading_state.primary_engine()
                     if engine is None:
                         continue
                     for symbol, channels in list(subscriptions.items()):
-                        if "tick" not in channels and not any(
-                            ch.startswith("kline_") for ch in channels
-                        ):
+                        if "tick" not in channels and not any(ch.startswith("kline_") for ch in channels):
                             continue
 
                         snapshot = _gateway_tick_snapshot(engine.gateway, symbol)
@@ -2558,42 +2901,69 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
                         for ch in channels:
                             if not ch.startswith("kline_"):
                                 continue
-                            iv = ch[6:]  # e.g. "1m"
-                            last = float(snapshot.get("last") or 0)
-                            bar_update = {
-                                "type":     "kline_update",
-                                "symbol":   symbol,
-                                "interval": iv,
-                                "bar": {
-                                    "time":   datetime.now().strftime("%Y-%m-%d %H:%M"),
-                                    "open":   snapshot.get("open") or last,
-                                    "high":   max(float(snapshot.get("high") or last), last),
-                                    "low":    min(float(snapshot.get("low") or last), last),
-                                    "close":  last,
-                                    "volume": snapshot.get("volume") or 0,
-                                },
-                            }
-                            await ws.send_text(
-                                _json.dumps(bar_update, ensure_ascii=False, default=str)
+                            iv = ch[6:]
+                            key = (symbol, iv)
+                            agg = aggregators.setdefault(key, BarAggregator(iv))
+                            raw_ts = snapshot.get("timestamp") or snapshot.get("time")
+                            if not raw_ts:
+                                continue
+                            ts = datetime.fromisoformat(str(raw_ts))
+                            if agg.last_timestamp is not None and ts <= agg.last_timestamp:
+                                continue
+                            agg.update(
+                                SimpleNamespace(
+                                    symbol=symbol,
+                                    timestamp=ts,
+                                    last_price=float(snapshot.get("last") or 0),
+                                    volume=int(snapshot.get("volume") or 0),
+                                    trading_day=snapshot.get("trading_day", ""),
+                                )
                             )
+                            if agg.current:
+                                await asyncio.wait_for(
+                                    ws.send_text(
+                                        _json.dumps(
+                                            {
+                                                "type": "kline_update",
+                                                "symbol": symbol,
+                                                "interval": iv,
+                                                "partial": True,
+                                                "bar": agg.current,
+                                            },
+                                            default=str,
+                                        )
+                                    ),
+                                    timeout=1,
+                                )
             except WebSocketDisconnect:
                 pass
             except Exception as e:
                 logger.debug(f"[WS:watch] push_loop 异常: {e}")
 
         try:
-            await asyncio.gather(_recv_loop(), _push_loop())
+            tasks = [asyncio.create_task(_recv_loop()), asyncio.create_task(_push_loop())]
+            try:
+                await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+        except asyncio.CancelledError:
+            # ASGI cancels the connection task on close; its children were cancelled above.
+            pass
         except Exception as exc:
             logger.debug(f"[WS:watch] 连接结束: {exc}")
         finally:
+            watch_connections.discard(ws)
+            metrics.record_ws_disconnect("watch")
             logger.info("[WS:watch] 连接关闭")
 
     # ── 期货品种搜索 ──────────────────────────────────────────────────────────
     @app.get("/watch/search", summary="期货品种/合约搜索", tags=["行情"])
     async def watch_search(
-        query:    str           = "",
+        query: str = "",
         exchange: Optional[str] = None,
-        limit:    int           = 50,
+        limit: int = 50,
     ):
         """
         搜索期货合约，支持：
@@ -2605,8 +2975,14 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         可选 `exchange` 按交易所过滤：SHFE / DCE / CZCE / CFFEX / INE / GFEX
         """
         from ..watch import search_contracts
+
         try:
-            data = search_contracts(query=query, exchange=exchange, limit=min(limit, 200))
+            engine = trading_state.primary_engine()
+            specs = getattr(engine.gateway, "contract_specs", None) if engine else None
+            data = search_contracts(query=query, exchange=exchange, limit=min(limit, 200), contracts=specs)
+            # This public route is outside the account-transition lock even with a cookie.
+            # Account terms are available only through the protected margin endpoint.
+            data = [{k: v for k, v in item.items() if "margin" not in k} for item in data]
             return JSONResponse({"code": 0, "data": data, "total": len(data)})
         except Exception as exc:
             logger.error(f"[watch/search] 搜索失败: {exc}")

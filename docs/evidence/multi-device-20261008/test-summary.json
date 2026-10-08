@@ -1,0 +1,10 @@
+{
+  "backend_passed": 230,
+  "backend_exit_code": 0,
+  "frontend_unit_passed": 29,
+  "browser_passed": 18,
+  "ruff": "passed",
+  "mypy_files": 40,
+  "broker_orders_submitted": false,
+  "live_backend_restarted": false
+}

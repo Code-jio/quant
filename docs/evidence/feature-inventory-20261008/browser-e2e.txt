@@ -1,0 +1,32 @@
+[WebServer] (node:14908) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+
+Running 11 tests using 1 worker
+
+(node:59308) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ok  1 [chromium] › tests\e2e\feature-inventory.spec.js:3:1 › authenticated dashboard and system monitoring expose account views and log controls (1.3s)
+  ok  2 [chromium] › tests\e2e\feature-inventory.spec.js:26:1 › historical chart supports indicator selection drawing clearing fullscreen and PNG export (2.2s)
+  ok  3 [chromium] › tests\e2e\feature-inventory.spec.js:70:1 › unsupported custom chart period is reported instead of showing fabricated bars (797ms)
+  ok  4 [chromium] › tests\e2e\recheck.spec.js:3:1 › saved live API defaults allow account/password login without a contract (995ms)
+[WebServer] 16:35:14 [vite] ws proxy error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+[WebServer] 16:35:14 [vite] ws proxy socket error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+[WebServer] 16:35:14 [vite] ws proxy error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+[WebServer] 16:35:14 [vite] ws proxy socket error:
+[WebServer] Error: read ECONNRESET
+[WebServer]     at TCP.onStreamRead (node:internal/stream_base_commons:216:20)
+  ok  5 [chromium] › tests\e2e\recheck.spec.js:37:1 › saved settings load failure is visible and custom connection remains editable (483ms)
+  ok  6 [chromium] › tests\e2e\recheck.spec.js:46:1 › saved connection fields can be overridden explicitly (1.9s)
+  ok  7 [chromium] › tests\e2e\recheck.spec.js:75:1 › trading panel shows queried account margin and clears it when contract changes (2.7s)
+  ok  8 [chromium] › tests\e2e\remediation.spec.js:3:1 › offline backtest runs with explicit synthetic data and renders result charts (1.0s)
+  ok  9 [chromium] › tests\e2e\remediation.spec.js:23:1 › stored historical bars render through the real worker without auth sockets (717ms)
+  ok 10 [chromium] › tests\e2e\remediation.spec.js:40:1 › authenticated sockets close on logout and trading data loses access (1.2s)
+  ok 11 [chromium] › tests\e2e\smoke.spec.js:3:1 › public pages render without a hard crash (555ms)
+
+  11 passed (16.5s)

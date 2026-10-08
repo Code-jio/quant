@@ -13,6 +13,7 @@ from src.api import LoginRequest
 from src.strategy import Direction, OffsetFlag, OrderType, Position, Signal
 from src.trading.risk import RiskManager
 from main import DEFAULT_CONFIG
+from src.settings import ctp_defaults
 
 
 class SafeDefaultsTest(unittest.TestCase):
@@ -23,9 +24,10 @@ class SafeDefaultsTest(unittest.TestCase):
         self.assertEqual(request.md_server, "")
         self.assertEqual(request.app_id, "")
         self.assertEqual(request.auth_code, "")
-        self.assertEqual(request.environment, "测试")
+        self.assertIsNone(request.environment)
+        self.assertEqual(ctp_defaults()["vnpy_environment"], "实盘")
         self.assertEqual(DEFAULT_CONFIG["trading"]["auth_code"], "")
-        self.assertEqual(DEFAULT_CONFIG["trading"]["vnpy_environment"], "测试")
+        self.assertEqual(DEFAULT_CONFIG["trading"]["vnpy_environment"], "实盘")
 
 
 class SessionStoreTest(unittest.TestCase):
@@ -102,7 +104,7 @@ class RiskManagerTest(unittest.TestCase):
         positions = {"rb2505": Position(symbol="rb2505", direction=Direction.NET, volume=1)}
 
         result = manager.check_signal(
-            self._signal(offset=OffsetFlag.CLOSE, volume=2),
+            self._signal(offset=OffsetFlag.CLOSE, volume=2, direction=Direction.SHORT),
             positions=positions,
         )
 
@@ -156,9 +158,13 @@ class RiskManagerTest(unittest.TestCase):
         manager = RiskManager({"duplicate_signal_window_seconds": 60})
         signal = self._signal(price=100.0, order_type=OrderType.LIMIT)
 
-        first = manager.check_signal(signal, positions={}, market_data={"last_price": 100.0, "timestamp": datetime.now()})
+        first = manager.check_signal(
+            signal, positions={}, market_data={"last_price": 100.0, "timestamp": datetime.now()}
+        )
         manager.record_order(signal)
-        second = manager.check_signal(signal, positions={}, market_data={"last_price": 100.0, "timestamp": datetime.now()})
+        second = manager.check_signal(
+            signal, positions={}, market_data={"last_price": 100.0, "timestamp": datetime.now()}
+        )
 
         self.assertTrue(first.allowed)
         self.assertFalse(second.allowed)

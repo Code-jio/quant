@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import sqlite3
+from pathlib import Path
 import threading
 import time
 import uuid
@@ -29,7 +32,12 @@ class AuditEvent:
 
 
 class AuditEventLog:
-    def __init__(self, max_entries: int = 1000):
+    def __init__(self, max_entries: int = 1000, db_path: str = ":memory:"):
+        if db_path != ":memory:":
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        self.db = sqlite3.connect(db_path, check_same_thread=False, timeout=10)
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY, payload TEXT)")
         self._events: deque[AuditEvent] = deque(maxlen=max_entries)
         self._lock = threading.RLock()
 
@@ -52,18 +60,42 @@ class AuditEventLog:
             actor=actor or "system",
             resource=resource,
             request_id=request_id,
-            detail=detail or {},
+            detail=redact(detail or {}),
         )
         with self._lock:
             self._events.append(event)
+            with self.db:
+                self.db.execute(
+                    "INSERT INTO audit(payload) VALUES(?)", (json.dumps(asdict(event), ensure_ascii=False),)
+                )
         return event
 
     def query(self, event_type: str = "", limit: int = 200) -> list[dict[str, Any]]:
         with self._lock:
-            events = list(self._events)
-        if event_type:
-            events = [event for event in events if event.event_type == event_type]
-        return [asdict(event) for event in events[-max(1, min(limit, 1000)):]]
+            rows = self.db.execute(
+                "SELECT payload FROM audit ORDER BY id DESC LIMIT ?", (max(1, min(limit, 1000)),)
+            ).fetchall()
+        events = [json.loads(row[0]) for row in reversed(rows)]
+        return [event for event in events if not event_type or event["event_type"] == event_type]
+
+
+def redact(value):
+    if isinstance(value, dict):
+        return {
+            k: (
+                "[REDACTED]"
+                if any(word in k.lower() for word in ("password", "secret", "token", "auth_code"))
+                else redact(v)
+            )
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [redact(v) for v in value]
+    return value
+
+
+def label(value):
+    return json.dumps(str(value), ensure_ascii=False)[1:-1]
 
 
 class RuntimeMetrics:
@@ -78,6 +110,14 @@ class RuntimeMetrics:
         self.audit_events: Counter[str] = Counter()
 
     def record_http(self, method: str, path: str, status_code: int, elapsed_seconds: float) -> None:
+        method = (
+            method.upper()
+            if method.upper() in {"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"}
+            else "OTHER"
+        )
+        with self._lock:
+            if (method, path) not in self.http_latency_sum and len(self.http_latency_sum) >= 128:
+                path = "/overflow"
         key = (method.upper(), path, int(status_code))
         latency_key = (method.upper(), path)
         with self._lock:
@@ -107,12 +147,10 @@ class RuntimeMetrics:
             return {
                 "uptime_seconds": round(time.time() - self.started_at, 3),
                 "http_requests": [
-                    {"method": m, "path": p, "status": s, "count": c}
-                    for (m, p, s), c in self.http_requests.items()
+                    {"method": m, "path": p, "status": s, "count": c} for (m, p, s), c in self.http_requests.items()
                 ],
                 "http_latency_seconds_sum": [
-                    {"method": m, "path": p, "sum": round(v, 6)}
-                    for (m, p), v in self.http_latency_sum.items()
+                    {"method": m, "path": p, "sum": round(v, 6)} for (m, p), v in self.http_latency_sum.items()
                 ],
                 "ws_connections": dict(self.ws_connections),
                 "ws_broadcasts": dict(self.ws_broadcasts),
@@ -132,35 +170,43 @@ class RuntimeMetrics:
         for item in snap["http_requests"]:
             lines.append(
                 'quant_http_requests_total{method="%s",path="%s",status="%s"} %s'
-                % (item["method"], item["path"], item["status"], item["count"])
+                % (label(item["method"]), label(item["path"]), item["status"], item["count"])
             )
-        lines.extend([
-            "# HELP quant_http_latency_seconds_sum HTTP request latency sum.",
-            "# TYPE quant_http_latency_seconds_sum counter",
-        ])
+        lines.extend(
+            [
+                "# HELP quant_http_latency_seconds_sum HTTP request latency sum.",
+                "# TYPE quant_http_latency_seconds_sum counter",
+            ]
+        )
         for item in snap["http_latency_seconds_sum"]:
             lines.append(
                 'quant_http_latency_seconds_sum{method="%s",path="%s"} %s'
-                % (item["method"], item["path"], item["sum"])
+                % (label(item["method"]), label(item["path"]), item["sum"])
             )
-        lines.extend([
-            "# HELP quant_ws_connections Active WebSocket connections.",
-            "# TYPE quant_ws_connections gauge",
-        ])
+        lines.extend(
+            [
+                "# HELP quant_ws_connections Active WebSocket connections.",
+                "# TYPE quant_ws_connections gauge",
+            ]
+        )
         for channel, count in snap["ws_connections"].items():
-            lines.append(f'quant_ws_connections{{channel="{channel}"}} {count}')
-        lines.extend([
-            "# HELP quant_ws_broadcasts_total WebSocket broadcast attempts.",
-            "# TYPE quant_ws_broadcasts_total counter",
-        ])
+            lines.append(f'quant_ws_connections{{channel="{label(channel)}"}} {count}')
+        lines.extend(
+            [
+                "# HELP quant_ws_broadcasts_total WebSocket broadcast attempts.",
+                "# TYPE quant_ws_broadcasts_total counter",
+            ]
+        )
         for channel, count in snap["ws_broadcasts"].items():
-            lines.append(f'quant_ws_broadcasts_total{{channel="{channel}"}} {count}')
-        lines.extend([
-            "# HELP quant_ws_dropped_total WebSocket clients dropped during broadcast.",
-            "# TYPE quant_ws_dropped_total counter",
-        ])
+            lines.append(f'quant_ws_broadcasts_total{{channel="{label(channel)}"}} {count}')
+        lines.extend(
+            [
+                "# HELP quant_ws_dropped_total WebSocket clients dropped during broadcast.",
+                "# TYPE quant_ws_dropped_total counter",
+            ]
+        )
         for channel, count in snap["ws_dropped"].items():
-            lines.append(f'quant_ws_dropped_total{{channel="{channel}"}} {count}')
+            lines.append(f'quant_ws_dropped_total{{channel="{label(channel)}"}} {count}')
         return "\n".join(lines) + "\n"
 
 
@@ -176,5 +222,7 @@ def structured_json(event: str, **fields: Any) -> str:
     )
 
 
-audit_log = AuditEventLog()
+audit_log = AuditEventLog(
+    db_path=os.getenv("QUANT_AUDIT_PATH", ":memory:" if os.getenv("QUANT_ENV") == "test" else "data/runtime/audit.db")
+)
 metrics = RuntimeMetrics()
