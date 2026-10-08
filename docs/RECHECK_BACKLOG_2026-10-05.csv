@@ -13,3 +13,5 @@ R11,P2,盯盘告警,高频Tick以显示更新时间限流导致告警检测永�
 R12,P2,图表偏好,副图选择及均线嵌套属性直接修改未保存,选择RSI和关闭首条均线后刷新页面验证持久化,已修复（浏览器验证）；刷新前端加载,新增,2026-10-08,feature-inventory.spec.js单测和E2E；FEATURE_INVENTORY_2026-10-08.md
 R13,P2,图表画线,清除按钮仅清状态而ECharts合并保留旧图形,实际绘制水平线并检查清除后graphic元素为0及截图,已修复（浏览器验证）；刷新前端加载,新增,2026-10-08,feature-inventory.spec.js E2E；FEATURE_INVENTORY_2026-10-08.md
 R14,P3,K线周期,自定义周期输入超出后端八种支持周期时不能生成K线,7d请求返回400且页面显示错误,能力限制已记录；任意周期聚合尚未实现,新增,,test_feature_inventory.py；feature-inventory.spec.js E2E；FEATURE_INVENTORY_2026-10-08.md
+R15,P2,交易台布局,固定1600px宽度且纵向堆叠导致2K屏两侧留白和下单区低于首屏,2560及1920及1366首屏几何检查和截图；合约联动及取消确认不发送写请求,已完成（隔离浏览器验证）；刷新前端加载,新增,2026-10-08,trading-layout.spec.js；TRADING_LAYOUT_2026-10-08.md
+R16,P2,盘口显示,卖盘档位标签与价格错配且CSS反转使最优卖价远离买一,逐档样本核对卖五202与卖一200及上下位置,已修复（浏览器验证）；完整实盘多档来源仍待验收,新增,2026-10-08,trading-layout.spec.js；TRADING_LAYOUT_2026-10-08.md

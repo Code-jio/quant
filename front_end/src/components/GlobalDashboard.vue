@@ -91,6 +91,7 @@ function expLevel(v) {
 const lineRef  = ref(null)
 let lineChart  = null
 let echarts    = null
+let disposed = false
 
 function buildLineOption(curve) {
   const xs = curve.map(p => p.ts)
@@ -143,6 +144,7 @@ function buildLineOption(curve) {
 async function initLineChart() {
   if (!lineRef.value) return
   echarts = await loadEcharts()
+  if (disposed || !lineRef.value) return
   lineChart = echarts.init(lineRef.value, null, { renderer: 'svg' })
   lineChart.setOption(buildLineOption(data.equityCurve))
 }
@@ -209,6 +211,7 @@ function buildDonutOption(positions) {
 async function initDonutChart() {
   if (!donutRef.value) return
   echarts = echarts || await loadEcharts()
+  if (disposed || !donutRef.value) return
   donutChart = echarts.init(donutRef.value, null, { renderer: 'svg' })
   donutChart.setOption(buildDonutOption(data.positions))
 }
@@ -230,12 +233,14 @@ const resizeObs = typeof ResizeObserver !== 'undefined'
 onMounted(async () => {
   await nextTick()
   await Promise.all([initLineChart(), initDonutChart()])
+  if (disposed) return
   if (resizeObs && lineRef.value)  resizeObs.observe(lineRef.value)
   if (resizeObs && donutRef.value) resizeObs.observe(donutRef.value)
   window.addEventListener('resize', resizeCharts)
 })
 
 onUnmounted(() => {
+  disposed = true
   lineChart?.dispose()
   donutChart?.dispose()
   resizeObs?.disconnect()

@@ -13,6 +13,9 @@ import {
   fetchMarginRate,
 } from '@/api/index.js'
 
+const props = defineProps({ compact: Boolean, contract: { type: Object, default: null } })
+const emit = defineEmits(['select-contract'])
+
 // ── 下单表单 ─────────────────────────────────────────────────────────────────
 const form = ref({
   symbol:     '',
@@ -62,6 +65,7 @@ function onSymbolSearch(query) {
       contractOptions.value = (res.data || []).map(c => ({
         value: c.symbol || c.code,
         label: `${c.symbol || c.code} - ${c.name || ''}`,
+        contract: { ...c, symbol: c.symbol || c.code },
       }))
     } catch {
       contractOptions.value = []
@@ -113,7 +117,18 @@ async function loadMarginStatus() {
     if (requestId === marginRequest) marginState.value = { status: 'error', reason: error.message }
   }
 }
-watch(normalizedSymbol, () => { marginState.value = null; loadMarginStatus() })
+watch(normalizedSymbol, (symbol) => {
+  // A price entered for the previous instrument must never carry into a new ticket.
+  form.value.price = 0
+  marginState.value = null
+  loadMarginStatus()
+  if (symbol !== (props.contract?.symbol || '')) {
+    emit('select-contract', symbol ? contractOptions.value.find(item => item.value === symbol)?.contract || { symbol, name: '' } : null)
+  }
+})
+watch(() => props.contract?.symbol, symbol => {
+  if ((symbol || '') !== form.value.symbol) form.value.symbol = symbol || ''
+}, { immediate: true })
 
 const orderValidation = computed(() => {
   if (!normalizedSymbol.value) return { valid: false, message: '请输入合约代码' }
@@ -369,19 +384,16 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="tp-wrap">
-    <el-alert v-if="normalizedSymbol" class="margin-status" :title="marginSummary" :type="marginState?.status === 'ready' ? 'info' : 'warning'" :closable="false" />
-    <el-alert v-if="positionError" :title="'持仓数据可能过期：'+positionError" type="warning" :closable="false" />
+  <div class="tp-wrap" :class="{ 'tp-compact': compact }">
     <div class="tp-statusbar">
       <div class="status-left">
         <span class="live-dot"></span>
-        <span class="fw-600">实盘手动交易</span>
-        <span class="c-muted">CTP / vn.py</span>
+        <span class="fw-600">实盘委托</span>
       </div>
       <div class="status-right">
         <span
           class="validation-pill"
-          :class="emergencyActive ? 'pill-danger' : 'pill-ok'"
+          :class="emergencyActive ? 'pill-danger' : riskState ? 'pill-ok' : 'pill-warn'"
         >
           {{ riskSummary }}
         </span>
@@ -409,12 +421,6 @@ onUnmounted(() => {
         >
           恢复
         </el-button>
-        <span
-          class="validation-pill"
-          :class="orderValidation.valid ? 'pill-ok' : 'pill-warn'"
-        >
-          {{ orderValidation.message }}
-        </span>
       </div>
     </div>
 
@@ -428,7 +434,7 @@ onUnmounted(() => {
 
         <div class="tp-grid">
           <div class="tp-row tp-row-wide">
-            <label class="tp-label">合约</label>
+            <label class="tp-label" for="trade-symbol">合约</label>
             <el-select
               v-model="form.symbol"
               filterable
@@ -438,6 +444,7 @@ onUnmounted(() => {
               placeholder="输入合约代码"
               size="small"
               class="tp-input"
+              id="trade-symbol"
               allow-create
               default-first-option
             >
@@ -452,7 +459,7 @@ onUnmounted(() => {
 
           <div class="tp-row">
             <label class="tp-label">方向</label>
-            <el-radio-group v-model="form.direction" size="small" class="tp-input">
+            <el-radio-group v-model="form.direction" size="small" class="tp-input direction-group" aria-label="买卖方向">
               <el-radio-button value="long">
                 <span class="dir-long">买入</span>
               </el-radio-button>
@@ -464,7 +471,7 @@ onUnmounted(() => {
 
           <div class="tp-row">
             <label class="tp-label">开平</label>
-            <el-radio-group v-model="form.offset" size="small" class="tp-input offset-group">
+            <el-radio-group v-model="form.offset" size="small" class="tp-input offset-group" aria-label="开平方向">
               <el-radio-button value="open">开仓</el-radio-button>
               <el-radio-button value="close">平仓</el-radio-button>
               <el-radio-button value="close_today">平今</el-radio-button>
@@ -472,7 +479,7 @@ onUnmounted(() => {
             </el-radio-group>
           </div>
 
-          <div class="tp-row">
+          <div v-if="!compact" class="tp-row">
             <label class="tp-label">类型</label>
             <el-radio-group v-model="form.order_type" size="small" class="tp-input">
               <el-radio-button value="market" disabled>市价（当前网关不支持）</el-radio-button>
@@ -481,8 +488,9 @@ onUnmounted(() => {
           </div>
 
           <div class="tp-row" :class="{ 'is-disabled': form.order_type === 'market' }">
-            <label class="tp-label">价格</label>
+            <label class="tp-label" for="trade-price">限价</label>
             <el-input-number
+              id="trade-price"
               v-model="form.price"
               :min="0"
               :step="1"
@@ -495,12 +503,13 @@ onUnmounted(() => {
           </div>
 
           <div class="tp-row tp-row-wide">
-            <label class="tp-label">数量</label>
+            <label class="tp-label" for="trade-volume">数量</label>
             <div class="tp-vol-group">
-              <el-button size="small" plain @click="nudgeVolume(-1)">
+              <el-button size="small" plain aria-label="减少一手" @click="nudgeVolume(-1)">
                 <el-icon><Minus /></el-icon>
               </el-button>
               <el-input-number
+                id="trade-volume"
                 v-model="form.volume"
                 :min="1"
                 :max="9999"
@@ -510,7 +519,7 @@ onUnmounted(() => {
                 controls-position="right"
                 class="volume-input"
               />
-              <el-button size="small" plain @click="nudgeVolume(1)">
+              <el-button size="small" plain aria-label="增加一手" @click="nudgeVolume(1)">
                 <el-icon><Plus /></el-icon>
               </el-button>
               <el-button
@@ -527,6 +536,7 @@ onUnmounted(() => {
           </div>
         </div>
 
+        <el-alert v-if="normalizedSymbol" class="margin-status" :title="marginSummary" :type="marginState?.status === 'ready' ? 'info' : 'warning'" :closable="false" />
         <div class="tp-preview" :class="orderPreview.sideClass">
           <div class="preview-main">
             <span class="mono fw-600">{{ orderPreview.symbol }}</span>
@@ -542,6 +552,7 @@ onUnmounted(() => {
           </div>
         </div>
 
+        <p class="ticket-validation" :class="{ valid: orderValidation.valid }">{{ orderValidation.valid ? '限价委托 · 点击后核对并确认' : orderValidation.message }}</p>
         <div class="tp-actions">
           <el-button
             :type="form.direction === 'long' ? 'success' : 'danger'"
@@ -567,17 +578,18 @@ onUnmounted(() => {
 
       <!-- ── 右侧：快捷平仓 ──────────────────────────────────────────── -->
       <div class="tp-positions">
+        <el-alert v-if="positionError" :title="'持仓数据可能过期：'+positionError" type="warning" :closable="false" />
         <div class="tp-pos-header">
           <div>
             <span class="tp-form-title">快捷平仓</span>
             <span class="c-muted pos-count">{{ positions.length }} 个持仓</span>
           </div>
-          <el-button size="small" plain :loading="posLoading" @click="loadPositions">
+          <el-button size="small" plain aria-label="刷新可平持仓" :loading="posLoading" @click="loadPositions">
             <el-icon><RefreshRight /></el-icon>
           </el-button>
         </div>
 
-        <el-radio-group v-model="quickCloseOffset" size="small" class="close-offset-group">
+        <el-radio-group v-model="quickCloseOffset" size="small" class="close-offset-group" aria-label="快捷平仓开平类型">
           <el-radio-button
             v-for="item in CLOSE_OFFSET_OPTIONS"
             :key="item.value"
@@ -640,6 +652,8 @@ onUnmounted(() => {
   border-radius: 8px;
   overflow: hidden;
 }
+.ticket-validation { margin: 0; font-size: 11px; color: var(--q-yellow); }
+.ticket-validation.valid { color: var(--q-muted); }
 
 .tp-statusbar {
   display: flex;
@@ -946,4 +960,38 @@ onUnmounted(() => {
     width: 38px;
   }
 }
+.tp-compact { border-radius: 5px; min-height: 100%; }
+.tp-compact .tp-statusbar { padding: 12px; gap: 10px; align-items: flex-start; }
+.tp-compact .status-left { font-size: 14px; padding: 2px 0; }
+.tp-compact .status-right { flex-wrap: wrap; width: 100%; gap: 8px; }
+.tp-compact .status-right > .el-button { margin-left: auto; }
+.tp-compact .validation-pill { border: 0; border-radius: 3px; font-size: 10px; padding: 2px 5px; white-space: normal; overflow-wrap: anywhere; }
+.tp-compact .tp-body { display: flex; flex-direction: column; }
+.tp-compact .tp-form { padding: 15px 14px; gap: 13px; border-right: 0; border-bottom: 1px solid var(--q-border); }
+.tp-compact .tp-grid { grid-template-columns: minmax(0, 1fr); gap: 13px; }
+.tp-compact .tp-label { width: 30px; text-align: left; font-size: 11px; }
+.tp-compact .tp-form-head { margin-bottom: 2px; }
+.tp-compact .tp-form-head > .c-muted { font-size: 10px; }
+.tp-compact :deep(.el-radio-button__inner) { padding: 8px 9px; }
+.tp-compact .tp-input:deep(.el-radio-button) { flex: 1; }
+.tp-compact .tp-input:deep(.el-radio-button__inner) { width: 100%; }
+.tp-compact .direction-group:deep(.el-radio-button:first-child.is-active .el-radio-button__inner) { background: #173c32; border-color: var(--q-green); box-shadow: none; }
+.tp-compact .direction-group:deep(.el-radio-button:last-child.is-active .el-radio-button__inner) { background: #472526; border-color: var(--q-red); box-shadow: none; }
+.tp-compact .tp-input:deep(.el-select__wrapper), .tp-compact .tp-input:deep(.el-input__wrapper) { min-height: 32px; }
+.tp-compact .tp-vol-group { gap: 4px; }.tp-compact .tp-vol-group .el-button { margin-left: 0; padding: 5px 8px; }
+.tp-compact .volume-input { width: 85px; }.tp-compact .volume-input:deep(.el-input__wrapper) { padding-left: 4px; }
+.tp-compact .tp-preview { grid-template-columns: minmax(0, 1fr); padding: 11px; gap: 10px; border-radius: 4px; }
+.tp-compact .preview-grid { grid-template-columns: repeat(3, auto 1fr); gap: 4px 6px; font-size: 10px; }
+.tp-compact .preview-grid strong { font: 600 12px var(--q-font-mono); white-space: nowrap; }
+.tp-compact .tp-actions { display: grid; grid-template-columns: 1fr; gap: 10px; }
+.tp-compact .tp-actions > .el-button { margin: 0; height: 35px; }
+.tp-compact .tp-actions > .submit-btn { height: 40px; font-size: 14px; font-weight: 600; }
+.tp-compact .margin-status { padding: 8px 10px; border-radius: 3px; }
+.tp-compact .margin-status:deep(.el-alert__title) { font-size: 10px; line-height: 1.6; overflow-wrap: anywhere; }
+.tp-compact .tp-positions { padding: 15px 14px; gap: 12px; }
+.tp-compact .tp-empty { min-height: 72px; }
+.tp-compact .tp-pos-list { max-height: 230px; }
+.tp-compact .tp-pos-item { padding: 8px; border-radius: 4px; }
+.tp-compact .pos-line { font-size: 11px; gap: 6px; }
+.tp-compact .status-right .c-muted { font-size: 10px; }
 </style>
