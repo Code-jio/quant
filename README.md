@@ -1,10 +1,10 @@
 # Quant — 期货研究与交易工作台
 
-Vue 3 + FastAPI + SQLite。支持历史数据导入、离线回测、图表和单账户 CTP 适配。当前可复现环境为 **Windows x64 / Python 3.12 / Node.js 24**。原生 CTP 接入需要独立安装与柜台验收，离线测试通过不代表实盘验收通过。
+Vue 3 + FastAPI + SQLite。支持历史数据导入、离线回测、图表和单账户 CTP 适配。研究/开发环境为 **Windows x64 / Python 3.12 / Node.js 24**，原生 CTP 使用独立 **Python 3.13** 环境。原生加载、前置连接和一次真实账户登录已验证；实时行情、断线恢复和交易回报仍需专项验收。
 
 整改结果见 [整改报告](docs/REMEDIATION_RESULTS_2026-10-04.md) 和 [55 项清单](docs/IMPROVEMENT_BACKLOG_2026-10-04.csv)。原始审查保存在 [审查报告](docs/PROJECT_REVIEW_2026-10-04.md)。
 
-第二轮复查的 6 项问题已完成代码修复及离线回归，见 [2026-10-08 修复结果](docs/RECHECK_FIXES_2026-10-08.md)、[复查清单](docs/RECHECK_BACKLOG_2026-10-05.csv)。当前回归为后端 145 项、前端 28 项、浏览器 5 项。
+第二轮复查的 6 项问题已完成代码修复及离线回归，见 [2026-10-08 修复结果](docs/RECHECK_FIXES_2026-10-08.md)、[复查清单](docs/RECHECK_BACKLOG_2026-10-05.csv)。后续已恢复登录预留参数并完成原生运行环境验证，当前原生环境回归为后端 159 项、前端 19 项、浏览器 7 项。
 
 ## 安装与启动
 
@@ -54,7 +54,21 @@ Copy-Item config/config.example.json config/config_production.json
 
 ## CTP 接入边界
 
-`requirements-live.in` 固定候选版本 vnpy 4.4.0 / vnpy_ctp 6.7.11.4；原生扩展及其传递依赖尚未在本机完成安装验收。请在独立环境按柜台要求安装并验证，不能将候选版本当作已验证实盘组合。
+`requirements-live.lock` 固定了 Windows x64 / Python 3.13.15 下的 59 个运行依赖，包括 vnpy 4.4.0 / vnpy_ctp 6.7.11.4。这个 CTP 版本的 PyPI Windows 安装包对应 CPython 3.13；3.12 需要自行配置 C++ 编译环境，因此本项目使用独立环境安装已发布的二进制包。已通过原生导入、回调包装、实盘 MD/TD 前置连接、完整后端回归及浏览器回归；用户已在本地完成一次真实登录，后端确认登录就绪门禁通过，快照、持仓、风控与对账接口返回 200。[验证记录与剩余边界](docs/NATIVE_CTP_VERIFICATION_2026-10-08.md)。
+
+```powershell
+# 项目根目录；使用本机 Python 3.13，或由 uv 安装并建立独立环境
+uv venv back_end/.venv-live --python 3.13 --seed
+back_end/.venv-live/Scripts/python -m pip install --only-binary=:all: -r back_end/requirements-live.lock
+back_end/.venv-live/Scripts/python -m pip check
+back_end/.venv-live/Scripts/python scripts/check_native_ctp.py
+# 可选：实际连接已配置的实盘 TD/MD 前置，但不发送账号认证、登录、订阅、下单请求
+back_end/.venv-live/Scripts/python scripts/check_native_ctp.py --fronts
+# 启动前先停止同一工作区旧的后端进程，保持单执行者
+back_end/start-live.bat
+```
+
+`start-live.bat` 使用 `.venv-live`、清除外部 `PYTHONPATH` 并关闭自动模拟数据；普通 `start.bat` 仍使用研究环境 `.venv`。原生探测在有时限的独立子进程中运行，临时隔离日志和 flow 文件，不需要账号密码。
 
 服务必须完成 MD/TD 登录、结算确认、合约、账户、持仓快照才可开仓。保证金比例需要提供已核实的 `contract_margin_rates`；缺失时拒绝开仓。当前仅支持真实限价委托，快捷平仓使用新鲜买卖价。挂单预留采用保守计算，账户冻结资金已经更新时可能重复预留而拒绝部分原本可行的委托，优先避免超额开仓。
 
