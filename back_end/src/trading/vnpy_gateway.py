@@ -14,6 +14,7 @@ import time
 from collections import deque
 from math import isfinite
 from .ctp_observer import install_observer, EVENT_SNAPSHOT
+from .ctp_margin import MarginRateBook
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -53,12 +54,14 @@ class VnpyGateway(GatewayBase):
         self._gateway_name = "CTP"
         self.connection_state = {key: False for key in ("md", "td", "settlement", "contracts", "account", "positions")}
         self.contract_specs = {}
+        self._margin_book = MarginRateBook(self.contract_specs)
         self._margin_rates = {}
         self.trading_day = ""
         self._cancel_connect = threading.Event()
         self._refresh_queue = deque()
         self._position_keys = set()
         self._last_query = 0.0
+        self._last_refresh = 0.0
         self._last_snapshot = 0.0
         self._event_engine: Any = None
         self._main_engine: Any = None
@@ -75,6 +78,7 @@ class VnpyGateway(GatewayBase):
     def connect(self, config: Dict[str, Any]) -> bool:
         """Connect to CTP through vn.py."""
         self._cancel_connect.clear()
+        self._margin_book.invalidate()
         self.connection_state = {key: False for key in self.connection_state}
         self._margin_rates = dict(config.get("contract_margin_rates", {}))
         self.status = TradingStatus.CONNECTING
@@ -136,6 +140,8 @@ class VnpyGateway(GatewayBase):
 
         logger.info("[vn.py] connecting CTP gateway")
         self._main_engine.connect(setting, self._gateway_name)
+        # Account/position/margin queries share the adapter's paced queue.
+        self._event_engine.unregister(EVENT_TIMER, native.process_timer_event)
 
         timeout = float(config.get("connect_timeout", 25))
         deadline = time.monotonic() + timeout
@@ -158,6 +164,7 @@ class VnpyGateway(GatewayBase):
     def disconnect(self) -> None:
         """Disconnect CTP and stop vn.py event engine."""
         self._cancel_connect.set()
+        self._margin_book.invalidate()
         self.connection_state = {key: False for key in self.connection_state}
         self._connected_event.clear()
         try:
@@ -249,6 +256,8 @@ class VnpyGateway(GatewayBase):
 
         for item in symbols:
             symbol, exchange = self._split_symbol(item)
+            if self.contract_specs[symbol].get("product") == "FUTURES":
+                self.request_margin_rate(symbol)
             vt_key = f"{symbol}.{getattr(exchange, 'value', exchange)}"
             if vt_key in self._subscribed_symbols:
                 continue
@@ -276,23 +285,44 @@ class VnpyGateway(GatewayBase):
         )
 
     def request_refresh(self):
-        if not self._refresh_queue and time.monotonic() - self._last_query > 3:
+        if not self._refresh_queue and time.monotonic() - self._last_refresh > 3:
             self._refresh_queue.extend(("account", "position"))
+            self._last_refresh = time.monotonic()
+
+    def request_margin_rate(self, symbol):
+        symbol, _exchange = self._split_symbol(symbol)
+        if not self.connection_state["td"] or not self.connection_state["contracts"]:
+            raise ValueError("交易柜台或合约资料未就绪")
+        return self._margin_book.request(symbol, self.trading_day)
 
     def _on_timer(self, _event):
+        self._margin_book.expire(self.trading_day)
         if self.connection_state["contracts"] and self.connection_state["td"]:
-            if not self._refresh_queue and time.monotonic() - self._last_query > 15:
+            if not self._refresh_queue and time.monotonic() - self._last_refresh > 15:
                 self.request_refresh()
-            if self._refresh_queue and time.monotonic() - self._last_query > 1:
+            if time.monotonic() - self._last_query > 1:
                 native = self._main_engine.get_gateway(self._gateway_name) if self._main_engine else None
                 if native:
-                    getattr(native, "query_" + self._refresh_queue.popleft())()
-                    self._last_query = time.monotonic()
+                    native.md_api.update_date()
+                    # An outstanding margin reply must finish (or time out)
+                    # before another query is sent to the same CTP session.
+                    if self._margin_book.pending or not self._refresh_queue:
+                        if self._margin_book.dispatch(native.td_api, self.trading_day):
+                            self._last_query = time.monotonic()
+                            return
+                    if self._refresh_queue:
+                        getattr(native, "query_" + self._refresh_queue.popleft())()
+                        self._last_query = time.monotonic()
 
     def _on_snapshot(self, event):
         data = event.data
         kind = data["kind"]
+        if kind == "margin":
+            self._margin_book.on_response(data, self.trading_day)
+            return
         if data.get("trading_day"):
+            if self.trading_day != data["trading_day"]:
+                self._margin_book.invalidate()
             self.trading_day = data["trading_day"]
         self.connection_state[kind] = data.get("ready", True)
         if kind == "positions" and data.get("ready", True):
@@ -307,6 +337,7 @@ class VnpyGateway(GatewayBase):
             self.connection_state["account"] = False
             self._subscribed_symbols.clear()
             if kind == "td":
+                self._margin_book.invalidate()
                 self.connection_state["settlement"] = False
         if kind in ("contracts", "td", "settlement") and data.get("ready"):
             self.request_refresh()
@@ -325,6 +356,8 @@ class VnpyGateway(GatewayBase):
             "pricetick": float(data.pricetick),
             "min_volume": int(getattr(data, "min_volume", 1) or 1),
             "margin_rate": float(margin) if margin else None,
+            "margin_source": "configured" if margin else None,
+            "product": getattr(getattr(data, "product", None), "name", ""),
             "source": "ctp",
             "tradable": True,
         }

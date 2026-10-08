@@ -2065,6 +2065,17 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         _record_audit("risk", "resume", "success", request=request)
         return {"success": True, "emergency_stop": False}
 
+    @app.get("/trading/margin-rate", summary="查询当前账户的合约保证金", tags=["风控"])
+    def trading_margin_rate(symbol: str):
+        engine = trading_state.primary_engine()
+        query_margin = getattr(engine.gateway, "request_margin_rate", None) if engine else None
+        if not callable(query_margin):
+            raise HTTPException(503, "当前网关尚不支持保证金查询")
+        try:
+            return query_margin(symbol.strip())
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+
     @app.get("/trading/reconcile", summary="账户/委托/持仓对账快照", tags=["风控"])
     def trading_reconcile():
         engine = trading_state.primary_engine()
@@ -2897,6 +2908,9 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             engine = trading_state.primary_engine()
             specs = getattr(engine.gateway, "contract_specs", None) if engine else None
             data = search_contracts(query=query, exchange=exchange, limit=min(limit, 200), contracts=specs)
+            # This public route is outside the account-transition lock even with a cookie.
+            # Account terms are available only through the protected margin endpoint.
+            data = [{k: v for k, v in item.items() if "margin" not in k} for item in data]
             return JSONResponse({"code": 0, "data": data, "total": len(data)})
         except Exception as exc:
             logger.error(f"[watch/search] 搜索失败: {exc}")

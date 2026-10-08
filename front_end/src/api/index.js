@@ -42,6 +42,8 @@ export async function request(path, options = {}) {
   }
 }
 
+export const fetchMarginRate = (symbol) => request(`/trading/margin-rate?symbol=${encodeURIComponent(symbol)}`)
+
 // ── Auth ──────────────────────────────────────────────────────────────────
 /** 获取预设服务器列表 */
 export const fetchServers = () => request('/auth/servers')

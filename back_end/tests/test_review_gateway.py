@@ -73,6 +73,8 @@ def test_native_observer_reports_empty_query_completion_and_login():
         "onRspQryInstrument",
         "onRspQryTradingAccount",
         "onRspQryInvestorPosition",
+        "onRspQryInstrumentMarginRate",
+        "onRspQryExchangeMarginRate",
     ]
     gateway = NS(
         td_api=NS(reqOrderAction=lambda *_: 0, **{key: lambda *args: None for key in methods}),

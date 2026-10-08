@@ -71,3 +71,33 @@ test('saved connection fields can be overridden explicitly',async({page})=>{
   await expect(page.locator('.error-banner')).toContainText('测试已截获自定义配置')
   expect(submitted).toMatchObject({broker_id:'CUSTOM_BROKER',td_server:'tcp://custom:1',md_server:'tcp://custom:2',app_id:'CUSTOM_APP',auth_code:'CUSTOM_AUTH_FIXTURE',environment:'测试',auto_start_strategy:false})
 })
+
+test('trading panel shows queried account margin and clears it when contract changes', async ({page}) => {
+  const errors=[]
+  page.on('pageerror',error=>errors.push(error.message))
+  await page.goto('/login')
+  expect((await page.request.post('/api/auth/login',{data:{username:'E2E_ONLY',password:'fixture'}})).status()).toBe(200)
+  await page.evaluate(()=>sessionStorage.setItem('quant_session_active','1'))
+  await page.route('**/api/watch/search?**',route=>route.fulfill({json:{code:0,data:[
+    {symbol:'au2612',name:'黄金验收'}, {symbol:'au2702',name:'另一黄金合约'},
+  ]}}))
+  await page.route('**/api/trading/margin-rate?**',route=>{
+    const symbol=new URL(route.request().url()).searchParams.get('symbol')
+    return route.fulfill({json:symbol==='au2612'
+      ? {status:'ready',trading_day:'20261008',long_margin_rate:.12,short_margin_rate:.15,long_margin_per_lot:0,short_margin_per_lot:20}
+      : {status:'pending',reason:'正在查询账户保证金'}})
+  })
+  await page.goto('/')
+  const input=page.locator('.tp-wrap .el-select input').first()
+  await input.fill('au2612')
+  await page.getByRole('option',{name:'au2612 - 黄金验收',exact:true}).click()
+  await expect(page.locator('.margin-status')).toContainText('多头 12.00%')
+  await expect(page.locator('.margin-status')).toContainText('空头 15.00% + 20.00元/手')
+  await page.locator('.margin-status').screenshot({path:'test-results/account-margin.png'})
+  await input.fill('au2702')
+  await page.getByRole('option',{name:'au2702 - 另一黄金合约',exact:true}).click()
+  await expect(page.locator('.margin-status')).toContainText('正在查询账户保证金')
+  await expect(page.locator('.margin-status')).not.toContainText('12.00%')
+  expect((await page.request.post('/api/auth/logout')).status()).toBe(200)
+  expect(errors).toEqual([])
+})

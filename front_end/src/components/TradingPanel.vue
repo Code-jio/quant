@@ -10,6 +10,7 @@ import {
   placeOrder, cancelAllOrders, closePosition,
   fetchPositions, searchContracts, fetchTicks,
   fetchRiskStatus, emergencyStop, resumeTrading, fetchTradingReconcile,
+  fetchMarginRate,
 } from '@/api/index.js'
 
 // ── 下单表单 ─────────────────────────────────────────────────────────────────
@@ -92,6 +93,27 @@ async function loadPositions() {
 const normalizedSymbol = computed(() => String(form.value.symbol || '').trim())
 const normalizedVolume = computed(() => Number(form.value.volume) || 0)
 const normalizedPrice  = computed(() => Number(form.value.price) || 0)
+const marginState = ref(null)
+let marginRequest = 0
+const marginSummary = computed(() => {
+  const state = marginState.value
+  if (state?.status !== 'ready') return state?.reason || '正在查询账户适用保证金；结果未知时开仓受限'
+  const rate = (value) => `${(Number(value) * 100).toFixed(2)}%`
+  const fixed = (value) => Number(value) > 0 ? ` + ${Number(value).toFixed(2)}元/手` : ''
+  return `柜台保证金：多头 ${rate(state.long_margin_rate)}${fixed(state.long_margin_per_lot)}，空头 ${rate(state.short_margin_rate)}${fixed(state.short_margin_per_lot)}；交易日 ${state.trading_day}`
+})
+async function loadMarginStatus() {
+  const symbol = normalizedSymbol.value
+  const requestId = ++marginRequest
+  if (!symbol) { marginState.value = null; return }
+  try {
+    const state = await fetchMarginRate(symbol)
+    if (requestId === marginRequest) marginState.value = state
+  } catch (error) {
+    if (requestId === marginRequest) marginState.value = { status: 'error', reason: error.message }
+  }
+}
+watch(normalizedSymbol, () => { marginState.value = null; loadMarginStatus() })
 
 const orderValidation = computed(() => {
   if (!normalizedSymbol.value) return { valid: false, message: '请输入合约代码' }
@@ -201,7 +223,7 @@ async function handleSubmit() {
       volume:     form.value.volume,
       order_type: form.value.order_type,
     })
-    ElMessage.success(`下单成功，委托号: ${res.order_id}`)
+    ElMessage.success(`委托请求已发送，委托号: ${res.order_id}，请核对柜台回报`)
     loadPositions()
   } catch (err) {
     ElMessage.error(`下单失败: ${err.message}`)
@@ -223,7 +245,7 @@ async function handleCancelAll() {
   cancellingAll.value = true
   try {
     const res = await cancelAllOrders()
-    ElMessage.success(`已撤销 ${res.cancelled} 笔委托，失败 ${res.failed || 0} 笔`)
+    ElMessage.success(`已发送 ${res.cancelled} 笔撤单请求，发送失败 ${res.failed || 0} 笔，请核对柜台回报`)
   } catch (err) {
     ElMessage.error(`撤单失败: ${err.message}`)
   } finally {
@@ -336,9 +358,10 @@ onMounted(() => {
   loadPositions()
   loadRiskStatus()
   posTimer = setInterval(loadPositions, 5000)
-  riskTimer = setInterval(loadRiskStatus, 5000)
+  riskTimer = setInterval(() => { loadRiskStatus(); loadMarginStatus() }, 5000)
 })
 onUnmounted(() => {
+  marginRequest++
   clearInterval(posTimer)
   clearInterval(riskTimer)
   if (searchTimer) clearTimeout(searchTimer)
@@ -347,6 +370,7 @@ onUnmounted(() => {
 
 <template>
   <div class="tp-wrap">
+    <el-alert v-if="normalizedSymbol" class="margin-status" :title="marginSummary" :type="marginState?.status === 'ready' ? 'info' : 'warning'" :closable="false" />
     <el-alert v-if="positionError" :title="'持仓数据可能过期：'+positionError" type="warning" :closable="false" />
     <div class="tp-statusbar">
       <div class="status-left">

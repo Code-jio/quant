@@ -40,3 +40,15 @@ def test_observer_wraps_installed_native_callbacks(native_gateway):
         {"kind": "td", "ready": False},
         {"kind": "md", "ready": False},
     ]
+
+
+def test_observer_captures_installed_margin_callbacks(native_gateway):
+    events: list[dict] = []
+    install_observer(native_gateway, events.append)
+    payload = {"InstrumentID": "au2612", "LongMarginRatioByMoney": .12}
+    native_gateway.td_api.onRspQryInstrumentMarginRate(payload, {"ErrorID": 0}, 8, False)
+    native_gateway.td_api.onRspQryExchangeMarginRate({}, {"ErrorID": 7}, 9, True)
+    assert events == [
+        {"kind": "margin", "query": "instrument", "data": payload, "error_id": 0, "reqid": 8, "last": False},
+        {"kind": "margin", "query": "exchange", "data": {}, "error_id": 7, "reqid": 9, "last": True},
+    ]

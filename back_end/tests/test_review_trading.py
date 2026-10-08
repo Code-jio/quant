@@ -71,6 +71,23 @@ def test_acknowledged_order_reserves_margin_until_account_catches_up():
     assert len(gw.sent_signals) == 1
 
 
+@pytest.mark.parametrize("rate,fixed", [(.1, 20), (0, 120)])
+def test_fixed_margin_is_reserved_for_new_and_pending_orders(rate, fixed):
+    engine, gw = connected_engine()
+    gw.contract_specs = {"A": {"size": 10, "margin_rate": rate, "margin_per_lot": fixed}}
+    gw.account.available = 220
+    assert engine.send_signal(signal())
+    assert not engine.send_signal(signal())
+    assert len(gw.sent_signals) == 1
+
+
+def test_fixed_margin_is_included_in_strategy_sizing():
+    strategy = Observer("fixture", {"position_ratio": 1})
+    strategy.current_capital = 1000
+    strategy.contract_specs = {"A": {"size": 10, "margin_rate": .1, "margin_per_lot": 100}}
+    assert strategy.order_volume("A", 100) == 5
+
+
 def test_operator_emergency_stop_is_restored(tmp_path, monkeypatch):
     monkeypatch.setenv("QUANT_LEDGER_PATH", str(tmp_path / "execution.db"))
     first, _ = connected_engine()

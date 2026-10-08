@@ -28,6 +28,7 @@ files = [
   "src/common/indicators.py",
   "src/api/security.py",
   "src/trading/risk.py",
+  "src/trading/ctp_margin.py",
   "src/data/cache.py",
   "src/data/governance.py",
   "src/observability.py",

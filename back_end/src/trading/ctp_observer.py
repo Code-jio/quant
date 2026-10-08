@@ -88,6 +88,15 @@ def install_observer(gateway, emit):
 
     wrap(td, "onRspQryInvestorPosition", after=positions_done)
 
+    for name, query in (("onRspQryInstrumentMarginRate", "instrument"), ("onRspQryExchangeMarginRate", "exchange")):
+        def margin_reply(data, error, reqid, last, kind=query):
+            emit({"kind": "margin", "query": kind, "data": dict(data or {}),
+                  "error_id": (error or {}).get("ErrorID", 0), "reqid": reqid, "last": bool(last)})
+
+        # These callbacks have no Python implementation in vnpy_ctp. Calling
+        # their pybind virtual base methods would re-enter this override.
+        setattr(td, name, margin_reply)
+
     def attach_day(value):
         value.extra = {**(getattr(value, "extra", None) or {}), "TradingDay": trading_day["value"]}
 

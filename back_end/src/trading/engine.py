@@ -4,6 +4,7 @@
 
 import logging
 import os
+from math import isfinite
 from datetime import datetime
 import traceback
 from typing import Dict, Any, TYPE_CHECKING
@@ -185,25 +186,33 @@ class TradingEngine:
                 self.risk_manager.set_day_open_balance(self.ledger.day_baseline(account.trading_day, account.balance))
             specs = getattr(self.gateway, "contract_specs", None)
             if specs is not None:
+                query_margin = getattr(self.gateway, "request_margin_rate", None)
+                if signal.offset.value == "open" and callable(query_margin):
+                    try:
+                        query_margin(signal.symbol)
+                    except ValueError as exc:
+                        self.last_reject_reason = str(exc)
+                        return ""
                 spec = specs.get(signal.symbol, {})
                 if not spec or not spec.get("size"):
                     self.last_reject_reason = "Contract metadata is unavailable"
                     return ""
                 self.risk_manager.config.contract_multipliers[signal.symbol] = spec["size"]
                 if signal.offset.value == "open":
-                    margin = spec.get("margin_rate")
-                    if not margin or not account.fields_known:
+                    required = self._margin_requirement(spec, signal.price, signal.volume)
+                    if required is None or not account.fields_known:
                         self.last_reject_reason = "Broker margin rate/account fields must be verified before opening"
                         return ""
-                    pending = sum(
-                        max(0, o.volume - o.traded_volume)
-                        * o.price
-                        * specs.get(o.symbol, {}).get("size", 0)
-                        * (specs.get(o.symbol, {}).get("margin_rate") or 1)
+                    reservations = [
+                        self._margin_requirement(specs.get(o.symbol, {}), o.price, max(0, o.volume - o.traded_volume))
                         for o in self.gateway.orders.values()
                         if o.is_active() and o.offset.value == "open"
-                    )
-                    if signal.price * signal.volume * spec["size"] * margin + pending > account.available:
+                    ]
+                    if any(value is None for value in reservations):
+                        self.last_reject_reason = "Active order margin metadata must be verified before opening"
+                        return ""
+                    pending = sum(value for value in reservations if value is not None)
+                    if required + pending > account.available:
                         self.last_reject_reason = "Insufficient available margin after reservations"
                         return ""
             if self.missing_order_replays or (self.ledger and self.ledger.unresolved()):
@@ -244,6 +253,20 @@ class TradingEngine:
                 logger.error(f"错误次数过多 ({self._error_count}), 停止交易")
                 self.stop()
             return ""
+
+    @staticmethod
+    def _margin_requirement(spec, price, volume):
+        try:
+            rate = float(spec["margin_rate"])
+            fixed = float(spec.get("margin_per_lot", 0))
+            size = float(spec["size"])
+            values = (rate, fixed, size, price, volume)
+            if not all(isfinite(value) for value in values) or not 0 <= rate <= 1 or fixed < 0 or size <= 0:
+                return None
+            unit = price * size * rate + fixed
+            return unit * volume if price > 0 and volume >= 0 and unit > 0 else None
+        except (KeyError, TypeError, ValueError):
+            return None
 
     def cancel_order(self, order_id: str) -> bool:
         """撤销订单"""

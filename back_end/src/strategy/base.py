@@ -43,11 +43,14 @@ class StrategyBase(ABC):
             return 0
         size = float(spec.get("size") or 0)
         margin = float(spec.get("margin_rate") or 0)
+        fixed_margin = float(spec.get("margin_per_lot") or 0)
         unit = int(spec.get("min_volume") or 1)
-        if not math.isfinite(size * margin) or size <= 0 or not 0 < margin <= 1 or unit < 1:
+        per_lot = price * size * margin + fixed_margin
+        if (not math.isfinite(per_lot) or size <= 0 or not 0 <= margin <= 1
+                or fixed_margin < 0 or per_lot <= 0 or unit < 1):
             return 0
         budget = max(0, self.current_capital) * self.params.get("position_ratio", 0.8) * self.allocation_weight
-        return int(budget / (price * size * margin) / unit) * unit
+        return int(budget / per_lot / unit) * unit
 
     @abstractmethod
     def on_init(self):

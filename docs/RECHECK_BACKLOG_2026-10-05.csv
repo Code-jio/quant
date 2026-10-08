@@ -1,8 +1,11 @@
 编号,优先级,范围,问题,验证方式,状态,关联历史事项,修复日期,验证证据
 R01,P1,账户隔离,切换账户后权益历史残留并产生虚假回撤,真实API路径加FakeGateway,已修复（离线验证）,Q04/Q52,2026-10-08,test_recheck_regressions.py：切换/注销/迟到快照和广播
-R02,P1,前后端集成,网页登录缺少经核实保证金率配置通路,本地配置读取及显式API保证金参数正反校验,已修复（离线验证）；登录不再填写合约；真实柜台仍待验收,Q18/Q19,2026-10-08,test_login_defaults.py；test_recheck_regressions.py；recheck.spec.js
+R02,P1,前后端集成,网页登录缺少经核实保证金率配置通路,本地配置读取及显式API保证金参数正反校验,已修复；无合约登录已实测；当前账户单合约保证金查询已实测（见R08）,Q18/Q19,2026-10-08,test_login_defaults.py；test_recheck_regressions.py；recheck.spec.js；CTP_MARGIN_QUERY_2026-10-08.md
 R03,P1,策略与回测,已完成bar窗口错位导致错误或延迟信号,固定行情逐bar信号验证,已修复（离线验证）,Q09既有剩余问题,2026-10-08,test_recheck_regressions.py：固定样本和三策略分钟回放/回测一致性
 R04,P2,前端实时数据,快照失败后已收到的成交推送未重放,Vue组件加FakeWebSocket定向失败断言,已修复（离线验证）,Q44,2026-10-08,review-ws.spec.js：失败后重放/重试/销毁
 R05,P2,技术指标,RSI单边行情和横盘边界错误且前后端不一致,同一收盘序列调用真实Python和Worker函数,已修复（离线验证）,新增,2026-10-08,共享 rsi_cases.json；Python 与 Worker 参数化回归
 R06,P2,后端API,无效风控配置返回500而非参数校验错误,登录后PUT风控配置,已修复（离线验证）,Q14校验反馈补充,2026-10-08,test_recheck_regressions.py：六类无效输入返回422且配置不变
-R07,P1,CTP撤单,原生reqOrderAction即时失败码被忽略并报告请求成功,原生安装包拦截发送及FakeGateway API异常回归,代码已修复并验证；当前后端进程待重启加载；真实撤单回报待人工验收,新增,2026-10-08,test_native_ctp_execution.py；test_manual_trading.py；LIVE_EXECUTION_VERIFICATION_2026-10-08.md
+R07,P1,CTP撤单,原生reqOrderAction即时失败码被忽略并报告请求成功,原生安装包拦截发送及FakeGateway API异常回归,已修复并经用户重启加载；真实撤单回报待人工验收,新增,2026-10-08,test_native_ctp_execution.py；test_manual_trading.py；CTP_MARGIN_QUERY_2026-10-08.md
+R08,P1,CTP保证金,未自动查询账户合约保证金导致缺少手工配置时不能开仓,安装包回调兼容性及隔离API/风控/UI回归；用户本地复制真实柜台响应,已修复；au2612查询ready且来源ctp_query；其他账户/品种/跨日仍待验收,新增,2026-10-08,test_ctp_margin.py；test_native_ctp_compat.py；test_review_trading.py；recheck.spec.js；CTP_MARGIN_QUERY_2026-10-08.md
+R09,P1,账户隔离,公开搜索依据锁外身份快照返回保证金可能在账户切换时混用,搜索带会话和不带会话都隐藏保证金；受保护接口独立验证,已修复并通过回归；最后补充代码待重启加载,新增,2026-10-08,test_ctp_margin.py；CTP_MARGIN_QUERY_2026-10-08.md
+R10,P1,查询调度,连续保证金队列重置查询时间导致账户持仓刷新饥饿,60合约连续查询期间账户及持仓持续刷新,已修复并通过回归；最后补充代码待重启加载,新增,2026-10-08,test_ctp_margin.py；CTP_MARGIN_QUERY_2026-10-08.md
