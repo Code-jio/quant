@@ -13,6 +13,18 @@ def install_observer(gateway, emit):
     position_keys = set()
     trading_day = {"value": ""}
 
+    # vnpy_ctp discards reqOrderAction's immediate return code. Preserve local
+    # transport failures; a zero code only means sent, never broker-confirmed.
+    original_cancel_request = td.reqOrderAction
+
+    def checked_cancel_request(*args):
+        code = original_cancel_request(*args)
+        if code != 0:
+            raise RuntimeError(f"CTP 撤单请求发送失败，错误代码：{code}")
+        return code
+
+    td.reqOrderAction = checked_cancel_request
+
     def wrap(obj, name, after=None, before=None):
         original = getattr(obj, name)
 

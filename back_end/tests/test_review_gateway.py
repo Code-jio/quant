@@ -75,7 +75,7 @@ def test_native_observer_reports_empty_query_completion_and_login():
         "onRspQryInvestorPosition",
     ]
     gateway = NS(
-        td_api=NS(**{key: lambda *args: None for key in methods}),
+        td_api=NS(reqOrderAction=lambda *_: 0, **{key: lambda *args: None for key in methods}),
         md_api=NS(**{key: lambda *args: None for key in methods}),
         on_account=lambda *_: None,
         on_position=lambda *_: None,

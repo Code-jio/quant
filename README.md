@@ -54,6 +54,8 @@ Copy-Item config/config.example.json config/config_production.json
 
 ## CTP 接入边界
 
+2026-10-08 的后续复核已取得黄金 `au2612` 柜台收盘行情，持续 Tick 和实盘委托回报仍待交易时段人工验收。另已修复原生撤单发送失败码被忽略的问题，必须在后端重启、重新登录后才应用于现有运行实例；见[行情与委托链路复核](docs/LIVE_EXECUTION_VERIFICATION_2026-10-08.md)。
+
 `requirements-live.lock` 固定了 Windows x64 / Python 3.13.15 下的 59 个运行依赖，包括 vnpy 4.4.0 / vnpy_ctp 6.7.11.4。这个 CTP 版本的 PyPI Windows 安装包对应 CPython 3.13；3.12 需要自行配置 C++ 编译环境，因此本项目使用独立环境安装已发布的二进制包。已通过原生导入、回调包装、实盘 MD/TD 前置连接、完整后端回归及浏览器回归；用户已在本地完成一次真实登录，后端确认登录就绪门禁通过，快照、持仓、风控与对账接口返回 200。[验证记录与剩余边界](docs/NATIVE_CTP_VERIFICATION_2026-10-08.md)。
 
 ```powershell

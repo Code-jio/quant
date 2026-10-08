@@ -225,3 +225,26 @@ def test_cancel_all_counts_active_orders_once(monkeypatch):
     assert response.json()["cancelled"] == 1
     assert response.json()["failed"] == 0
     assert gateway.cancelled_order_ids == ["A1"]
+
+
+def test_cancel_transport_error_reaches_api_without_marking_order_cancelled(monkeypatch):
+    gateway = install_gateway(monkeypatch)
+
+    def fail_cancel(_order_id):
+        raise RuntimeError("CTP 撤单请求发送失败，错误代码：-2")
+
+    monkeypatch.setattr(gateway, "cancel_order", fail_cancel)
+    with TestClient(create_app()) as client:
+        login(client)
+        gateway.orders["A1"] = Order(
+            order_id="A1", symbol="rb2505", direction=Direction.LONG,
+            order_type=OrderType.LIMIT, price=3880, volume=1, status=OrderStatus.SUBMITTED,
+        )
+        response = client.delete("/orders/A1")
+        assert response.status_code == 500
+        assert "错误代码：-2" in response.json()["detail"]
+        assert gateway.orders["A1"].status == OrderStatus.SUBMITTED
+        batch = client.post("/orders/cancel-all")
+        assert batch.json()["cancelled"] == 0
+        assert batch.json()["failed"] == 1
+        assert gateway.orders["A1"].status == OrderStatus.SUBMITTED

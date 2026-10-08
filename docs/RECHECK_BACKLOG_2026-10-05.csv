@@ -5,3 +5,4 @@ R03,P1,策略与回测,已完成bar窗口错位导致错误或延迟信号,固�
 R04,P2,前端实时数据,快照失败后已收到的成交推送未重放,Vue组件加FakeWebSocket定向失败断言,已修复（离线验证）,Q44,2026-10-08,review-ws.spec.js：失败后重放/重试/销毁
 R05,P2,技术指标,RSI单边行情和横盘边界错误且前后端不一致,同一收盘序列调用真实Python和Worker函数,已修复（离线验证）,新增,2026-10-08,共享 rsi_cases.json；Python 与 Worker 参数化回归
 R06,P2,后端API,无效风控配置返回500而非参数校验错误,登录后PUT风控配置,已修复（离线验证）,Q14校验反馈补充,2026-10-08,test_recheck_regressions.py：六类无效输入返回422且配置不变
+R07,P1,CTP撤单,原生reqOrderAction即时失败码被忽略并报告请求成功,原生安装包拦截发送及FakeGateway API异常回归,代码已修复并验证；当前后端进程待重启加载；真实撤单回报待人工验收,新增,2026-10-08,test_native_ctp_execution.py；test_manual_trading.py；LIVE_EXECUTION_VERIFICATION_2026-10-08.md
