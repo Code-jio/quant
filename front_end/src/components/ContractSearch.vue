@@ -35,6 +35,8 @@
       </el-button>
     </div>
 
+    <p class="cs-scope">仅显示国内期货 · 不含期权、组合及外汇仿真品种</p>
+
     <!-- ── 交易所筛选条 ───────────────────────────────────────────────── -->
     <div class="cs-exch-bar">
       <button
@@ -58,6 +60,7 @@
       <div class="discover-section">
         <div class="ds-label">
           <span class="ds-icon">⌕</span>合约目录（非成交量排名）
+          <span class="ds-count">最多 60 条，可按名称或交易所查找</span>
         </div>
         <div class="hot-grid">
           <button
@@ -71,13 +74,14 @@
             <span class="chip-name">{{ c.name }}</span>
           </button>
         </div>
+        <div v-if="!HOT_CONTRACTS.length" class="cs-empty-tip">暂无国内期货合约，请确认柜台已连接，或输入品种名称搜索</div>
       </div>
 
       <!-- 最近查看 -->
       <div v-if="recent.length" class="discover-section">
         <div class="ds-label">
           <span class="ds-icon">🕒</span>最近查看
-          <button class="ds-clear" @click="recent.splice(0)">清空</button>
+          <button class="ds-clear" @click="clearRecent">清空</button>
         </div>
         <div class="mini-list">
           <div
@@ -153,7 +157,7 @@
 
       <!-- 空结果 -->
       <div v-else-if="!results.length" class="cs-no-result">
-        <el-empty description="未找到匹配合约" :image-size="72" />
+        <el-empty description="未找到匹配的国内期货合约" :image-size="72" />
       </div>
 
       <!-- 结果表格 -->
@@ -220,6 +224,7 @@
 <script setup>
 import { ref, watch, nextTick } from 'vue'
 import { Search, Close, WarningFilled } from '@element-plus/icons-vue'
+import { isDomesticFuture } from '@/utils/domesticFutures.js'
 import {
   useContractSearch,
   EXCHANGES, HOT_CONTRACTS, TYPE_COLOR,
@@ -235,7 +240,7 @@ const emit = defineEmits(['update:modelValue', 'select'])
 const {
   query, exchange, results, loading, error, selectedIndex,
   favorites, recent,
-  isFavorite, toggleFavorite, addToRecent, removeRecent,
+  isFavorite, toggleFavorite, addToRecent, removeRecent, clearRecent,
   handleKeydown, clearSearch,
 } = useContractSearch()
 
@@ -259,6 +264,7 @@ function onClosed() {
 
 // ── 选中合约 ──────────────────────────────────────────────────────────────
 function selectContract(contract) {
+  if (!isDomesticFuture(contract)) return
   addToRecent(contract)
   emit('select', contract)
   emit('update:modelValue', false)
@@ -282,6 +288,7 @@ watch(selectedIndex, (idx) => {
 </script>
 
 <style scoped>
+.cs-scope { margin: 0 0 12px; color: var(--text-secondary, #8b949e); font-size: 12px; }
 /* ── Dialog 覆盖 ──────────────────────────────────────────────────────── */
 :deep(.cs-dialog) {
   --el-dialog-bg-color: #0d1117;

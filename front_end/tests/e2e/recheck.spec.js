@@ -79,7 +79,8 @@ test('trading panel shows queried account margin and clears it when contract cha
   expect((await page.request.post('/api/auth/login',{data:{username:'E2E_ONLY',password:'fixture'}})).status()).toBe(200)
   await page.evaluate(()=>sessionStorage.setItem('quant_session_active','1'))
   await page.route('**/api/watch/search?**',route=>route.fulfill({json:{code:0,data:[
-    {symbol:'au2612',name:'黄金验收'}, {symbol:'au2702',name:'另一黄金合约'},
+    {symbol:'au2612',name:'黄金验收',exchange:'SHFE',product:'FUTURES'},
+    {symbol:'au2702',name:'另一黄金合约',exchange:'SHFE',product:'FUTURES'},
   ]}}))
   await page.route('**/api/trading/margin-rate?**',route=>{
     const symbol=new URL(route.request().url()).searchParams.get('symbol')

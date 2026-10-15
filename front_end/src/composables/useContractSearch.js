@@ -8,11 +8,12 @@
  *  - 提供常量：EXCHANGES / HOT_CONTRACTS
  */
 
-import { ref, watch, reactive, onMounted, onScopeDispose } from 'vue'
+import { ref, computed, watch, reactive, onMounted, onScopeDispose } from 'vue'
 import { searchContracts } from '@/api/index.js'
+import { DOMESTIC_EXCHANGES, domesticFutures, isDomesticFuture } from '@/utils/domesticFutures.js'
 
 // ── 常量 ──────────────────────────────────────────────────────────────────
-export const EXCHANGES = ['SHFE', 'DCE', 'CZCE', 'CFFEX', 'INE', 'GFEX']
+export const EXCHANGES = DOMESTIC_EXCHANGES
 
 /** 每个交易所对应的 Element Plus tag type */
 export const EXCH_COLOR = {
@@ -36,7 +37,7 @@ export const TYPE_COLOR = {
   油脂:   '#84cc16',
 }
 
-// Verified gateway contracts or explicitly identified historical datasets.
+// Domestic futures from the gateway, not a volume ranking.
 export const HOT_CONTRACTS = reactive([])
 
 // ── localStorage 键 ────────────────────────────────────────────────────────
@@ -48,7 +49,10 @@ const MAX_FAV      = 30
 // ── API base ───────────────────────────────────────────────────────────────
 // ── 工具 ───────────────────────────────────────────────────────────────────
 function readLS(key, fallback) {
-  try { return JSON.parse(localStorage.getItem(key)) ?? fallback }
+  try {
+    const value = JSON.parse(localStorage.getItem(key))
+    return Array.isArray(value) ? value.filter(item => item && typeof item === 'object') : fallback
+  }
   catch { return fallback }
 }
 
@@ -62,11 +66,13 @@ export function useContractSearch() {
   const selectedIndex = ref(-1)
 
   // 持久化状态
-  const favorites = ref(readLS(LS_FAVORITES, []))
-  const recent    = ref(readLS(LS_RECENT,    []))
+  const savedFavorites = ref(readLS(LS_FAVORITES, []))
+  const savedRecent = ref(readLS(LS_RECENT, []))
+  const favorites = computed(() => domesticFutures(savedFavorites.value))
+  const recent = computed(() => domesticFutures(savedRecent.value))
 
-  function _saveFav()    { localStorage.setItem(LS_FAVORITES, JSON.stringify(favorites.value)) }
-  function _saveRecent() { localStorage.setItem(LS_RECENT,    JSON.stringify(recent.value)) }
+  function _saveFav()    { localStorage.setItem(LS_FAVORITES, JSON.stringify(savedFavorites.value)) }
+  function _saveRecent() { localStorage.setItem(LS_RECENT, JSON.stringify(savedRecent.value)) }
 
   // ── 收藏 ──────────────────────────────────────────────────────────────────
   function isFavorite(symbol) {
@@ -74,27 +80,36 @@ export function useContractSearch() {
   }
 
   function toggleFavorite(contract) {
-    const idx = favorites.value.findIndex(f => f.symbol === contract.symbol)
-    if (idx >= 0) {
-      favorites.value.splice(idx, 1)
+    if (!isDomesticFuture(contract)) return
+    const idx = savedFavorites.value.findIndex(f => f.symbol === contract.symbol)
+    if (idx >= 0 && isDomesticFuture(savedFavorites.value[idx])) {
+      savedFavorites.value.splice(idx, 1)
+    } else if (idx >= 0) {
+      savedFavorites.value.splice(idx, 1, { ...contract })
     } else {
-      favorites.value.unshift({ ...contract })
-      if (favorites.value.length > MAX_FAV) favorites.value.pop()
+      savedFavorites.value.unshift({ ...contract })
+      if (savedFavorites.value.length > MAX_FAV) savedFavorites.value.pop()
     }
     _saveFav()
   }
 
   // ── 最近查看 ──────────────────────────────────────────────────────────────
   function addToRecent(contract) {
-    const idx = recent.value.findIndex(r => r.symbol === contract.symbol)
-    if (idx >= 0) recent.value.splice(idx, 1)
-    recent.value.unshift({ ...contract })
-    if (recent.value.length > MAX_RECENT) recent.value.pop()
+    if (!isDomesticFuture(contract)) return
+    const idx = savedRecent.value.findIndex(r => r.symbol === contract.symbol)
+    if (idx >= 0) savedRecent.value.splice(idx, 1)
+    savedRecent.value.unshift({ ...contract })
+    if (savedRecent.value.length > MAX_RECENT) savedRecent.value.pop()
     _saveRecent()
   }
 
   function removeRecent(symbol) {
-    recent.value = recent.value.filter(r => r.symbol !== symbol)
+    savedRecent.value = savedRecent.value.filter(r => r.symbol !== symbol)
+    _saveRecent()
+  }
+
+  function clearRecent() {
+    savedRecent.value = []
     _saveRecent()
   }
 
@@ -195,7 +210,7 @@ export function useContractSearch() {
     favorites, recent,
     // 操作
     isFavorite, toggleFavorite,
-    addToRecent, removeRecent,
+    addToRecent, removeRecent, clearRecent,
     triggerSearch, triggerImmediate, clearSearch,
     handleKeydown,
   }

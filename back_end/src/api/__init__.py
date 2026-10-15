@@ -2974,6 +2974,8 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         - **中文名称** 包含匹配（`螺纹` → 螺纹钢）
         - **拼音首字母** 前缀匹配（`lwg` → 螺纹钢，`hj` → 黄金）
 
+        仅返回柜台目录中的国内期货；排除期权、组合、历史数据及中金所外汇仿真品种。
+        搜索结果不代表该账户已具备交易权限。
         可选 `exchange` 按交易所过滤：SHFE / DCE / CZCE / CFFEX / INE / GFEX
         """
         from ..watch import search_contracts

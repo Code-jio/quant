@@ -73,5 +73,7 @@ def test_calendar_does_not_claim_heuristic_is_exchange_schedule():
 
 def test_search_does_not_invent_unknown_contracts():
     assert search_contracts("rb9999") == []
-    rows = search_contracts("rb", contracts={"rb2610": {"symbol": "rb2610", "name": "螺纹", "exchange": "SHFE"}})
+    rows = search_contracts("rb", contracts={"rb2610": {
+        "symbol": "rb2610", "name": "螺纹", "exchange": "SHFE", "product": "FUTURES",
+    }})
     assert [r["symbol"] for r in rows] == ["rb2610"]

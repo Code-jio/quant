@@ -23,3 +23,4 @@ R21,P2,下单前检查,资金估算和阻断原因不集中；没有只读预检
 R22,P1,账户数据真实性,未知金额补零及默认百万本金；零盈亏被策略估算替换,原生账户逐项对照及已知零未知非有限金额回归,已修复并加载；柜台只读核验通过,新增,2026-10-15,test_dashboard_truth.py；dashboard-truth.spec.js；LIVE_DATA_AUDIT_2026-10-15.md
 R23,P1,敞口与权益展示,敞口遗漏合约乘数且误称保证金；权益曲线画盈亏,乘数缺失保持未知；曲线点与柜台余额比较；浏览器图表,已修复；真实空仓核验及离线有仓样本通过,新增,2026-10-15,test_dashboard_truth.py；dashboard-truth.spec.js
 R24,P2,行情来源展示,丢弃行情时间与来源；历史缺失文案不清；目录误称热门,行情年龄与来源缺失回归；空K线浏览器验证,已修复并热更新；实盘界面核对通过,新增,2026-10-15,market-provenance.spec.js；live-data-audit-20261015
+R25,P2,合约搜索范围,柜台外汇仿真合约及期权混入；截取前未过滤；代码名称导致中文检索遗漏,国内六所正例及境外期权仿真反例；收藏目录委托框浏览器回归；真实柜台只读查询,已修复并重启加载；AF空结果及黄金8合约核验通过,新增,2026-10-15,test_domestic_contract_search.py；contract-search.spec.js；domestic-contract-search.spec.js；DOMESTIC_CONTRACT_SEARCH_2026-10-15.md

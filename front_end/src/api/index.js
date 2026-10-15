@@ -8,6 +8,7 @@
  */
 
 import { buildApiUrl } from '@/config/network.js'
+import { domesticFutures } from '@/utils/domesticFutures.js'
 
 export async function request(path, options = {}) {
   const {timeoutMs=15000,signal:outerSignal,...rest}=options
@@ -184,12 +185,15 @@ export const runBacktest = (body) =>
 
 // ── 行情 Watch ─────────────────────────────────────────────────────────────
 /** 期货合约搜索；query: 关键词，exchange: 可选交易所，limit: 最多返回条数 */
-export const searchContracts = ({ query = '', exchange = '', limit = 60 } = {}) => {
+export const searchContracts = async ({ query = '', exchange = '', limit = 60 } = {}) => {
   const p = new URLSearchParams()
   if (query)    p.set('query',    query)
   if (exchange) p.set('exchange', exchange)
   if (limit)    p.set('limit',    String(limit))
-  return request(`/watch/search?${p}`)
+  const response = await request(`/watch/search?${p}`)
+  // Also protect callers while an older backend is still serving this session.
+  const data = domesticFutures(response.data)
+  return { ...response, data, total: data.length }
 }
 
 /**
