@@ -1,0 +1,14 @@
+{
+  "runtime": "3.13.15",
+  "native_packages": {
+    "vnpy": "4.4.0",
+    "vnpy_ctp": "6.7.11.4"
+  },
+  "all_59_runtime_pins_match": true,
+  "http://127.0.0.1:8000": {
+    "healthy": true
+  },
+  "http://127.0.0.1:5174/api": {
+    "healthy": true
+  }
+}

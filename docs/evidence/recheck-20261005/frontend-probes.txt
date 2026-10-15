@@ -1,0 +1,33 @@
+
+ RUN  v4.1.11 D:/mine/quant/front_end
+
+stdout | ../../quant-recheck-20261005/frontend-probes.spec.js > review reproduction: refresh failure must not strand a filled-order event
+AFTER_FAILED_REFRESH {"status":"submitted","stale":true}
+
+ ❯ ../../quant-recheck-20261005/frontend-probes.spec.js (2 tests | 1 failed) 51ms
+   × review reproduction: refresh failure must not strand a filled-order event 45ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  ../../quant-recheck-20261005/frontend-probes.spec.js > review reproduction: refresh failure must not strand a filled-order event
+AssertionError: expected 'submitted' to be 'filled' // Object.is equality
+
+Expected: "filled"
+Received: "submitted"
+
+ ❯ ../../quant-recheck-20261005/frontend-probes.spec.js:42:46
+     40|     console.log('AFTER_FAILED_REFRESH',JSON.stringify({status:book.ord…
+     41|     // Desired invariant. This is intentionally a failing regression p…
+     42|     expect(book.ordersArray.value[0].status).toBe('filled')
+       |                                              ^
+     43|   } finally {wrapper.unmount()}
+     44| })
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 1 passed (2)
+   Start at  01:22:01
+   Duration  1.51s (transform 69ms, setup 0ms, import 157ms, tests 51ms, environment 1.10s)
+

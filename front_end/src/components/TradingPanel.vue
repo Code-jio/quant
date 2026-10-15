@@ -8,9 +8,13 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   placeOrder, cancelAllOrders, closePosition,
-  fetchPositions, searchContracts,
+  fetchPositions, searchContracts, fetchTicks,
   fetchRiskStatus, emergencyStop, resumeTrading, fetchTradingReconcile,
+  fetchMarginRate, preflightOrder,
 } from '@/api/index.js'
+
+const props = defineProps({ compact: Boolean, contract: { type: Object, default: null } })
+const emit = defineEmits(['select-contract'])
 
 // ── 下单表单 ─────────────────────────────────────────────────────────────────
 const form = ref({
@@ -19,7 +23,7 @@ const form = ref({
   offset:     'open',
   price:      0,
   volume:     1,
-  order_type: 'market',
+  order_type: 'limit',
 })
 
 const submitting    = ref(false)
@@ -61,6 +65,7 @@ function onSymbolSearch(query) {
       contractOptions.value = (res.data || []).map(c => ({
         value: c.symbol || c.code,
         label: `${c.symbol || c.code} - ${c.name || ''}`,
+        contract: { ...c, symbol: c.symbol || c.code },
       }))
     } catch {
       contractOptions.value = []
@@ -73,14 +78,16 @@ function onSymbolSearch(query) {
 // ── 持仓列表（用于快捷平仓）─────────────────────────────────────────────────
 const positions      = ref([])
 const posLoading     = ref(false)
+const positionError = ref('')
 const closingKey     = ref('')
 
 async function loadPositions() {
   posLoading.value = true
   try {
     positions.value = await fetchPositions()
-  } catch {
-    positions.value = []
+    positionError.value=''
+  } catch (error) {
+    positionError.value=error.message
   } finally {
     posLoading.value = false
   }
@@ -90,6 +97,38 @@ async function loadPositions() {
 const normalizedSymbol = computed(() => String(form.value.symbol || '').trim())
 const normalizedVolume = computed(() => Number(form.value.volume) || 0)
 const normalizedPrice  = computed(() => Number(form.value.price) || 0)
+const marginState = ref(null)
+let marginRequest = 0
+const marginSummary = computed(() => {
+  const state = marginState.value
+  if (state?.status !== 'ready') return state?.reason || '正在查询账户适用保证金；结果未知时开仓受限'
+  const rate = (value) => `${(Number(value) * 100).toFixed(2)}%`
+  const fixed = (value) => Number(value) > 0 ? ` + ${Number(value).toFixed(2)}元/手` : ''
+  return `柜台保证金：多头 ${rate(state.long_margin_rate)}${fixed(state.long_margin_per_lot)}，空头 ${rate(state.short_margin_rate)}${fixed(state.short_margin_per_lot)}；交易日 ${state.trading_day}`
+})
+async function loadMarginStatus() {
+  const symbol = normalizedSymbol.value
+  const requestId = ++marginRequest
+  if (!symbol) { marginState.value = null; return }
+  try {
+    const state = await fetchMarginRate(symbol)
+    if (requestId === marginRequest) marginState.value = state
+  } catch (error) {
+    if (requestId === marginRequest) marginState.value = { status: 'error', reason: error.message }
+  }
+}
+watch(normalizedSymbol, (symbol) => {
+  // A price entered for the previous instrument must never carry into a new ticket.
+  form.value.price = 0
+  marginState.value = null
+  loadMarginStatus()
+  if (symbol !== (props.contract?.symbol || '')) {
+    emit('select-contract', symbol ? contractOptions.value.find(item => item.value === symbol)?.contract || { symbol, name: '' } : null)
+  }
+})
+watch(() => props.contract?.symbol, symbol => {
+  if ((symbol || '') !== form.value.symbol) form.value.symbol = symbol || ''
+}, { immediate: true })
 
 const orderValidation = computed(() => {
   if (!normalizedSymbol.value) return { valid: false, message: '请输入合约代码' }
@@ -103,6 +142,50 @@ const orderValidation = computed(() => {
 })
 
 const canSubmit = computed(() => orderValidation.value.valid && !submitting.value)
+const preflightState = ref(null)
+const preflightLoading = ref(false)
+const preflightError = ref('')
+let preflightRequest = 0
+let preflightTimer = null
+const ticketPayload = computed(() => ({
+  symbol: normalizedSymbol.value, direction: form.value.direction, offset: form.value.offset,
+  price: form.value.order_type === 'market' ? 0 : normalizedPrice.value,
+  volume: normalizedVolume.value, order_type: form.value.order_type,
+}))
+const blockedChecks = computed(() => (preflightState.value?.checks || []).filter(item => !item.passed))
+const preflightSummary = computed(() => {
+  if (!orderValidation.value.valid) return '完善订单参数后自动检查'
+  if (preflightLoading.value) return '正在检查当前订单…'
+  if (preflightError.value) return `检查不可用：${preflightError.value}`
+  if (!preflightState.value) return '等待检查'
+  return preflightState.value.allowed ? '当前快照通过 · 发送时复检' : `暂不可下单：${blockedChecks.value.map(item => item.label).join('、')}`
+})
+function money(value) {
+  return value == null || !Number.isFinite(Number(value)) ? '未知' : `¥${Number(value).toFixed(2)}`
+}
+async function loadPreflight() {
+  if (submitting.value) return
+  const requestId = ++preflightRequest
+  if (!orderValidation.value.valid) { preflightState.value = null; preflightLoading.value = false; return }
+  preflightLoading.value = true
+  try {
+    const state = await preflightOrder({ ...ticketPayload.value })
+    if (requestId === preflightRequest) { preflightState.value = state; preflightError.value = '' }
+  } catch (error) {
+    if (requestId === preflightRequest) { preflightState.value = null; preflightError.value = error.message }
+  } finally {
+    if (requestId === preflightRequest) preflightLoading.value = false
+  }
+}
+watch(ticketPayload, () => {
+  preflightRequest++
+  preflightState.value = null
+  preflightError.value = ''
+  preflightLoading.value = false
+  clearTimeout(preflightTimer)
+  preflightTimer = setTimeout(loadPreflight, 350)
+}, { immediate: true })
+
 const emergencyActive = computed(() => Boolean(riskState.value?.risk?.emergency_stop))
 const riskSummary = computed(() => {
   const risk = riskState.value?.risk
@@ -175,36 +258,37 @@ function validateOrder(showMessage = true) {
 
 // ── 提交下单 ─────────────────────────────────────────────────────────────────
 async function handleSubmit() {
-  if (!validateOrder()) return
+  if (submitting.value || !validateOrder()) return
   normalizeOrderForm()
-
-  const preview = orderPreview.value
-  try {
-    await ElMessageBox.confirm(
-      `确认${preview.sideText}${preview.offsetText} ${preview.symbol} ${preview.volume}手，${preview.priceText}？`,
-      '下单确认',
-      { confirmButtonText: '确认下单', cancelButtonText: '取消', type: 'warning' },
-    )
-  } catch {
-    return
-  }
-
+  const payload = Object.freeze({ ...ticketPayload.value })
+  const preview = { ...orderPreview.value }
   submitting.value = true
+  ++preflightRequest
+  preflightLoading.value = false
   try {
-    const res = await placeOrder({
-      symbol:     form.value.symbol,
-      direction:  form.value.direction,
-      offset:     form.value.offset,
-      price:      form.value.order_type === 'market' ? 0 : form.value.price,
-      volume:     form.value.volume,
-      order_type: form.value.order_type,
-    })
-    ElMessage.success(`下单成功，委托号: ${res.order_id}`)
+    const check = await preflightOrder(payload)
+    if (JSON.stringify(payload) !== JSON.stringify(ticketPayload.value)) {
+      ElMessage.warning('订单参数已变化，请重新检查并确认')
+      return
+    }
+    preflightState.value = check
+    preflightError.value = ''
+    if (!check.allowed) { ElMessage.warning(`下单前检查未通过：${check.reason}`); return }
+    try {
+      await ElMessageBox.confirm(
+        `确认${preview.sideText}${preview.offsetText} ${preview.symbol} ${preview.volume}手，${preview.priceText}？${payload.offset === 'open' ? ` 预计保证金 ${money(check.margin?.required)}。` : ''}发送时将重新校验。`,
+        '下单确认',
+        { confirmButtonText: '确认下单', cancelButtonText: '取消', type: 'warning' },
+      )
+    } catch { return }
+    const res = await placeOrder(payload)
+    ElMessage.success(`委托请求已发送，委托号: ${res.order_id}，请核对柜台回报`)
     loadPositions()
   } catch (err) {
     ElMessage.error(`下单失败: ${err.message}`)
   } finally {
     submitting.value = false
+    loadPreflight()
   }
 }
 
@@ -221,7 +305,7 @@ async function handleCancelAll() {
   cancellingAll.value = true
   try {
     const res = await cancelAllOrders()
-    ElMessage.success(`已撤销 ${res.cancelled} 笔委托，失败 ${res.failed || 0} 笔`)
+    ElMessage.success(`已发送 ${res.cancelled} 笔撤单请求，发送失败 ${res.failed || 0} 笔，请核对柜台回报`)
   } catch (err) {
     ElMessage.error(`撤单失败: ${err.message}`)
   } finally {
@@ -283,34 +367,39 @@ async function handleResumeTrading() {
 
 // ── 快捷平仓 ─────────────────────────────────────────────────────────────────
 async function handleClosePosition(pos) {
+  if (closingKey.value) return
   const available = availableVolume(pos)
   if (available <= 0) {
     ElMessage.warning(`${pos.symbol} 当前无可平数量`)
     return
   }
 
-  const key = positionKey(pos)
-  const direction = pos.direction === 'long' || pos.direction === 'short' ? pos.direction : ''
+  const symbol = pos.symbol
+  const direction = pos.direction
+  if (!['long', 'short'].includes(direction)) { ElMessage.warning('持仓方向未知，请核对后手动平仓'); return }
+  const offset = quickCloseOffset.value
+  const actionText = closeActionText(pos)
+  closingKey.value = positionKey(pos)
   try {
-    await ElMessageBox.confirm(
-      `确认${closeActionText(pos)} ${pos.symbol} ${available}手，${offsetLabel(quickCloseOffset.value)}，市价？`,
-      '平仓确认',
-      { confirmButtonText: '确认平仓', cancelButtonText: '取消', type: 'warning' },
-    )
-  } catch {
-    return
-  }
-
-  closingKey.value = key
-  try {
-    await closePosition(pos.symbol, {
-      direction,
-      offset: quickCloseOffset.value,
-      volume: 0,
-      price: 0,
-      order_type: 'market',
+    const data=await fetchTicks([symbol])
+    const tick=data.ticks?.[symbol]
+    const age=Date.now()-new Date(tick?.timestamp).getTime()
+    const closePrice=Number(direction==='short' ? tick?.ask1 : tick?.bid1)
+    if (!Number.isFinite(age) || age>10000 || age< -5000 || !Number.isFinite(closePrice) || !(closePrice>0)) throw new Error('缺少新鲜买卖报价，请使用手动限价平仓')
+    const payload = Object.freeze({ direction, offset, volume: available, price: closePrice, order_type: 'limit' })
+    const check = await preflightOrder({
+      ...payload, symbol, direction: direction === 'long' ? 'short' : 'long',
     })
-    ElMessage.success(`${pos.symbol} 平仓指令已发送`)
+    if (!check.allowed) { ElMessage.warning(`平仓检查未通过：${check.reason}`); return }
+    try {
+      await ElMessageBox.confirm(
+        `确认${actionText} ${symbol} ${payload.volume}手，${offsetLabel(payload.offset)}，限价 ${payload.price}？`,
+        '平仓确认',
+        { confirmButtonText: '确认平仓', cancelButtonText: '取消', type: 'warning' },
+      )
+    } catch { return }
+    await closePosition(symbol, payload)
+    ElMessage.success(`${symbol} 平仓指令已发送，请核对柜台回报`)
     setTimeout(loadPositions, 500)
   } catch (err) {
     ElMessage.error(`平仓失败: ${err.message}`)
@@ -326,9 +415,12 @@ onMounted(() => {
   loadPositions()
   loadRiskStatus()
   posTimer = setInterval(loadPositions, 5000)
-  riskTimer = setInterval(loadRiskStatus, 5000)
+  riskTimer = setInterval(() => { loadRiskStatus(); loadMarginStatus(); loadPreflight() }, 5000)
 })
 onUnmounted(() => {
+  marginRequest++
+  preflightRequest++
+  clearTimeout(preflightTimer)
   clearInterval(posTimer)
   clearInterval(riskTimer)
   if (searchTimer) clearTimeout(searchTimer)
@@ -336,17 +428,16 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="tp-wrap">
+  <div class="tp-wrap" :class="{ 'tp-compact': compact }">
     <div class="tp-statusbar">
       <div class="status-left">
         <span class="live-dot"></span>
-        <span class="fw-600">实盘手动交易</span>
-        <span class="c-muted">CTP / vn.py</span>
+        <span class="fw-600">实盘委托</span>
       </div>
       <div class="status-right">
         <span
           class="validation-pill"
-          :class="emergencyActive ? 'pill-danger' : 'pill-ok'"
+          :class="emergencyActive ? 'pill-danger' : riskState ? 'pill-ok' : 'pill-warn'"
         >
           {{ riskSummary }}
         </span>
@@ -374,12 +465,6 @@ onUnmounted(() => {
         >
           恢复
         </el-button>
-        <span
-          class="validation-pill"
-          :class="orderValidation.valid ? 'pill-ok' : 'pill-warn'"
-        >
-          {{ orderValidation.message }}
-        </span>
       </div>
     </div>
 
@@ -393,7 +478,7 @@ onUnmounted(() => {
 
         <div class="tp-grid">
           <div class="tp-row tp-row-wide">
-            <label class="tp-label">合约</label>
+            <label class="tp-label" for="trade-symbol">合约</label>
             <el-select
               v-model="form.symbol"
               filterable
@@ -403,6 +488,7 @@ onUnmounted(() => {
               placeholder="输入合约代码"
               size="small"
               class="tp-input"
+              id="trade-symbol"
               allow-create
               default-first-option
             >
@@ -417,7 +503,7 @@ onUnmounted(() => {
 
           <div class="tp-row">
             <label class="tp-label">方向</label>
-            <el-radio-group v-model="form.direction" size="small" class="tp-input">
+            <el-radio-group v-model="form.direction" size="small" class="tp-input direction-group" aria-label="买卖方向">
               <el-radio-button value="long">
                 <span class="dir-long">买入</span>
               </el-radio-button>
@@ -429,7 +515,7 @@ onUnmounted(() => {
 
           <div class="tp-row">
             <label class="tp-label">开平</label>
-            <el-radio-group v-model="form.offset" size="small" class="tp-input offset-group">
+            <el-radio-group v-model="form.offset" size="small" class="tp-input offset-group" aria-label="开平方向">
               <el-radio-button value="open">开仓</el-radio-button>
               <el-radio-button value="close">平仓</el-radio-button>
               <el-radio-button value="close_today">平今</el-radio-button>
@@ -437,17 +523,18 @@ onUnmounted(() => {
             </el-radio-group>
           </div>
 
-          <div class="tp-row">
+          <div v-if="!compact" class="tp-row">
             <label class="tp-label">类型</label>
             <el-radio-group v-model="form.order_type" size="small" class="tp-input">
-              <el-radio-button value="market">市价</el-radio-button>
+              <el-radio-button value="market" disabled>市价（当前网关不支持）</el-radio-button>
               <el-radio-button value="limit">限价</el-radio-button>
             </el-radio-group>
           </div>
 
           <div class="tp-row" :class="{ 'is-disabled': form.order_type === 'market' }">
-            <label class="tp-label">价格</label>
+            <label class="tp-label" for="trade-price">限价</label>
             <el-input-number
+              id="trade-price"
               v-model="form.price"
               :min="0"
               :step="1"
@@ -460,12 +547,13 @@ onUnmounted(() => {
           </div>
 
           <div class="tp-row tp-row-wide">
-            <label class="tp-label">数量</label>
+            <label class="tp-label" for="trade-volume">数量</label>
             <div class="tp-vol-group">
-              <el-button size="small" plain @click="nudgeVolume(-1)">
+              <el-button size="small" plain aria-label="减少一手" @click="nudgeVolume(-1)">
                 <el-icon><Minus /></el-icon>
               </el-button>
               <el-input-number
+                id="trade-volume"
                 v-model="form.volume"
                 :min="1"
                 :max="9999"
@@ -475,7 +563,7 @@ onUnmounted(() => {
                 controls-position="right"
                 class="volume-input"
               />
-              <el-button size="small" plain @click="nudgeVolume(1)">
+              <el-button size="small" plain aria-label="增加一手" @click="nudgeVolume(1)">
                 <el-icon><Plus /></el-icon>
               </el-button>
               <el-button
@@ -492,6 +580,7 @@ onUnmounted(() => {
           </div>
         </div>
 
+        <el-alert v-if="normalizedSymbol" class="margin-status" :title="marginSummary" :type="marginState?.status === 'ready' ? 'info' : 'warning'" :closable="false" />
         <div class="tp-preview" :class="orderPreview.sideClass">
           <div class="preview-main">
             <span class="mono fw-600">{{ orderPreview.symbol }}</span>
@@ -507,6 +596,7 @@ onUnmounted(() => {
           </div>
         </div>
 
+        <p class="ticket-validation" :class="{ valid: orderValidation.valid }">{{ orderValidation.valid ? '限价委托 · 检查通过后核对并确认' : orderValidation.message }}</p>
         <div class="tp-actions">
           <el-button
             :type="form.direction === 'long' ? 'success' : 'danger'"
@@ -528,21 +618,41 @@ onUnmounted(() => {
             一键撤单
           </el-button>
         </div>
+        <details class="preflight-panel" :class="{ blocked: preflightError || preflightState?.allowed === false }">
+          <summary>{{ preflightSummary }}</summary>
+          <div v-if="preflightState" class="preflight-details">
+            <ul>
+              <li v-for="check in preflightState.checks" :key="check.key" :class="{ failed: !check.passed }">
+                {{ check.passed ? '✓' : '!' }} {{ check.label }}<span v-if="check.reason">：{{ check.reason }}</span>
+              </li>
+            </ul>
+            <div v-if="form.offset === 'open'" class="preflight-money">
+              <span>本单估算 <strong>{{ money(preflightState.margin?.required) }}</strong></span>
+              <span>活跃开仓预留 <strong>{{ money(preflightState.margin?.reserved) }}</strong></span>
+              <span>账户可用 <strong>{{ money(preflightState.margin?.available) }}</strong></span>
+              <span>估算剩余 <strong>{{ money(preflightState.margin?.remaining) }}</strong></span>
+            </div>
+            <p v-else>可平数量：{{ preflightState.close_available ?? '未知' }} 手</p>
+            <p>检查时间 {{ preflightState.checked_at }}；快照不代表柜台受理。保证金按较高方向估算，活跃委托预留可能与柜台冻结重叠。</p>
+          </div>
+          <el-button size="small" :loading="preflightLoading" :disabled="!canSubmit" @click="loadPreflight">刷新检查</el-button>
+        </details>
       </div>
 
       <!-- ── 右侧：快捷平仓 ──────────────────────────────────────────── -->
       <div class="tp-positions">
+        <el-alert v-if="positionError" :title="'持仓数据可能过期：'+positionError" type="warning" :closable="false" />
         <div class="tp-pos-header">
           <div>
             <span class="tp-form-title">快捷平仓</span>
             <span class="c-muted pos-count">{{ positions.length }} 个持仓</span>
           </div>
-          <el-button size="small" plain :loading="posLoading" @click="loadPositions">
+          <el-button size="small" plain aria-label="刷新可平持仓" :loading="posLoading" @click="loadPositions">
             <el-icon><RefreshRight /></el-icon>
           </el-button>
         </div>
 
-        <el-radio-group v-model="quickCloseOffset" size="small" class="close-offset-group">
+        <el-radio-group v-model="quickCloseOffset" size="small" class="close-offset-group" aria-label="快捷平仓开平类型">
           <el-radio-button
             v-for="item in CLOSE_OFFSET_OPTIONS"
             :key="item.value"
@@ -585,7 +695,7 @@ onUnmounted(() => {
               type="danger"
               size="small"
               plain
-              :disabled="availableVolume(pos) <= 0"
+              :disabled="availableVolume(pos) <= 0 || Boolean(closingKey)"
               :loading="closingKey === positionKey(pos)"
               @click="handleClosePosition(pos)"
             >
@@ -605,6 +715,17 @@ onUnmounted(() => {
   border-radius: 8px;
   overflow: hidden;
 }
+.ticket-validation { margin: 0; font-size: 11px; color: var(--q-yellow); }
+.ticket-validation.valid { color: var(--q-muted); }
+.preflight-panel { padding: 8px; border: 1px solid var(--q-border); border-radius: 4px; font-size: 11px; color: var(--q-muted); }
+.preflight-panel summary { cursor: pointer; color: var(--q-text); overflow-wrap: anywhere; }
+.preflight-panel.blocked summary, .preflight-details .failed { color: var(--q-yellow); }
+.preflight-details { overflow-wrap: anywhere; line-height: 1.5; }
+.preflight-details ul { list-style: none; padding: 0; margin: 8px 0; }
+.preflight-details li { padding: 2px 0; }
+.preflight-details p { margin: 8px 0; }
+.preflight-money { display: grid; gap: 4px; }
+.preflight-money span { display: flex; justify-content: space-between; gap: 8px; }
 
 .tp-statusbar {
   display: flex;
@@ -911,4 +1032,38 @@ onUnmounted(() => {
     width: 38px;
   }
 }
+.tp-compact { border-radius: 5px; min-height: 100%; }
+.tp-compact .tp-statusbar { padding: 12px; gap: 10px; align-items: flex-start; }
+.tp-compact .status-left { font-size: 14px; padding: 2px 0; }
+.tp-compact .status-right { flex-wrap: wrap; width: 100%; gap: 8px; }
+.tp-compact .status-right > .el-button { margin-left: auto; }
+.tp-compact .validation-pill { border: 0; border-radius: 3px; font-size: 10px; padding: 2px 5px; white-space: normal; overflow-wrap: anywhere; }
+.tp-compact .tp-body { display: flex; flex-direction: column; }
+.tp-compact .tp-form { padding: 15px 14px; gap: 13px; border-right: 0; border-bottom: 1px solid var(--q-border); }
+.tp-compact .tp-grid { grid-template-columns: minmax(0, 1fr); gap: 13px; }
+.tp-compact .tp-label { width: 30px; text-align: left; font-size: 11px; }
+.tp-compact .tp-form-head { margin-bottom: 2px; }
+.tp-compact .tp-form-head > .c-muted { font-size: 10px; }
+.tp-compact :deep(.el-radio-button__inner) { padding: 8px 9px; }
+.tp-compact .tp-input:deep(.el-radio-button) { flex: 1; }
+.tp-compact .tp-input:deep(.el-radio-button__inner) { width: 100%; }
+.tp-compact .direction-group:deep(.el-radio-button:first-child.is-active .el-radio-button__inner) { background: #173c32; border-color: var(--q-green); box-shadow: none; }
+.tp-compact .direction-group:deep(.el-radio-button:last-child.is-active .el-radio-button__inner) { background: #472526; border-color: var(--q-red); box-shadow: none; }
+.tp-compact .tp-input:deep(.el-select__wrapper), .tp-compact .tp-input:deep(.el-input__wrapper) { min-height: 32px; }
+.tp-compact .tp-vol-group { gap: 4px; }.tp-compact .tp-vol-group .el-button { margin-left: 0; padding: 5px 8px; }
+.tp-compact .volume-input { width: 85px; }.tp-compact .volume-input:deep(.el-input__wrapper) { padding-left: 4px; }
+.tp-compact .tp-preview { grid-template-columns: minmax(0, 1fr); padding: 11px; gap: 10px; border-radius: 4px; }
+.tp-compact .preview-grid { grid-template-columns: repeat(3, auto 1fr); gap: 4px 6px; font-size: 10px; }
+.tp-compact .preview-grid strong { font: 600 12px var(--q-font-mono); white-space: nowrap; }
+.tp-compact .tp-actions { display: grid; grid-template-columns: 1fr; gap: 10px; }
+.tp-compact .tp-actions > .el-button { margin: 0; height: 35px; }
+.tp-compact .tp-actions > .submit-btn { height: 40px; font-size: 14px; font-weight: 600; }
+.tp-compact .margin-status { padding: 8px 10px; border-radius: 3px; }
+.tp-compact .margin-status:deep(.el-alert__title) { font-size: 10px; line-height: 1.6; overflow-wrap: anywhere; }
+.tp-compact .tp-positions { padding: 15px 14px; gap: 12px; }
+.tp-compact .tp-empty { min-height: 72px; }
+.tp-compact .tp-pos-list { max-height: 230px; }
+.tp-compact .tp-pos-item { padding: 8px; border-radius: 4px; }
+.tp-compact .pos-line { font-size: 11px; gap: 6px; }
+.tp-compact .status-right .c-muted { font-size: 10px; }
 </style>

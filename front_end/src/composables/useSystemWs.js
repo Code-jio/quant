@@ -13,6 +13,7 @@
  */
 
 import { ref, reactive, onMounted, onUnmounted } from 'vue'
+import { finiteAmount } from '@/utils/financialData.js'
 import { buildWsUrl } from '@/config/network.js'
 
 const RECONNECT_BASE  = 3_000   // 初始重连延迟 3s
@@ -23,9 +24,11 @@ export function useSystemWs(url = buildWsUrl('/ws/system')) {
   const connected = ref(false)
 
   const data = reactive({
-    totalPnl:          0,
-    returnRate:        0,     // 已是百分比值，如 0.85 表示 0.85%
-    balance:           0,
+    totalPnl:          null,
+    positionPnl:       null,
+    accountKnown:      false,
+    returnRate:        null,     // 已是百分比值，如 0.85 表示 0.85%
+    balance:           null,
     cpuPercent:        0,
     memoryPercent:     0,
     activeStrategies:  0,
@@ -34,7 +37,7 @@ export function useSystemWs(url = buildWsUrl('/ws/system')) {
     mdConnected:       false,
     gatewayStatus:     'stopped',
     gatewayName:       'N/A',
-    gatewayLatencyMs:  -1,    // -1 = 尚未收到回调
+    callbackAgeMs:  -1,    // -1 = 尚未收到回调
     networkSendBps:    0,     // 字节/秒
     networkRecvBps:    0,
     timestamp:         null,
@@ -52,9 +55,11 @@ export function useSystemWs(url = buildWsUrl('/ws/system')) {
       const msg = JSON.parse(event.data)
       if (msg.type !== 'system_status') return
 
-      data.totalPnl          = msg.total_pnl          ?? data.totalPnl
-      data.returnRate        = msg.return_rate        ?? data.returnRate
-      data.balance           = msg.balance            ?? data.balance
+      data.accountKnown = msg.account_known === true
+      data.positionPnl = msg.account_known === true ? finiteAmount(msg.position_pnl) : null
+      data.totalPnl          = msg.account_known === true ? finiteAmount(msg.total_pnl) : null
+      data.returnRate        = msg.account_known === true ? finiteAmount(msg.return_rate) : null
+      data.balance           = msg.account_known === true ? finiteAmount(msg.balance) : null
       data.cpuPercent        = msg.cpu_percent        ?? data.cpuPercent
       data.memoryPercent     = msg.memory_percent     ?? data.memoryPercent
       data.activeStrategies  = msg.active_strategies  ?? data.activeStrategies
@@ -63,7 +68,7 @@ export function useSystemWs(url = buildWsUrl('/ws/system')) {
       data.mdConnected       = msg.md_connected       ?? data.mdConnected
       data.gatewayStatus     = msg.gateway_status     ?? data.gatewayStatus
       data.gatewayName       = msg.gateway_name       ?? data.gatewayName
-      data.gatewayLatencyMs  = msg.gateway_latency_ms ?? data.gatewayLatencyMs
+      data.callbackAgeMs  = msg.callback_age_ms ?? data.callbackAgeMs
       data.networkSendBps    = msg.network_send_bps   ?? data.networkSendBps
       data.networkRecvBps    = msg.network_recv_bps   ?? data.networkRecvBps
       data.timestamp         = msg.timestamp          ?? data.timestamp
@@ -89,7 +94,7 @@ export function useSystemWs(url = buildWsUrl('/ws/system')) {
 
   // ── 连接管理 ──────────────────────────────────────────────────────────────
   function connect() {
-    if (destroyed) return
+    if (destroyed || sessionStorage.getItem('quant_session_active')!=='1') return
 
     try {
       ws = new WebSocket(url)
@@ -109,8 +114,10 @@ export function useSystemWs(url = buildWsUrl('/ws/system')) {
 
     ws.onclose = (e) => {
       connected.value = false
+      data.accountKnown = false
+      data.totalPnl = data.positionPnl = data.returnRate = data.balance = null
       stopHeartbeat()
-      if (!destroyed) {
+      if (!destroyed && e.code!==1008) {
         console.warn(`[useSystemWs] 连接断开 (code=${e.code})，${reconnectDelay / 1000}s 后重连`)
         scheduleReconnect()
       }
@@ -123,7 +130,7 @@ export function useSystemWs(url = buildWsUrl('/ws/system')) {
   }
 
   function scheduleReconnect() {
-    if (destroyed) return
+    if (destroyed || sessionStorage.getItem('quant_session_active')!=='1') return
     clearTimeout(reconnectTimer)
     reconnectTimer = setTimeout(() => {
       reconnectDelay = Math.min(reconnectDelay * 1.5, RECONNECT_MAX)

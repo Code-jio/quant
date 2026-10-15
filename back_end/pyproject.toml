@@ -1,7 +1,7 @@
 [project]
 name = "quant-back-end"
 version = "0.1.0"
-requires-python = ">=3.10,<3.14"
+requires-python = ">=3.12,<3.14"
 
 [tool.pytest.ini_options]
 minversion = "8.0"
@@ -10,7 +10,7 @@ pythonpath = ["."]
 addopts = "-q -p no:cacheprovider"
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py312"
 line-length = 120
 exclude = [
   ".venv",
@@ -22,19 +22,28 @@ exclude = [
 select = ["E9", "F63", "F7", "F82"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.12"
 files = [
+  "src/settings.py",
+  "src/common/indicators.py",
   "src/api/security.py",
   "src/trading/risk.py",
+  "src/trading/ctp_margin.py",
   "src/data/cache.py",
   "src/data/governance.py",
   "src/observability.py",
+  "src/runtime.py",
+  "src/trading/ledger.py",
+  "src/trading/bars.py",
+  "src/backtest/config.py",
+  "src/backtest/engine.py",
+  "src/api/backtest_service.py",
   "tests",
 ]
 ignore_missing_imports = true
 follow_imports = "skip"
 warn_unused_configs = true
-check_untyped_defs = false
+check_untyped_defs = true
 explicit_package_bases = true
 mypy_path = "."
 exclude = [

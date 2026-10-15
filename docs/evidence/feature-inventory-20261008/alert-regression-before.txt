@@ -1,0 +1,36 @@
+
+ RUN  v4.1.11 D:/mine/quant/front_end
+
+ ❯ tests/unit/feature-inventory.spec.js (7 tests | 1 failed) 58ms
+   × tick alerts detect price, jump and volume at 100 ms cadence, apply cooldown, and clear 24ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/unit/feature-inventory.spec.js > tick alerts detect price, jump and volume at 100 ms cadence, apply cooldown, and clear
+AssertionError: expected [] to deeply equal ArrayContaining{…}
+
+- Expected
++ Received
+
+- ArrayContaining [
+-   "price",
+-   "price_jump",
+-   "volume",
+- ]
++ []
+
+ ❯ tests/unit/feature-inventory.spec.js:104:41
+    102|     for(let i=0;i<5;i++)tick(100,10,0)
+    103|     tick(104,100,4)
+    104|     expect(watch.alerts.map(a=>a.type)).toEqual(expect.arrayContaining…
+       |                                         ^
+    105|     const count=watch.alerts.length
+    106|     tick(108,200,8)
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 6 passed (7)
+   Start at  16:29:26
+   Duration  795ms (transform 40ms, setup 0ms, import 84ms, tests 58ms, environment 503ms)

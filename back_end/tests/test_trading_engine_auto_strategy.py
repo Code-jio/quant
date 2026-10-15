@@ -78,7 +78,7 @@ def make_tick(symbol: str, price: float, timestamp: datetime) -> MarketData:
 def test_live_ticks_update_strategy_data_and_dispatch_new_signals_once():
     gateway = RecordingGateway()
     engine = TradingEngine(gateway)
-    strategy = LiveDataSignalStrategy("live_test", {"symbol": "rb2505"})
+    strategy = LiveDataSignalStrategy("live_test", {"symbol": "rb2505", "timeframe": "tick"})
     engine.set_strategy(strategy)
 
     assert engine.start({"initial_capital": 100000.0}) is True
@@ -100,7 +100,7 @@ def test_live_ticks_update_strategy_data_and_dispatch_new_signals_once():
 def test_live_on_bar_sees_only_prior_ticks_in_strategy_data():
     gateway = RecordingGateway()
     engine = TradingEngine(gateway)
-    strategy = LiveBiasProbeStrategy("live_bias", {"symbol": "rb2505"})
+    strategy = LiveBiasProbeStrategy("live_bias", {"symbol": "rb2505", "timeframe": "tick"})
     engine.set_strategy(strategy)
 
     assert engine.start({"initial_capital": 100000.0}) is True
@@ -116,7 +116,7 @@ def test_live_on_bar_sees_only_prior_ticks_in_strategy_data():
 def test_broker_order_callback_updates_order_manager_books():
     gateway = RecordingGateway()
     engine = TradingEngine(gateway)
-    strategy = LiveDataSignalStrategy("live_test", {"symbol": "rb2505"})
+    strategy = LiveDataSignalStrategy("live_test", {"symbol": "rb2505", "timeframe": "tick"})
     engine.set_strategy(strategy)
 
     assert engine.start({"initial_capital": 100000.0}) is True

@@ -8,8 +8,8 @@
  *  - 提供常量：EXCHANGES / HOT_CONTRACTS
  */
 
-import { ref, watch } from 'vue'
-import { buildApiUrl } from '@/config/network.js'
+import { ref, watch, reactive, onMounted, onScopeDispose } from 'vue'
+import { searchContracts } from '@/api/index.js'
 
 // ── 常量 ──────────────────────────────────────────────────────────────────
 export const EXCHANGES = ['SHFE', 'DCE', 'CZCE', 'CFFEX', 'INE', 'GFEX']
@@ -36,20 +36,8 @@ export const TYPE_COLOR = {
   油脂:   '#84cc16',
 }
 
-export const HOT_CONTRACTS = [
-  { symbol: 'IF2506',  name: '沪深300 2506', exchange: 'CFFEX', product_type: '金融' },
-  { symbol: 'IC2506',  name: '中证500 2506',  exchange: 'CFFEX', product_type: '金融' },
-  { symbol: 'rb2601',  name: '螺纹钢 2601',   exchange: 'SHFE',  product_type: '黑色' },
-  { symbol: 'au2506',  name: '黄金 2506',     exchange: 'SHFE',  product_type: '贵金属' },
-  { symbol: 'ag2506',  name: '白银 2506',     exchange: 'SHFE',  product_type: '贵金属' },
-  { symbol: 'cu2506',  name: '铜 2506',       exchange: 'SHFE',  product_type: '有色' },
-  { symbol: 'i2509',   name: '铁矿石 2509',   exchange: 'DCE',   product_type: '黑色' },
-  { symbol: 'MA2509',  name: '甲醇 2509',     exchange: 'CZCE',  product_type: '化工' },
-  { symbol: 'sc2506',  name: '原油 2506',     exchange: 'INE',   product_type: '能源' },
-  { symbol: 'c2509',   name: '玉米 2509',     exchange: 'DCE',   product_type: '农产品' },
-  { symbol: 'SR2509',  name: '白糖 2509',     exchange: 'CZCE',  product_type: '农产品' },
-  { symbol: 'si2506',  name: '工业硅 2506',   exchange: 'GFEX',  product_type: '化工' },
-]
+// Verified gateway contracts or explicitly identified historical datasets.
+export const HOT_CONTRACTS = reactive([])
 
 // ── localStorage 键 ────────────────────────────────────────────────────────
 const LS_FAVORITES = 'quant_contract_favorites'
@@ -112,8 +100,18 @@ export function useContractSearch() {
 
   // ── 搜索 ──────────────────────────────────────────────────────────────────
   let _timer = null
+  let generation = 0
+  let disposed = false
+  onScopeDispose(() => { disposed=true; generation++; clearTimeout(_timer) })
+  onMounted(async () => {
+    try {
+      const data=await searchContracts({limit:60})
+      if (!disposed && data.code===0) HOT_CONTRACTS.splice(0,HOT_CONTRACTS.length,...data.data)
+    } catch { /* The search box reports request errors when used. */ }
+  })
 
   async function _doSearch() {
+    const version=++generation
     const q = query.value.trim()
     if (!q && !exchange.value) {
       results.value = []
@@ -126,26 +124,23 @@ export function useContractSearch() {
     selectedIndex.value = -1
 
     try {
-      const p = new URLSearchParams()
-      if (q)              p.set('query',    q)
-      if (exchange.value) p.set('exchange', exchange.value)
-      p.set('limit', '60')
-
-      const res  = await fetch(buildApiUrl(`/watch/search?${p}`), { credentials: 'include' })
-      const data = await res.json()
+      const data=await searchContracts({query:q,exchange:exchange.value,limit:60})
+      if (disposed || version!==generation) return
 
       results.value = data.code === 0 ? (data.data ?? []) : []
       if (data.code !== 0) error.value = data.msg ?? '搜索失败'
     } catch (e) {
+      if (disposed || version!==generation) return
       results.value = []
       error.value   = '网络错误: ' + e.message
     } finally {
-      loading.value = false
+      if (version===generation) loading.value = false
     }
   }
 
   /** 带防抖的触发（300ms） */
   function triggerSearch() {
+    generation++
     clearTimeout(_timer)
     _timer = setTimeout(_doSearch, 300)
   }
@@ -158,6 +153,7 @@ export function useContractSearch() {
 
   /** 清空搜索 */
   function clearSearch() {
+    generation++; clearTimeout(_timer); loading.value=false
     query.value         = ''
     results.value       = []
     selectedIndex.value = -1

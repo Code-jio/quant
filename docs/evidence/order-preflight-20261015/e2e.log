@@ -1,0 +1,31 @@
+[WebServer] (node:48280) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+
+Running 22 tests using 1 worker
+
+(node:22924) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ok  1 [chromium] › tests\e2e\feature-inventory.spec.js:3:1 › authenticated dashboard and system monitoring expose account views and log controls (1.8s)
+  ok  2 [chromium] › tests\e2e\feature-inventory.spec.js:26:1 › historical chart supports indicator selection drawing clearing fullscreen and PNG export (2.4s)
+  ok  3 [chromium] › tests\e2e\feature-inventory.spec.js:70:1 › unsupported custom chart period is reported instead of showing fabricated bars (1.1s)
+  ok  4 [chromium] › tests\e2e\multi-device.spec.js:20:1 › independent devices join one account, restore tabs, leave individually and disconnect explicitly (6.7s)
+  ok  5 [chromium] › tests\e2e\multi-device.spec.js:80:1 › failed per-device logout never silently falls back to global disconnect (1.8s)
+  ok  6 [chromium] › tests\e2e\order-preflight.spec.js:26:1 › preflight blocks submission, explains unknown data and network failures (2.2s)
+  ok  7 [chromium] › tests\e2e\order-preflight.spec.js:49:1 › confirmation submits exactly the frozen ticket once despite form updates (1.9s)
+  ok  8 [chromium] › tests\e2e\order-preflight.spec.js:73:1 › late preview cannot replace the result for the latest ticket (2.2s)
+  ok  9 [chromium] › tests\e2e\order-preflight.spec.js:96:1 › quick close freezes explicit quantity and offset before confirmation (1.3s)
+  ok 10 [chromium] › tests\e2e\recheck.spec.js:3:1 › saved live API defaults allow account/password login without a contract (1.1s)
+  ok 11 [chromium] › tests\e2e\recheck.spec.js:37:1 › saved settings load failure is visible and custom connection remains editable (514ms)
+  ok 12 [chromium] › tests\e2e\recheck.spec.js:46:1 › saved connection fields can be overridden explicitly (1.9s)
+  ok 13 [chromium] › tests\e2e\recheck.spec.js:75:1 › trading panel shows queried account margin and clears it when contract changes (2.9s)
+  ok 14 [chromium] › tests\e2e\remediation.spec.js:3:1 › offline backtest runs with explicit synthetic data and renders result charts (1.1s)
+  ok 15 [chromium] › tests\e2e\remediation.spec.js:23:1 › stored historical bars render through the real worker without auth sockets (751ms)
+  ok 16 [chromium] › tests\e2e\remediation.spec.js:40:1 › authenticated sockets close on logout and trading data loses access (1.3s)
+  ok 17 [chromium] › tests\e2e\smoke.spec.js:3:1 › public pages render without a hard crash (634ms)
+  ok 18 [chromium] › tests\e2e\trading-layout.spec.js:19:1 › desktop desk keeps market ticket and order book in one screen (1.6s)
+  ok 19 [chromium] › tests\e2e\trading-layout.spec.js:70:1 › contract linking clears the old limit price and trading actions retain confirmation (2.7s)
+  ok 20 [chromium] › tests\e2e\trading-layout.spec.js:107:1 › search keyboard navigation and analysis panels preserve the trading ticket (2.5s)
+  ok 21 [chromium] › tests\e2e\trading-layout.spec.js:138:1 › dense order rows scroll inside the dock while the ticket stays visible (2.0s)
+  ok 22 [chromium] › tests\e2e\trading-layout.spec.js:154:1 › tablet and narrow screens have reachable controls without page-wide overflow (1.5s)
+
+  22 passed (45.9s)

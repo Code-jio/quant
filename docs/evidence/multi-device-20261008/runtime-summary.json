@@ -1,0 +1,20 @@
+{
+  "health": {
+    "status": "ok",
+    "timestamp": "2026-10-08T17:50:07",
+    "gateway_status": "connected",
+    "active_sessions": 1,
+    "websockets": {
+      "system": 0,
+      "orders": 0,
+      "dashboard": 0,
+      "positions": 0,
+      "logs": 0
+    }
+  },
+  "process_observation": {
+    "pid": 33720,
+    "start_time": "2026-10-08T16:03:51+08:00",
+    "source": "Get-NetTCPConnection / Get-Process, 17:46 Asia/Shanghai"
+  }
+}

@@ -68,7 +68,7 @@
           :key="`ask${i}`"
           class="depth-row ask"
         >
-          <span class="depth-label">卖{{ i + 1 }}</span>
+          <span class="depth-label">卖{{ 5 - i }}</span>
           <span class="depth-price down">{{ level.price || '--' }}</span>
           <span class="depth-vol">{{ level.vol != null ? fmtVol(level.vol) : '--' }}</span>
           <div
@@ -388,8 +388,7 @@ function fmtTurnover(v) {
 .bid-bar { background: #ef4444; }
 .ask-bar { background: #22c55e; }
 
-/* 卖盘从低到高显示 */
-.ask-side { flex-direction: column-reverse; }
+/* askLevels already orders ask5 -> ask1, placing the best ask next to the last price. */
 
 .depth-mid {
   display: flex;

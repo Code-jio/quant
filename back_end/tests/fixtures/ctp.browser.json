@@ -1,0 +1,9 @@
+{
+  "trading": {
+    "broker_id": "E2E_BROKER",
+    "td_server": "tcp://127.0.0.1:1",
+    "md_server": "tcp://127.0.0.1:2",
+    "app_id": "E2E_APP",
+    "auth_code": "E2E_SERVER_ONLY_CODE"
+  }
+}

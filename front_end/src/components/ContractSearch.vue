@@ -226,7 +226,7 @@ import {
 } from '../composables/useContractSearch.js'
 
 // ── Props & Emits ────────────────────────────────────────────────────────
-const props = defineProps({
+defineProps({
   modelValue: { type: Boolean, default: false },
 })
 const emit = defineEmits(['update:modelValue', 'select'])
