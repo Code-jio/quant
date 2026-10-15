@@ -1,6 +1,6 @@
 <template>
   <div ref="wrapRef" class="kline-wrap" :class="{ fullscreen: isFullscreen, mobile: isMobile }">
-    <span class="kline-source" style="font-size:11px;color:var(--q-muted)">历史来源：{{ provenance }} · 实时增量仅含订阅后收到的成交</span>
+    <span class="kline-source" style="font-size:11px;color:var(--q-muted)">历史来源：{{ historySourceLabel }} · 增量由订阅后的行情 Tick 聚合，非完整交易时段</span>
 
     <KlineToolbar
       :name="name"
@@ -91,6 +91,11 @@
         <el-icon><TrendCharts /></el-icon>
         <span>请选择合约</span>
       </div>
+      <div v-else-if="symbol && !loading && !error && !bars.length" class="chart-empty">
+        <el-icon><TrendCharts /></el-icon>
+        <span>暂无 K 线数据</span>
+        <small>未加载历史行情，等待订阅后的 Tick 形成 K 线</small>
+      </div>
       <div ref="chartRef" class="chart-dom" />
 
       <!-- 向前翻页加载更多提示 -->
@@ -100,7 +105,7 @@
           <span>加载更多历史…</span>
         </div>
         <div v-else-if="!hasMore && bars.length > 0" class="load-more-tip no-more">
-          <span>已到最早历史</span>
+          <span>{{ provenance === 'missing' ? '仅订阅期间增量' : '已到已加载数据起点' }}</span>
         </div>
       </transition>
     </div>
@@ -183,6 +188,10 @@ const {
   bars, maData, macdData, kdjData, rsiData, volMaData,
   loading, loadingMore, hasMore, error, provenance, load, loadMore: loadMoreData,
 } = useKlineData()
+
+const historySourceLabel = computed(() => ({
+  missing: '未导入历史数据', unknown: '来源未确认', synthetic: '模拟样本',
+}[provenance.value] ?? provenance.value))
 
 const indicatorWorker = useIndicatorWorker()
 const watchWs = useWatchWs()

@@ -36,6 +36,25 @@ test('unauthenticated watch consumers do not reconnect',async()=>{
   scope.stop()
 })
 
+test('market snapshots retain broker provenance and never infer missing timestamps from receipt time',async()=>{
+  vi.useFakeTimers()
+  const {useWatchWs}=await import('@/composables/useWatchWs.js')
+  sessionStorage.setItem('quant_session_active','1')
+  const scope=effectScope(),watch=scope.run(useWatchWs)
+  try {
+    sockets[0].open()
+    sockets[0].onmessage({data:JSON.stringify({type:'tick',symbol:'FIX',last:100,
+      timestamp:'2026-10-15T10:00:00+08:00',source:'vnpy'})})
+    vi.advanceTimersByTime(100)
+    expect(watch.getTick('FIX').source).toBe('vnpy')
+    expect(watch.getTick('FIX').timestamp).toBe('2026-10-15T10:00:00+08:00')
+    sockets[0].onmessage({data:JSON.stringify({type:'tick',symbol:'FIX',last:101})})
+    vi.advanceTimersByTime(100)
+    expect(watch.getTick('FIX').source).toBe('unknown')
+    expect(watch.getTick('FIX').timestamp).toBe('')
+  } finally {scope.stop()}
+})
+
 test('failed account refresh retains the last snapshot and displays stale state',async()=>{
   const {useOrderBookWs}=await import('@/composables/useOrderBookWs.js')
   sessionStorage.setItem('quant_session_active','1')

@@ -57,7 +57,7 @@
       <!-- 热门品种 -->
       <div class="discover-section">
         <div class="ds-label">
-          <span class="ds-icon">🔥</span>热门品种
+          <span class="ds-icon">⌕</span>合约目录（非成交量排名）
         </div>
         <div class="hot-grid">
           <button

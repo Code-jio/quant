@@ -1,5 +1,5 @@
 <script setup>
-import { computed, watch, defineAsyncComponent } from 'vue'
+import { computed, watch, defineAsyncComponent, ref, onUnmounted } from 'vue'
 import { useWatchWs } from '@/composables/useWatchWs.js'
 import { useWatchStore } from '@/stores/watch.js'
 import KlineSkeleton from '@/components/KlineSkeleton.vue'
@@ -15,6 +15,18 @@ watch(() => props.contract?.symbol, (current, previous) => {
   if (current) stream.subscribe(current, ['tick'])
 }, { immediate: true })
 const price = value => Number(value) > 0 ? String(value) : '—'
+const now = ref(Date.now())
+const ageTimer = setInterval(() => { now.value = Date.now() }, 1000)
+onUnmounted(() => clearInterval(ageTimer))
+const quoteAge = computed(() => {
+  const stamp = Date.parse(tick.value.timestamp || '')
+  if (!Number.isFinite(stamp)) return '行情时间未知'
+  const seconds = Math.floor((now.value - stamp) / 1000)
+  if (seconds < -5) return '行情时间超前'
+  return seconds < 60 ? `距行情 ${Math.max(0, seconds)} 秒` : `距行情 ${Math.floor(seconds / 60)} 分钟`
+})
+const quoteSource = computed(() => tick.value.source === 'vnpy' ? 'vn.py 柜台回报'
+  : tick.value.source === 'unknown' ? '来源未标注' : `来源：${tick.value.source}`)
 </script>
 
 <template>
@@ -23,14 +35,14 @@ const price = value => Number(value) > 0 ? String(value) : '—'
       <button class="market-contract" @click="$emit('search')"><strong>{{ contract?.symbol || '选择交易合约' }}</strong><span>{{ contract?.name || '搜索代码或名称' }}</span><el-icon><ArrowDown /></el-icon></button>
       <button v-if="contract" class="market-star" :aria-label="store.isWatched(contract.symbol) ? '移出自选' : '加入自选'" :aria-pressed="store.isWatched(contract.symbol)" @click="store.toggleWatchList(contract)"><el-icon><StarFilled v-if="store.isWatched(contract.symbol)" /><Star v-else /></el-icon></button>
       <span class="market-exchange">{{ contract?.exchange || '—' }}</span>
-      <span class="market-channel" :class="{ connected: stream.connected.value }">{{ stream.connected.value ? '行情通道已连接' : '行情通道未连接' }}</span>
+      <span class="market-channel" :class="{ connected: stream.connected.value }">{{ stream.connected.value ? '行情推送已连接' : '行情推送未连接' }} · {{ quoteSource }}</span>
     </div>
     <div class="market-quote" aria-label="当前合约报价快照">
       <div class="last-quote"><span>最新价 · 快照</span><strong>{{ price(tick.last) }}</strong></div>
       <div><span>买一 / 量</span><strong>{{ price(tick.bid1) }} <small>/ {{ tick.bid1 > 0 ? tick.bid1Vol : '—' }}</small></strong></div>
       <div><span>卖一 / 量</span><strong>{{ price(tick.ask1) }} <small>/ {{ tick.ask1 > 0 ? tick.ask1Vol : '—' }}</small></strong></div>
       <div class="quote-range"><span>最高 / 最低</span><strong>{{ price(tick.high) }} <small>/ {{ price(tick.low) }}</small></strong></div>
-      <div class="quote-time"><span>行情时间</span><strong>{{ tick.time || '等待报价' }}</strong></div>
+      <div class="quote-time" :title="tick.timestamp || ''"><span>{{ quoteAge }}</span><strong>{{ tick.time || '等待报价' }}</strong></div>
     </div>
     <div v-if="!contract" class="market-empty"><el-icon><TrendCharts /></el-icon><h1>选择合约，开始交易</h1><p>查看行情、填写委托、跟踪成交，都在这一屏。</p><button @click="$emit('search')">搜索合约 <kbd>Ctrl K</kbd></button></div>
     <KlineChart v-else :symbol="contract.symbol" :name="contract.name || ''" :default-limit="500" />

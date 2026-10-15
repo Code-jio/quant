@@ -63,6 +63,8 @@ function emptyTick(symbol = '') {
     change:     0,
     changeRate: 0,
     time:       '',
+    timestamp:  '',
+    source:     'unknown',
     updatedAt:  0,
   }
 }
@@ -255,6 +257,8 @@ function _handleMessage(raw) {
         change:     msg.change       ?? prev.change,
         changeRate: msg.change_rate  ?? prev.changeRate,
         time:       msg.time         ?? prev.time,
+        timestamp:  msg.timestamp    ?? '',
+        source:     msg.source       ?? 'unknown',
         updatedAt:  Date.now(),
       }
 
