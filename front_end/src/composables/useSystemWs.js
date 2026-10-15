@@ -13,6 +13,7 @@
  */
 
 import { ref, reactive, onMounted, onUnmounted } from 'vue'
+import { finiteAmount } from '@/utils/financialData.js'
 import { buildWsUrl } from '@/config/network.js'
 
 const RECONNECT_BASE  = 3_000   // 初始重连延迟 3s
@@ -23,9 +24,11 @@ export function useSystemWs(url = buildWsUrl('/ws/system')) {
   const connected = ref(false)
 
   const data = reactive({
-    totalPnl:          0,
-    returnRate:        0,     // 已是百分比值，如 0.85 表示 0.85%
-    balance:           0,
+    totalPnl:          null,
+    positionPnl:       null,
+    accountKnown:      false,
+    returnRate:        null,     // 已是百分比值，如 0.85 表示 0.85%
+    balance:           null,
     cpuPercent:        0,
     memoryPercent:     0,
     activeStrategies:  0,
@@ -52,9 +55,11 @@ export function useSystemWs(url = buildWsUrl('/ws/system')) {
       const msg = JSON.parse(event.data)
       if (msg.type !== 'system_status') return
 
-      data.totalPnl          = msg.total_pnl          ?? data.totalPnl
-      data.returnRate        = msg.return_rate        ?? data.returnRate
-      data.balance           = msg.balance            ?? data.balance
+      data.accountKnown = msg.account_known === true
+      data.positionPnl = msg.account_known === true ? finiteAmount(msg.position_pnl) : null
+      data.totalPnl          = msg.account_known === true ? finiteAmount(msg.total_pnl) : null
+      data.returnRate        = msg.account_known === true ? finiteAmount(msg.return_rate) : null
+      data.balance           = msg.account_known === true ? finiteAmount(msg.balance) : null
       data.cpuPercent        = msg.cpu_percent        ?? data.cpuPercent
       data.memoryPercent     = msg.memory_percent     ?? data.memoryPercent
       data.activeStrategies  = msg.active_strategies  ?? data.activeStrategies
@@ -109,6 +114,8 @@ export function useSystemWs(url = buildWsUrl('/ws/system')) {
 
     ws.onclose = (e) => {
       connected.value = false
+      data.accountKnown = false
+      data.totalPnl = data.positionPnl = data.returnRate = data.balance = null
       stopHeartbeat()
       if (!destroyed && e.code!==1008) {
         console.warn(`[useSystemWs] 连接断开 (code=${e.code})，${reconnectDelay / 1000}s 后重连`)

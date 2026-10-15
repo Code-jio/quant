@@ -4,15 +4,15 @@ import { useDashboardWs } from '@/composables/useDashboardWs.js'
 
 defineEmits(['details'])
 const { connected, data } = useDashboardWs()
-const hasSnapshot = computed(() => Boolean(data.timestamp))
+const hasSnapshot = computed(() => data.accountKnown)
 const number = (value, digits = 2) => hasSnapshot.value && value != null && Number.isFinite(Number(value))
   ? Number(value).toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : '—'
 const metrics = computed(() => [
   { label: '账户余额', value: number(data.balance) },
   { label: '可用资金', value: number(data.available), primary: true },
   { label: '占用保证金', value: number(data.margin) },
-  { label: '浮动盈亏', value: number(data.totalPnl), tone: data.totalPnl > 0 ? 'positive' : data.totalPnl < 0 ? 'negative' : '' },
-  { label: '仓位暴露', value: hasSnapshot.value ? `${number(data.exposurePct)}%` : '—' },
+  { label: '浮动盈亏', value: number(data.positionPnl), tone: data.positionPnl > 0 ? 'positive' : data.positionPnl < 0 ? 'negative' : '' },
+  { label: '成本敞口/权益', value: hasSnapshot.value && data.exposurePct != null ? `${number(data.exposurePct)}%` : '—' },
 ])
 </script>
 
@@ -20,10 +20,10 @@ const metrics = computed(() => [
   <section class="account-strip" aria-label="账户资金概览">
     <div class="account-identity">
       <div><span class="account-dot" :class="{ online: connected && hasSnapshot }" />{{ hasSnapshot ? data.accountId : '等待账户快照' }}</div>
-      <span>{{ connected ? (hasSnapshot ? '账户推送已连接' : '账户数据同步中') : (hasSnapshot ? '连接中断 · 保留上次快照' : '账户推送未连接') }}</span>
+      <span>{{ connected ? (hasSnapshot ? '柜台账户回报 · ' + (data.tradingDay || '交易日未知') : '柜台数据未就绪') : (hasSnapshot ? '连接中断 · 等待新快照' : '账户推送未连接') }}</span>
     </div>
     <div v-for="metric in metrics" :key="metric.label" class="account-metric" :class="{ primary: metric.primary }">
-      <span>{{ metric.label }}<small v-if="metric.label !== '仓位暴露'"> / 元</small></span>
+      <span>{{ metric.label }}<small v-if="metric.label !== '成本敞口/权益'"> / 元</small></span>
       <strong :class="metric.tone">{{ metric.value }}</strong>
     </div>
     <button class="account-details" @click="$emit('details')">资金分析 <span aria-hidden="true">↗</span></button>

@@ -34,6 +34,7 @@ REST API 模块 - FastAPI + WebSocket + 身份认证
 import asyncio
 import json as _json
 import logging
+import math
 import os
 import threading
 import time
@@ -643,6 +644,8 @@ class TradingState:
     # ── 权益曲线历史 ──────────────────────────────────────────────────────────
     def push_equity(self, pnl: float, balance: float, *, generation=None) -> bool:
         """记录一个权益快照（每秒由广播循环调用）。"""
+        if _finite_number(pnl) is None or _finite_number(balance) is None:
+            return False
         ts = datetime.now().isoformat(timespec="seconds")
         with self._lock:
             if generation is not None and generation != self._generation:
@@ -1015,15 +1018,44 @@ async def _wait_for_gateway_ticks(
         await asyncio.sleep(0.1)
 
 
+def _finite_number(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if math.isfinite(value) else None
+
+
+def _account_metrics(engine) -> dict:
+    """Only complete, ready gateway account reports are financial observations."""
+    fields = ("balance", "available", "margin", "commission", "position_pnl", "total_pnl")
+    result = dict.fromkeys(fields)
+    result.update(account_id="", account_known=False, account_source="unavailable", trading_day="",
+                  return_rate=None, today_return=None, initial_capital=None)
+    if engine is None:
+        return result
+    try:
+        gw = engine.gateway
+        account = engine.get_account()
+        connected = gw.status in (TradingStatus.CONNECTED, TradingStatus.TRADING)
+        values = {key: _finite_number(getattr(account, key, None)) for key in fields}
+        if (not connected or not getattr(gw, "ready", connected) or account.error_msg
+                or not account.account_id or not account.fields_known
+                or any(value is None for value in values.values())):
+            return result
+        result.update({key: round(value, 2) for key, value in values.items()})
+        result.update(account_id=account.account_id, account_known=True, account_source="gateway",
+                      trading_day=account.trading_day)
+    except Exception:
+        pass
+    return result
+
+
 def _build_system_snapshot() -> dict:
     engine = trading_state.primary_engine()
     market_connected = False
     td_connected = False
     gateway_status = TradingStatus.STOPPED.value
     gateway_name = "N/A"
-    total_pnl = 0.0
-    balance = 0.0
-    initial_capital = 1_000_000.0
+    account_metrics = _account_metrics(engine)
 
     if engine is not None:
         gw = engine.gateway
@@ -1033,24 +1065,6 @@ def _build_system_snapshot() -> dict:
         connection = getattr(gw, "connection_state", {})
         td_connected = connection.get("td", td_connected)
         market_connected = connection.get("md", td_connected)
-        try:
-            account = engine.get_account()
-            if not account.error_msg:
-                total_pnl = account.total_pnl
-                balance = account.balance
-        except Exception:
-            pass
-
-    if total_pnl == 0.0:
-        total_pnl = sum(_calc_strategy_pnl(e) for e in trading_state.all_entries())
-
-    for entry in trading_state.all_entries():
-        initial_capital = entry.config.get("initial_capital", 1_000_000.0)
-        break
-    if trading_state._main_config:
-        initial_capital = trading_state._main_config.get("initial_capital", initial_capital)
-
-    return_rate = (total_pnl / initial_capital * 100) if initial_capital else 0.0
     active_count = sum(1 for e in trading_state.all_entries() if e.status == "running")
 
     # 网关延迟：上次回调距今毫秒数（0 = 尚未收到任何回调）
@@ -1078,9 +1092,7 @@ def _build_system_snapshot() -> dict:
         "network_send_bps": send_bps,
         "network_recv_bps": recv_bps,
         "active_strategies": active_count,
-        "total_pnl": round(total_pnl, 2),
-        "return_rate": round(return_rate, 4),
-        "balance": round(balance, 2),
+        **account_metrics,
     }
 
 
@@ -1095,8 +1107,8 @@ async def _system_broadcast_loop():
             generation = trading_state.generation
             snapshot = _build_system_snapshot()
             # 同步记录到权益历史（夏普/回撤计算用）
-            recorded = trading_state.push_equity(snapshot["total_pnl"], snapshot["balance"], generation=generation)
-            if recorded and system_manager.count > 0:
+            trading_state.push_equity(snapshot["total_pnl"], snapshot["balance"], generation=generation)
+            if system_manager.count > 0:
                 await system_manager.broadcast(snapshot, generation=generation)
         except Exception as exc:
             logger.warning(f"[WS:system] 广播异常: {exc}")
@@ -1109,95 +1121,76 @@ async def _system_broadcast_loop():
 
 
 def _build_dashboard_metrics() -> dict:
-    """计算实时 PnL、收益率、夏普比率、最大回撤、仓位概览。"""
+    """Broker observations and explicitly named local monitoring calculations."""
     engine = trading_state.primary_engine()
-    total_pnl = 0.0
-    balance = 0.0
-    available = 0.0
-    margin = 0.0
-    account_id = ""
-    initial_capital = trading_state._main_config.get("initial_capital", 1_000_000.0)
+    account = _account_metrics(engine)
+    balance = account["balance"]
+    baseline = _finite_number(trading_state._day_open_balance)
+    session_change = None
+    if balance is not None and baseline is not None and baseline > 0:
+        session_change = round((balance - baseline) / baseline * 100, 4)
 
-    if engine:
-        try:
-            account = engine.get_account()
-            if not account.error_msg:
-                total_pnl = account.total_pnl
-                balance = account.balance
-                available = account.available
-                margin = getattr(account, "margin", 0.0)
-                account_id = account.account_id
-        except Exception:
-            pass
-
-    # 如果网关无数据，降级为策略层汇总
-    if total_pnl == 0.0:
-        total_pnl = sum(_calc_strategy_pnl(e) for e in trading_state.all_entries())
-
-    # 收益率
-    return_rate = total_pnl / initial_capital * 100 if initial_capital else 0.0
-    day_open = trading_state._day_open_balance or initial_capital
-    today_return = (balance - day_open) / day_open * 100 if day_open > 0 else return_rate
-
-    # 持仓列表
+    positions_known = bool(engine and account["account_known"]
+                           and getattr(engine.gateway, "connection_state", {}).get("positions", True))
     positions_list: list = []
-    if engine:
-        for symbol, pos in engine.gateway.positions.items():
-            if getattr(pos, "volume", 0) != 0:
-                positions_list.append(
-                    {
-                        "symbol": symbol,
-                        "direction": pos.direction.value if hasattr(pos.direction, "value") else str(pos.direction),
-                        "volume": abs(pos.volume),
-                        "cost": round(getattr(pos, "cost", 0.0), 2),
-                        "pnl": round(getattr(pos, "pnl", 0.0), 2),
-                    }
-                )
+    if positions_known:
+        gw = engine.gateway
+        for pos in list(gw.positions.values()):
+            volume = _finite_number(getattr(pos, "volume", None))
+            if volume == 0:
+                continue
+            cost = _finite_number(getattr(pos, "cost", None))
+            size = _finite_number(getattr(gw, "contract_specs", {}).get(pos.symbol, {}).get("size"))
+            notional = None
+            if volume is not None and cost is not None and cost > 0 and size is not None and size > 0:
+                notional = round(abs(volume) * cost * size, 2)
+            positions_list.append({
+                "symbol": pos.symbol,
+                "direction": pos.direction.value if hasattr(pos.direction, "value") else str(pos.direction),
+                "volume": abs(volume) if volume is not None else None,
+                "cost": cost,
+                "pnl": _finite_number(getattr(pos, "pnl", None)),
+                "contract_size": size,
+                "notional": notional,
+            })
+    exposure_known = positions_known and all(p["notional"] is not None for p in positions_list)
+    total_exposure = sum(p["notional"] for p in positions_list) if exposure_known else None
+    exposure_pct = (round(total_exposure / balance * 100, 2)
+                    if total_exposure is not None and balance is not None and balance > 0 else None)
 
-    total_exposure = sum(p["cost"] * p["volume"] for p in positions_list)
-    exposure_pct = total_exposure / balance * 100 if balance > 0 else 0.0
-
-    # 夏普比率 / 最大回撤（滚动权益历史）
-    sharpe_ratio = None
-    max_drawdown_pct = 0.0
+    # Monitoring equity includes cash flows; it is not a cash-flow-adjusted investment return.
+    max_drawdown_pct = None
     equity_curve_data: list = []
-
-    curve = trading_state.get_equity_data()
+    curve = trading_state.get_equity_data() if account["account_known"] else []
     n = len(curve)
     if n >= 10:
         bal_arr = pd.Series([c["b"] for c in curve], dtype=float)
-
-        # Intraday snapshots are monitoring data, not independent daily returns.
-        # 最大回撤
         peak = bal_arr.cummax()
-        dd = (bal_arr - peak) / peak.replace(0, np.nan) * 100
-        max_drawdown_pct = float(abs(dd.min())) if not dd.empty else 0.0
-
-        # 权益曲线降采样（前端图表用，≤60 点）
-        step = max(1, n // 60)
-        equity_curve_data = [{"ts": c["ts"], "v": c["p"]} for c in curve[::step]][-60:]
-
-    active_cnt = sum(1 for e in trading_state.all_entries() if e.status == "running")
+        dd = (bal_arr - peak) / peak.where(peak > 0) * 100
+        if dd.notna().any():
+            max_drawdown_pct = round(float(abs(dd.min())), 3)
+        step = max(1, math.ceil(n / 60))
+        samples = curve[::step]
+        if samples[-1] is not curve[-1]:
+            samples = samples[-59:] + [curve[-1]]
+        equity_curve_data = [{"ts": c["ts"], "v": c["b"]} for c in samples]
 
     return {
         "type": "dashboard_metrics",
         "timestamp": datetime.now().isoformat(),
-        "account_id": account_id,
-        "total_pnl": round(total_pnl, 2),
-        "return_rate": round(return_rate, 4),
-        "today_return": round(today_return, 4),
-        "balance": round(balance, 2),
-        "available": round(available, 2),
-        "margin": round(margin, 2),
-        "initial_capital": round(initial_capital, 2),
-        "sharpe_ratio": sharpe_ratio,
-        "performance_note": "日内监控窗口；夏普需足够的日终权益样本",
-        "max_drawdown_pct": round(max_drawdown_pct, 3),
-        "total_exposure": round(total_exposure, 2),
-        "exposure_pct": round(exposure_pct, 2),
+        **account,
+        "session_start_balance": baseline if baseline is not None and baseline > 0 else None,
+        "session_balance_change_pct": session_change,
+        "sharpe_ratio": None,
+        "performance_note": "柜台持仓及平仓盈亏未扣手续费；会话权益变动及窗口回撤未剔除出入金；收益率和夏普缺少日终基准",
+        "max_drawdown_pct": max_drawdown_pct,
+        "total_exposure": total_exposure,
+        "exposure_pct": exposure_pct,
+        "exposure_basis": "cost_notional",
+        "positions_known": positions_known,
         "positions": positions_list,
         "equity_curve": equity_curve_data,
-        "active_strategies": active_cnt,
+        "active_strategies": sum(1 for e in trading_state.all_entries() if e.status == "running"),
     }
 
 
@@ -1802,7 +1795,8 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         stored_config = {k: v for k, v in config.items() if k not in {"password", "auth_code"}}
         trading_state.set_main_engine(engine, stored_config)
         session_store._credential = new_credential
-        trading_state._day_open_balance = engine.risk_manager.day_open_balance
+        # Monitoring baseline starts at the first valid session snapshot; risk keeps its own day baseline.
+        trading_state._day_open_balance = 0.0
         if strategy:
             stored_config.update(strategy_name=body.strategy_name, strategy_params=dict(body.strategy_params))
             trading_state.register(strategy_id, strategy, engine, stored_config)

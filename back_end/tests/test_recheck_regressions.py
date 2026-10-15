@@ -53,7 +53,7 @@ def test_account_transition_discards_old_equity(client, logout):
     metrics = client.get('/dashboard/metrics').json()
     assert metrics['account_id'] == 'B'
     assert metrics['max_drawdown_pct'] == 0
-    assert all(point['v'] == 0 for point in metrics['equity_curve'])
+    assert all(point['v'] == 10000 for point in metrics['equity_curve'])
 
 
 def test_late_account_snapshot_and_queued_broadcast_are_discarded(client):

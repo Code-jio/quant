@@ -58,7 +58,7 @@ test('independent devices join one account, restore tabs, leave individually and
     expect((await a.request.get('/api/system/status')).status()).toBe(401)
     expect((await b.request.get('/api/system/status')).status()).toBe(200)
     expect((await (await b.request.get('/api/auth/status')).json()).active_sessions).toBe(1)
-    await expect(b.locator('.account-identity')).toContainText('账户推送已连接')
+    await expect(b.locator('.account-identity')).toContainText('柜台账户回报')
 
     expect((await (await loginThroughPage(a)).json()).connection_reused).toBe(true)
     await expect(a.locator('.trading-desk')).toBeVisible()
