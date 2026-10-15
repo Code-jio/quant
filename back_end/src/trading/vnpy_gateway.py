@@ -177,6 +177,18 @@ class VnpyGateway(GatewayBase):
             self._event_engine = None
             self.status = TradingStatus.STOPPED
 
+    def validate_order(self, signal: Signal) -> None:
+        """Pure native contract validation; usable before creating an execution intent."""
+        spec = self.contract_specs.get(signal.symbol.split(".")[0], {})
+        tick = float(spec.get("pricetick") or 0)
+        unit = float(spec.get("min_volume", 1))
+        if not spec or signal.order_type != OrderType.LIMIT or not signal.validate():
+            raise ValueError("Only validated limit orders for known contracts are supported")
+        if (not isfinite(tick) or not isfinite(unit) or tick <= 0 or unit <= 0
+                or not unit.is_integer() or not isfinite(signal.price / tick)
+                or abs(signal.price / tick - round(signal.price / tick)) > 1e-7 or signal.volume % unit):
+            raise ValueError("Invalid contract price tick or minimum volume")
+
     def send_order(self, signal: Signal) -> str:
         """Send an order through vn.py."""
         if not self.ready:
@@ -184,14 +196,7 @@ class VnpyGateway(GatewayBase):
             return ""
         if not self._main_engine:
             return ""
-
-        spec = self.contract_specs.get(signal.symbol.split(".")[0], {})
-        tick = float(spec.get("pricetick") or 0)
-        unit = int(spec.get("min_volume") or 1)
-        if not spec or signal.order_type != OrderType.LIMIT or not signal.validate():
-            raise ValueError("Only validated limit orders for known contracts are supported")
-        if tick <= 0 or abs(signal.price / tick - round(signal.price / tick)) > 1e-7 or signal.volume % unit:
-            raise ValueError("Invalid contract price tick or minimum volume")
+        self.validate_order(signal)
         from vnpy.trader.object import OrderRequest
 
         symbol, exchange = self._split_symbol(signal.symbol)

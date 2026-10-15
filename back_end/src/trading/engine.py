@@ -4,6 +4,7 @@
 
 import logging
 import os
+from copy import deepcopy
 from math import isfinite
 from datetime import datetime
 import traceback
@@ -170,69 +171,113 @@ class TradingEngine:
         with self.order_manager.lock:
             return self._send_signal_locked(signal)
 
+    def preflight(self, signal):
+        """Evaluate a snapshot without querying the broker or changing execution state."""
+        with self.order_manager.lock:
+            return self._evaluate_signal(signal)
+
+    def _evaluate_signal(self, signal):
+        checks = []
+
+        def check(key, label, passed, reason=""):
+            checks.append({"key": key, "label": label, "passed": bool(passed), "reason": reason})
+
+        account = deepcopy(self.gateway.account)
+        positions = deepcopy(self.gateway.positions)
+        orders = deepcopy([order for order in list(self.gateway.orders.values()) if order.is_active()])
+        # Risk checks prune rate-limit windows; run them on a copy even for previews.
+        risk = deepcopy(self.risk_manager)
+        if self.ledger and account.trading_day:
+            baseline = self.ledger.read_day_baseline(account.trading_day)
+            risk.set_day_open_balance(account.balance if baseline is None else baseline)
+        connected = self.gateway.status in (TradingStatus.CONNECTED, TradingStatus.TRADING)
+        check("connection", "交易连接", connected, "" if connected else "Trading engine is not connected")
+        ready = bool(getattr(self.gateway, "ready", connected))
+        check("snapshot", "账户快照", ready, "" if ready else "Gateway snapshot is not ready")
+        valid = signal.validate()
+        check("parameters", "订单参数", valid, "" if valid else "Invalid order parameters")
+
+        live_specs = getattr(self.gateway, "contract_specs", None)
+        symbols = {signal.symbol, *(order.symbol for order in orders)}
+        specs = {symbol: deepcopy(live_specs.get(symbol, {})) for symbol in symbols} if live_specs is not None else None
+        spec = specs.get(signal.symbol, {}) if specs is not None else {}
+        contract_reason = ""
+        if specs is not None:
+            try:
+                size = float(spec.get("size", 0))
+                if not isfinite(size) or size <= 0:
+                    raise ValueError("Contract metadata is unavailable")
+                risk.config.contract_multipliers[signal.symbol] = size
+            except (TypeError, ValueError):
+                contract_reason = "Contract metadata is unavailable"
+        validator = getattr(self.gateway, "validate_order", None)
+        if callable(validator) and valid and not contract_reason:
+            try:
+                validator(signal)
+            except (TypeError, ValueError, OverflowError) as exc:
+                contract_reason = str(exc)
+        check("contract", "合约规格", not contract_reason, contract_reason)
+
+        available = account.available if account.fields_known and isfinite(account.available) else None
+        margin = {"required": None, "reserved": None, "available": available, "remaining": None}
+        margin_reason = ""
+        opening = signal.offset.value == "open"
+        if specs is not None and opening and valid:
+            margin["required"] = self._margin_requirement(spec, signal.price, signal.volume, account.trading_day)
+            reservations = [
+                self._margin_requirement(specs.get(o.symbol, {}), o.price,
+                                         max(0, o.volume - o.traded_volume), account.trading_day)
+                for o in orders if o.is_active() and o.offset.value == "open"
+            ]
+            if all(value is not None for value in reservations):
+                reserved = sum(reservations)
+                margin["reserved"] = reserved if isfinite(reserved) else None
+            if margin["required"] is None or available is None:
+                margin_reason = "Broker margin rate/account fields must be verified before opening"
+            elif margin["reserved"] is None:
+                margin_reason = "Active order margin metadata must be verified before opening"
+            else:
+                margin["remaining"] = available - margin["required"] - margin["reserved"]
+                if margin["remaining"] < 0:
+                    margin_reason = "Insufficient available margin after reservations"
+        check("margin", "开仓保证金", not margin_reason, margin_reason)
+        unresolved = bool(self.missing_order_replays or (self.ledger and self.ledger.unresolved()))
+        check("reconciliation", "执行记录", not unresolved,
+              "Unresolved execution intent requires reconciliation" if unresolved else "")
+        if valid:
+            result = risk.check_signal(signal, positions=positions, active_orders=orders,
+                                       account=account, market_data=self._market_data_for_symbol(signal.symbol))
+            check("risk", "风控规则", result.allowed, result.reason)
+        blocked = [item for item in checks if not item["passed"]]
+        return {
+            "allowed": not blocked, "snapshot_only": True,
+            "checked_at": datetime.now().astimezone().isoformat(), "trading_day": account.trading_day,
+            "reason": blocked[0]["reason"] if blocked else "", "checks": checks, "margin": margin,
+            "close_available": risk.close_available(signal, positions, orders) if valid and not opening else None,
+        }
+
     def _send_signal_locked(self, signal: "Signal") -> str:
         """发送交易信号"""
         self.last_reject_reason = ""
-        if self.status not in (TradingStatus.TRADING, TradingStatus.CONNECTED):
-            # 也检查网关状态，允许网关已连接但引擎未正式 start 的场景（手动交易）
-            if self.gateway.status not in (TradingStatus.CONNECTED, TradingStatus.TRADING):
-                logger.warning("交易引擎未连接")
-                self.last_reject_reason = "Trading engine is not connected"
-                return ""
-
         try:
             account = self.gateway.account
             if self.ledger and account.trading_day:
                 self.risk_manager.set_day_open_balance(self.ledger.day_baseline(account.trading_day, account.balance))
-            specs = getattr(self.gateway, "contract_specs", None)
-            if specs is not None:
-                query_margin = getattr(self.gateway, "request_margin_rate", None)
-                if signal.offset.value == "open" and callable(query_margin):
-                    try:
-                        query_margin(signal.symbol)
-                    except ValueError as exc:
-                        self.last_reject_reason = str(exc)
-                        return ""
-                spec = specs.get(signal.symbol, {})
-                if not spec or not spec.get("size"):
-                    self.last_reject_reason = "Contract metadata is unavailable"
-                    return ""
-                self.risk_manager.config.contract_multipliers[signal.symbol] = spec["size"]
-                if signal.offset.value == "open":
-                    required = self._margin_requirement(spec, signal.price, signal.volume)
-                    if required is None or not account.fields_known:
-                        self.last_reject_reason = "Broker margin rate/account fields must be verified before opening"
-                        return ""
-                    reservations = [
-                        self._margin_requirement(specs.get(o.symbol, {}), o.price, max(0, o.volume - o.traded_volume))
-                        for o in self.gateway.orders.values()
-                        if o.is_active() and o.offset.value == "open"
-                    ]
-                    if any(value is None for value in reservations):
-                        self.last_reject_reason = "Active order margin metadata must be verified before opening"
-                        return ""
-                    pending = sum(value for value in reservations if value is not None)
-                    if required + pending > account.available:
-                        self.last_reject_reason = "Insufficient available margin after reservations"
-                        return ""
-            if self.missing_order_replays or (self.ledger and self.ledger.unresolved()):
-                self.last_reject_reason = "Unresolved execution intent requires reconciliation"
+            query_margin = getattr(self.gateway, "request_margin_rate", None)
+            if signal.offset.value == "open" and callable(query_margin):
+                query_margin(signal.symbol)
+            evaluation = self._evaluate_signal(signal)
+            if not evaluation["allowed"]:
+                self.last_reject_reason = evaluation["reason"]
+                logger.warning("风控拒单: %s", self.last_reject_reason)
                 return ""
-            risk_result = self.risk_manager.check_signal(
-                signal,
-                positions=self.gateway.positions,
-                active_orders=self.gateway.orders.values(),
-                account=getattr(self.gateway, "account", None),
-                market_data=self._market_data_for_symbol(signal.symbol),
-            )
-            if not risk_result.allowed:
-                self.last_reject_reason = risk_result.reason
-                logger.warning(f"风控拒单: {risk_result.reason}")
-                return ""
+        except Exception as exc:
+            # Nothing has been dispatched yet: do not invent an unknown broker outcome.
+            self.last_reject_reason = f"Pre-order validation failed: {exc}"
+            logger.warning(self.last_reject_reason)
+            return ""
 
-            if hasattr(self.gateway, "ready") and not self.gateway.ready:
-                self.last_reject_reason = "Gateway snapshot is not ready"
-                return ""
+        try:
             identity = self.ledger.begin_intent(signal) if self.ledger else None
             order_id = self.order_manager._submit_validated(signal)
             if self.ledger:
@@ -255,8 +300,13 @@ class TradingEngine:
             return ""
 
     @staticmethod
-    def _margin_requirement(spec, price, volume):
+    def _margin_requirement(spec, price, volume, trading_day=None):
         try:
+            if spec.get("margin_source") == "ctp_query":
+                updated = datetime.fromisoformat(spec["margin_updated_at"])
+                age = (datetime.now(updated.tzinfo) - updated).total_seconds()
+                if spec.get("margin_trading_day") != trading_day or not -5 <= age < 1800:
+                    return None
             rate = float(spec["margin_rate"])
             fixed = float(spec.get("margin_per_lot", 0))
             size = float(spec["size"])
@@ -264,7 +314,8 @@ class TradingEngine:
             if not all(isfinite(value) for value in values) or not 0 <= rate <= 1 or fixed < 0 or size <= 0:
                 return None
             unit = price * size * rate + fixed
-            return unit * volume if price > 0 and volume >= 0 and unit > 0 else None
+            total = unit * volume
+            return total if price > 0 and volume >= 0 and unit > 0 and isfinite(total) else None
         except (KeyError, TypeError, ValueError):
             return None
 

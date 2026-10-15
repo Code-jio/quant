@@ -142,6 +142,10 @@ export const cancelOrder = (orderId) =>
 export const placeOrder = (body) =>
   request('/orders', { method: 'POST', body: JSON.stringify(body) })
 
+/** 只读快照检查，不发送委托；实际下单仍由后端重新校验。 */
+export const preflightOrder = (body) =>
+  request('/orders/preflight', { method: 'POST', body: JSON.stringify(body) })
+
 /** 一键撤销所有活跃委托 */
 export const cancelAllOrders = () =>
   request('/orders/cancel-all', { method: 'POST' })

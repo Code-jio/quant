@@ -70,6 +70,9 @@ test('desktop desk keeps market ticket and order book in one screen', async ({ p
 test('contract linking clears the old limit price and trading actions retain confirmation', async ({ page }) => {
   await page.setViewportSize({ width: 1920, height: 1080 })
   const requests = []
+  await page.route('**/api/orders/preflight', route => route.fulfill({ json: {
+    allowed: true, snapshot_only: true, checks: [], margin: { required: 123.45 },
+  } }))
   await page.route('**/api/trading/**', route => {
     if (route.request().method() !== 'GET') {
       requests.push(route.request().url())

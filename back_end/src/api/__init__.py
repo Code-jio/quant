@@ -2224,6 +2224,27 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
 
     # ── 手动交易端点 ──────────────────────────────────────────────────────────
 
+    def manual_order_signal(body):
+        symbol = _clean_manual_symbol(body.symbol)
+        _, direction = _normalize_choice(body.direction, _MANUAL_DIRECTION_MAP, "买卖方向")
+        offset_name, offset = _normalize_choice(body.offset, _MANUAL_OFFSET_MAP, "开平方向")
+        _, order_type = _normalize_choice(body.order_type, _MANUAL_ORDER_TYPE_MAP, "订单类型")
+        return Signal(symbol=symbol, datetime=datetime.now(), direction=direction,
+                      price=_manual_order_price(order_type, body.price), volume=_positive_volume(body.volume),
+                      order_type=order_type, offset=offset, comment=f"manual_{offset_name}")
+
+    @app.post("/orders/preflight", summary="只读下单前检查", tags=["手动交易"])
+    def preflight_manual_order(body: ManualOrderRequest):
+        engine = trading_state.primary_engine()
+        if engine is None:
+            raise HTTPException(status_code=503, detail="交易引擎未连接")
+        signal = manual_order_signal(body)
+        result = engine.preflight(signal)
+        result["order"] = {"symbol": signal.symbol, "direction": signal.direction.value,
+                           "offset": signal.offset.value, "price": signal.price, "volume": signal.volume,
+                           "order_type": signal.order_type.value}
+        return result
+
     @app.post("/orders", summary="手动下单", tags=["手动交易"])
     def place_manual_order(body: ManualOrderRequest, request: Request):
         """
@@ -2239,12 +2260,7 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             raise HTTPException(status_code=503, detail="交易引擎未连接")
 
         try:
-            symbol = _clean_manual_symbol(body.symbol)
-            direction_name, direction = _normalize_choice(body.direction, _MANUAL_DIRECTION_MAP, "买卖方向")
-            offset_name, offset = _normalize_choice(body.offset, _MANUAL_OFFSET_MAP, "开平方向")
-            order_type_name, order_type = _normalize_choice(body.order_type, _MANUAL_ORDER_TYPE_MAP, "订单类型")
-            volume = _positive_volume(body.volume)
-            price = _manual_order_price(order_type, body.price)
+            signal = manual_order_signal(body)
         except HTTPException as exc:
             _record_audit(
                 "order",
@@ -2256,16 +2272,8 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
             )
             raise
 
-        signal = Signal(
-            symbol=symbol,
-            datetime=datetime.now(),
-            direction=direction,
-            price=price,
-            volume=volume,
-            order_type=order_type,
-            offset=offset,
-            comment=f"manual_{offset_name}",
-        )
+        symbol, price, volume = signal.symbol, signal.price, signal.volume
+        direction_name, offset_name, order_type_name = signal.direction.value, signal.offset.value, signal.order_type.value
 
         try:
             order_id = engine.send_signal(signal)

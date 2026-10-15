@@ -253,6 +253,8 @@ class RiskManager:
         self._order_timestamps.append(now)
         self._prune_order_timestamps(now)
         if signal is not None:
+            cutoff = now - self.config.duplicate_signal_window_seconds
+            self._recent_signal_timestamps = {key: ts for key, ts in self._recent_signal_timestamps.items() if ts >= cutoff}
             self._recent_signal_timestamps[self._signal_key(signal)] = now
 
     def _check_order_rate(self) -> RiskCheckResult:
@@ -392,7 +394,8 @@ class RiskManager:
         if timestamp is None:
             return None
         if isinstance(timestamp, (int, float)):
-            return max(0.0, time.time() - float(timestamp))
+            age = time.time() - float(timestamp)
+            return max(0.0, age) if math.isfinite(age) and age >= -5 else None
         if isinstance(timestamp, str):
             try:
                 timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
@@ -400,7 +403,9 @@ class RiskManager:
                 return None
         if isinstance(timestamp, datetime):
             now = datetime.now(timestamp.tzinfo) if timestamp.tzinfo else datetime.now()
-            return max(0.0, (now - timestamp).total_seconds())
+            age = (now - timestamp).total_seconds()
+            # Small clock skew is tolerated; a future quote is not fresh data.
+            return max(0.0, age) if age >= -5 else None
         return None
 
     @staticmethod

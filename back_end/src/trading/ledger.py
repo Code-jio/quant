@@ -123,6 +123,14 @@ class ExecutionLedger:
                 "SELECT id FROM intents WHERE account=? AND state='pending'", (self.account_id,)
             ).fetchall()
 
+    def read_day_baseline(self, day):
+        """Read without initializing a new trading day's baseline."""
+        with self.lock:
+            row = self.db.execute(
+                "SELECT balance FROM baselines WHERE account=? AND day=?", (self.account_id, day)
+            ).fetchone()
+        return row[0] if row else None
+
     def day_baseline(self, day, balance):
         if not day or balance <= 0:
             return 0
