@@ -765,6 +765,10 @@ _ROOT_INDEX: dict[str, dict] = {p["root"].lower(): p for p in _CATALOG}
 
 
 def search_contracts(query: str, exchange: Optional[str] = None, limit: int = 50, contracts=None) -> list[dict]:
+    return matching_contracts(query, exchange, contracts)[: max(1, min(limit, 200))]
+
+
+def matching_contracts(query: str, exchange: Optional[str] = None, contracts=None) -> list[dict]:
     """Search domestic futures returned by the gateway; never manufacture contracts."""
     rows = []
     query = query.strip().lower()
@@ -776,11 +780,12 @@ def search_contracts(query: str, exchange: Optional[str] = None, limit: int = 50
         name = spec.get("name")
         if not name or name == symbol:
             name = product.get("name", symbol)
-        row = {**product, **spec, "symbol": symbol, "name": name}
+        row = {**product, **spec, "symbol": symbol, "name": name, "product_root": root.upper(),
+               "product_name": product.get("name", root.upper())}
         if exchange and str(row.get("exchange", "")).upper() != exchange.upper():
             continue
         searchable = [row.get(k, "") for k in ("symbol", "name", "pinyin")] + [product.get("name", "")]
         if query and not any(query in str(value).lower() for value in searchable):
             continue
         rows.append(row)
-    return sorted(rows, key=lambda r: r["symbol"])[: max(1, min(limit, 200))]
+    return sorted(rows, key=lambda r: (r["product_root"], r.get("expiry_date") or r["symbol"]))

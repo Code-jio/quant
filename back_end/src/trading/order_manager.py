@@ -10,6 +10,7 @@ from datetime import datetime
 from enum import Enum
 import uuid
 from dataclasses import dataclass, field
+from math import isfinite
 
 from ..strategy import Signal, Order, Trade, Direction, OrderType, OrderStatus, OffsetFlag
 
@@ -34,6 +35,9 @@ class PreOrderStatus(Enum):
     CANCELLED = "cancelled"  # 已取消
     EXPIRED = "expired"  # 已过期
     REJECTED = "rejected"  # 触发后被风控或柜台拒绝
+    PAUSED = "paused"  # 重启后等待人工复核
+    TRIGGERING = "triggering"  # 已持久化触发决定，发送结果尚未记录
+    UNKNOWN = "unknown"  # 不能自动重新触发
 
 
 class OrderManager:
@@ -42,6 +46,9 @@ class OrderManager:
     def __init__(self, gateway):  # 使用对象而非类型提示避免循环导入
         self.gateway = gateway
         self.dispatch_signal = None
+        self.ledger = None
+        self.has_unresolved = lambda: False
+        self.on_persistence_error = None
         self._replacements = {}
         self.lock = threading.RLock()
 
@@ -192,6 +199,7 @@ class OrderManager:
             pre_order_id = f"PRE_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8].upper()}"
             pre_order.pre_order_id = pre_order_id
             pre_order.status = PreOrderStatus.PENDING
+            self._persist(pre_order)
 
             self.pre_orders[pre_order_id] = pre_order
             self.active_pre_orders[pre_order_id] = pre_order
@@ -205,16 +213,17 @@ class OrderManager:
     def cancel_pre_order(self, pre_order_id: str) -> bool:
         """撤销预埋单"""
         with self.lock:
-            if pre_order_id not in self.active_pre_orders:
+            if pre_order_id not in self.pre_orders or self.pre_orders[pre_order_id].status not in (PreOrderStatus.PENDING, PreOrderStatus.PAUSED):
                 logger.warning(f"预埋单不存在或已失效: {pre_order_id}")
                 return False
 
-            pre_order = self.active_pre_orders[pre_order_id]
+            pre_order = self.pre_orders[pre_order_id]
             pre_order.status = PreOrderStatus.CANCELLED
             pre_order.update_time = datetime.now()
 
             # 从活跃列表移除
-            del self.active_pre_orders[pre_order_id]
+            self._persist(pre_order)
+            self.active_pre_orders.pop(pre_order_id, None)
 
             # 调用状态变化回调
             if self.on_pre_order_status_change:
@@ -279,6 +288,8 @@ class OrderManager:
 
         market = self.market_data[symbol]
         current_price = market.get("last_price", 0)
+        if not isfinite(current_price) or current_price <= 0:
+            return
 
         with self.lock:
             # 遍历活跃预埋单
@@ -293,13 +304,16 @@ class OrderManager:
 
             # 触发符合条件的预埋单
             for pre_order_id in to_trigger:
-                pre_order = self.active_pre_orders[pre_order_id]
+                pre_order = self.active_pre_orders.get(pre_order_id)
+                if pre_order is None:
+                    continue
                 self._trigger_pre_order(pre_order)
 
     def _should_trigger(self, pre_order: "PreOrder", current_price: float) -> bool:
         """判断预埋单是否应被触发"""
         if pre_order.expires_at and datetime.now() > pre_order.expires_at:
             pre_order.status = PreOrderStatus.EXPIRED
+            self._persist(pre_order)
             if pre_order.pre_order_id in self.active_pre_orders:
                 del self.active_pre_orders[pre_order.pre_order_id]
             if self.on_pre_order_status_change:
@@ -341,29 +355,32 @@ class OrderManager:
             return False
 
         if pre_order.direction == Direction.SHORT:
-            best_price = getattr(pre_order, "_trail_best_price", None)
+            best_price = pre_order.trail_best_price
             if best_price is None or current_price > best_price:
-                pre_order._trail_best_price = current_price
+                pre_order.trail_best_price = current_price
                 pre_order.trigger_price = current_price * (1 - trailing_pct / 100)
+                self._persist(pre_order)
                 return False
             return current_price <= pre_order.trigger_price
         else:
-            best_price = getattr(pre_order, "_trail_best_price", None)
+            best_price = pre_order.trail_best_price
             if best_price is None or current_price < best_price:
-                pre_order._trail_best_price = current_price
+                pre_order.trail_best_price = current_price
                 pre_order.trigger_price = current_price * (1 + trailing_pct / 100)
+                self._persist(pre_order)
                 return False
             return current_price >= pre_order.trigger_price
 
     def _trigger_pre_order(self, pre_order: "PreOrder"):
         """触发预埋单"""
         # 更新状态
-        pre_order.status = PreOrderStatus.TRIGGERED
+        pre_order.status = PreOrderStatus.TRIGGERING
         pre_order.update_time = datetime.now()
 
         # 从活跃列表移除
         if pre_order.pre_order_id in self.active_pre_orders:
             del self.active_pre_orders[pre_order.pre_order_id]
+        self._persist(pre_order)
 
         # 创建普通订单并提交
         signal = Signal(
@@ -374,14 +391,21 @@ class OrderManager:
             volume=pre_order.volume,
             order_type=pre_order.order_type or OrderType.LIMIT,
             offset=pre_order.offset,
-            comment=f"由预埋单触发: {pre_order.type.value}",
+            comment=f"由预埋单触发: {pre_order.pre_order_id} {pre_order.type.value}",
         )
 
         # 提交订单
-        order_id = self.submit_order(signal)
+        try:
+            order_id = self.submit_order(signal)
+        except Exception:
+            pre_order.status = PreOrderStatus.UNKNOWN
+            self._persist(pre_order)
+            raise
         pre_order.related_order_id = order_id
+        pre_order.status = PreOrderStatus.TRIGGERED
         if not order_id:
-            pre_order.status = PreOrderStatus.REJECTED
+            pre_order.status = PreOrderStatus.UNKNOWN if self.has_unresolved() else PreOrderStatus.REJECTED
+        self._persist(pre_order)
         completed = [key for key in self.pre_orders if key not in self.active_pre_orders]
         for key in completed[:-2000]:
             self.pre_orders.pop(key, None)
@@ -391,6 +415,44 @@ class OrderManager:
         # 调用状态变化回调
         if self.on_pre_order_status_change:
             self.on_pre_order_status_change(pre_order)
+
+    def _persist(self, order):
+        if self.ledger:
+            try:
+                self.ledger.save_pre_order(order)
+            except Exception:
+                if self.on_persistence_error:
+                    self.on_persistence_error()
+                raise
+
+    def attach_ledger(self, ledger):
+        with self.lock:
+            self.ledger = ledger
+            for data in ledger.pre_orders():
+                for key, kind in (("type", PreOrderType), ("direction", Direction), ("offset", OffsetFlag),
+                                  ("order_type", OrderType), ("status", PreOrderStatus)):
+                    data[key] = kind(data[key])
+                for key in ("create_time", "update_time", "expires_at"):
+                    if data.get(key):
+                        data[key] = datetime.fromisoformat(data[key])
+                order = PreOrder(**data)
+                if order.status == PreOrderStatus.PENDING:
+                    order.status = PreOrderStatus.PAUSED
+                elif order.status == PreOrderStatus.TRIGGERING:
+                    order.status = PreOrderStatus.UNKNOWN
+                self.pre_orders[order.pre_order_id] = order
+                self._persist(order)
+
+    def resume_pre_order(self, identity):
+        with self.lock:
+            order = self.pre_orders.get(identity)
+            if order is None or order.status != PreOrderStatus.PAUSED or self.has_unresolved():
+                raise ValueError("条件单尚未核对或发送结果未知，不能重新启用")
+            if order.expires_at and datetime.now() >= order.expires_at:
+                raise ValueError("条件单已过期")
+            order.status = PreOrderStatus.PENDING
+            self._persist(order)
+            self.active_pre_orders[identity] = order
 
     def _monitor_pre_orders(self):
         """监控线程 - 检查预埋单触发条件"""
@@ -431,6 +493,7 @@ class PreOrder:
     create_time: datetime = field(default_factory=datetime.now)
     update_time: datetime = field(default_factory=datetime.now)
     related_order_id: str = ""  # 关联的实际订单ID
+    trail_best_price: Optional[float] = None
 
     def __post_init__(self):
         reducing = self.type in {PreOrderType.STOP_LOSS, PreOrderType.TAKE_PROFIT, PreOrderType.TRAILING_STOP}

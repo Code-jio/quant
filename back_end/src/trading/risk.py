@@ -269,19 +269,29 @@ class RiskManager:
         self._order_timestamps = [ts for ts in self._order_timestamps if ts >= cutoff]
 
     def _check_daily_loss(self, account: Optional[AccountInfo]) -> RiskCheckResult:
+        baseline = self.day_open_balance
+        cashflow = 0.0
+        if account is not None and account.source == "ctp":
+            fields = (account.pre_balance, account.deposit, account.withdraw)
+            if any(value is None or not math.isfinite(value) or value < 0 for value in fields):
+                return RiskCheckResult(False, "Broker daily baseline/cash-flow fields are unavailable")
+            baseline = account.pre_balance
+            cashflow = account.deposit - account.withdraw
+            if baseline <= 0:
+                return RiskCheckResult(False, "Broker previous settlement balance must be positive")
         if self.config.require_account and (
             account is None
             or account.error_msg
             or not math.isfinite(account.balance)
             or account.balance <= 0
-            or self.day_open_balance <= 0
+            or baseline <= 0
         ):
             return RiskCheckResult(False, "Account or trading-day baseline is unavailable")
         if account is not None and (not math.isfinite(account.balance) or account.balance <= 0):
             return RiskCheckResult(False, "Account balance is unavailable or exhausted")
-        if self.config.max_daily_loss_ratio <= 0 or self.day_open_balance <= 0 or account is None:
+        if self.config.max_daily_loss_ratio <= 0 or baseline <= 0 or account is None:
             return RiskCheckResult(True)
-        loss_ratio = (self.day_open_balance - account.balance) / self.day_open_balance
+        loss_ratio = (baseline + cashflow - account.balance) / baseline
         if loss_ratio >= self.config.max_daily_loss_ratio:
             return RiskCheckResult(
                 False, f"Daily loss {loss_ratio:.1%} exceeds limit {self.config.max_daily_loss_ratio:.1%}"

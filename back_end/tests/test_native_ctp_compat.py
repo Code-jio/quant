@@ -52,3 +52,25 @@ def test_observer_captures_installed_margin_callbacks(native_gateway):
         {"kind": "margin", "query": "instrument", "data": payload, "error_id": 0, "reqid": 8, "last": False},
         {"kind": "margin", "query": "exchange", "data": {}, "error_id": 7, "reqid": 9, "last": True},
     ]
+
+
+def test_native_observer_preserves_instrument_lifecycle(native_gateway):
+    contracts: list = []
+    native_gateway.on_contract = contracts.append
+    install_observer(native_gateway, lambda _: None)
+    native_gateway.td_api.onRspQryInstrument({
+        "ProductClass": "1", "InstrumentID": "au2612", "ExchangeID": "SHFE", "InstrumentName": "fixture",
+        "VolumeMultiple": 1000, "PriceTick": .02, "MinLimitOrderVolume": 1, "MaxLimitOrderVolume": 500,
+        "IsTrading": True, "OpenDate": "20260101", "ExpireDate": "20261215",
+    }, {}, 1, False)
+    assert contracts[0].extra == {"IsTrading": True, "OpenDate": "20260101", "ExpireDate": "20261215"}
+
+
+def test_account_query_failure_and_reconcile_callbacks_are_structured(native_gateway):
+    events: list[dict] = []
+    install_observer(native_gateway, events.append)
+    native_gateway.td_api.onRspQryTradingAccount({}, {"ErrorID": 7}, 1, True)
+    native_gateway.td_api.onRspQryOrder({}, {}, 2, True)
+    native_gateway.td_api.onRspQryTrade({}, {}, 3, True)
+    assert events[0] == {"kind": "account", "ready": False}
+    assert [event["query"] for event in events[1:]] == ["orders", "trades"]

@@ -188,7 +188,11 @@ def test_gateway_timer_serializes_margin_and_account_queries(monkeypatch):
     gateway._on_timer(None)
     now[0] += 2
     gateway._on_timer(None)
+    assert [item[0] for item in requests] == ["account"]  # Wait for the actual callback.
+    gateway._on_snapshot(NS(data={"kind": "account", "ready": True}))
+    gateway._on_timer(None)
     now[0] += 2
+    gateway._on_snapshot(NS(data={"kind": "positions", "ready": True, "keys": []}))
     gateway._on_timer(None)
     assert [item[0] for item in requests] == ["account", "position", "instrument"]
     gateway._refresh_queue.append("account")
@@ -221,6 +225,9 @@ def test_many_margin_queries_do_not_starve_account_and_position_refresh(monkeypa
     for step in range(50):
         now[0] = 100.0 + 2 * step
         gateway._on_timer(None)
+        if gateway._refresh_pending:
+            kind = gateway._refresh_pending[0]
+            gateway._on_snapshot(NS(data={"kind": kind, "ready": True, "keys": []}))
         if book.pending:
             book.on_response(reply(reqid=td.reqid, InstrumentID=book.pending["symbol"]), gateway.trading_day)
             margin_count += 1

@@ -33,6 +33,7 @@
 import { ref, reactive, computed, getCurrentScope, onScopeDispose } from 'vue'
 import { useAlertConfig } from '@/composables/useAlertConfig.js'
 import { buildWsUrl } from '@/config/network.js'
+import { VolumeWindow } from '@/utils/volumeWindow.js'
 
 // ── 常量 ──────────────────────────────────────────────────────────────────
 const WS_PATH        = '/ws/watch'
@@ -41,7 +42,6 @@ const PONG_TIMEOUT   = 10_000   // pong 等待超时
 const RECONNECT_BASE = 1_000    // 初始重连延迟
 const RECONNECT_MAX  = 30_000   // 最大重连延迟
 const MAX_ALERTS     = 100      // 最多保留告警条数
-const MAX_TICK_HIST  = 50       // 每品种保留 tick 历史条数（用于均量计算）
 const TICK_FLUSH_MS  = 80       // tick 批量写入间隔，约 12 fps
 
 // ── 工厂：空 Tick 对象 ─────────────────────────────────────────────────────
@@ -153,14 +153,6 @@ function markAlertsRead() {
 }
 
 // ── 成交量均量更新 ──────────────────────────────────────────────────────────
-function _updateVolAvg(symbol, vol) {
-  if (!_volHistory[symbol]) _volHistory[symbol] = []
-  const hist = _volHistory[symbol]
-  hist.push(vol)
-  if (hist.length > MAX_TICK_HIST) hist.shift()
-  volAvg[symbol] = hist.reduce((s, v) => s + v, 0) / hist.length
-}
-
 // ── 价格异动检测 ────────────────────────────────────────────────────────────
 function _detectPrice(symbol, newTick, oldTick) {
   const { priceChangeThreshold, tickJumpThreshold } = alertCfg.config
@@ -188,15 +180,17 @@ function _detectPrice(symbol, newTick, oldTick) {
 }
 
 // ── 成交量异动检测 ──────────────────────────────────────────────────────────
-function _detectVolume(symbol, tick) {
+function _detectVolume(symbol, tick, tradingDay) {
   const { volSpikeMultiplier } = alertCfg.config
-  const avg = volAvg[symbol]
-  if (!avg || avg <= 0 || !tick.volume) return
-  const ratio = tick.volume / avg
+  const window = _volHistory[symbol] ??= new VolumeWindow()
+  const result = window.observe(tick.volume, Date.parse(tick.timestamp), tradingDay)
+  if (!result) return
+  const { average: avg, ratio, volume } = result
+  volAvg[symbol] = avg
   if (ratio >= volSpikeMultiplier) {
     _pushAlert({
       symbol, type: 'volume',
-      message: `${symbol} 成交量异常：${tick.volume} 手（均量 ${Math.round(avg)} 的 ${ratio.toFixed(1)}x）`,
+      message: `${symbol} 1秒成交量异常：${volume} 手（此前窗口均量 ${Math.round(avg)} 的 ${ratio.toFixed(1)}x）`,
       level:   ratio >= volSpikeMultiplier * 2 ? 'danger' : 'warning',
     })
   }
@@ -262,15 +256,13 @@ function _handleMessage(raw) {
         updatedAt:  Date.now(),
       }
 
-      const bufVol = _tickBuf[s].volume
-      if (bufVol > 0) _updateVolAvg(s, bufVol)
+      _detectVolume(s, _tickBuf[s], msg.trading_day || '')
 
       const now = _tickBuf[s].updatedAt
       // Throttle by the last check, not the last Tick: a busy feed must still be checked.
       if ((now - (_lastAlertCheck[s] ?? 0)) >= 500) {
         _lastAlertCheck[s] = now
         _detectPrice(s, _tickBuf[s], { last: oldLast })
-        _detectVolume(s, _tickBuf[s])
       }
       break
     }
@@ -418,6 +410,7 @@ function connect() {
   }
 
   ws.onclose = (e) => {
+    for (const key of Object.keys(_volHistory)) delete _volHistory[key]
     connected.value  = false
     connecting.value = false
     _stopHeartbeat()
@@ -455,6 +448,7 @@ function disconnect() {
 }
 
 function reconnect() {
+  for (const key of Object.keys(_volHistory)) delete _volHistory[key]
   destroyed  = false
   retryDelay = RECONNECT_BASE
   clearTimeout(reconnectTimer)

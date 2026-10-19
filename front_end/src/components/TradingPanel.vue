@@ -6,6 +6,7 @@
  */
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import RecoveryPanel from '@/components/RecoveryPanel.vue'
 import {
   placeOrder, cancelAllOrders, closePosition,
   fetchPositions, searchContracts, fetchTicks,
@@ -51,26 +52,30 @@ const CLOSE_OFFSET_OPTIONS = [
 const contractOptions = ref([])
 const searchLoading   = ref(false)
 let searchTimer = null
+let searchGeneration = 0
 
 function onSymbolSearch(query) {
+  const generation = ++searchGeneration
   if (searchTimer) clearTimeout(searchTimer)
   if (!query || query.length < 1) {
     contractOptions.value = []
+    searchLoading.value = false
     return
   }
   searchTimer = setTimeout(async () => {
     searchLoading.value = true
     try {
       const res = await searchContracts({ query, limit: 20 })
+      if (generation !== searchGeneration) return
       contractOptions.value = (res.data || []).map(c => ({
         value: c.symbol || c.code,
         label: `${c.symbol || c.code} - ${c.name || ''}`,
         contract: { ...c, symbol: c.symbol || c.code },
       }))
     } catch {
-      contractOptions.value = []
+      if (generation === searchGeneration) contractOptions.value = []
     } finally {
-      searchLoading.value = false
+      if (generation === searchGeneration) searchLoading.value = false
     }
   }, 300)
 }
@@ -418,6 +423,7 @@ onMounted(() => {
   riskTimer = setInterval(() => { loadRiskStatus(); loadMarginStatus(); loadPreflight() }, 5000)
 })
 onUnmounted(() => {
+  searchGeneration++
   marginRequest++
   preflightRequest++
   clearTimeout(preflightTimer)
@@ -444,6 +450,7 @@ onUnmounted(() => {
         <span v-if="reconcileState" class="c-muted">
           活跃委托 {{ reconcileState.orders?.active_count ?? 0 }}
         </span>
+        <RecoveryPanel />
         <el-button
           v-if="!emergencyActive"
           size="small"
@@ -633,7 +640,7 @@ onUnmounted(() => {
               <span>估算剩余 <strong>{{ money(preflightState.margin?.remaining) }}</strong></span>
             </div>
             <p v-else>可平数量：{{ preflightState.close_available ?? '未知' }} 手</p>
-            <p>检查时间 {{ preflightState.checked_at }}；快照不代表柜台受理。保证金按较高方向估算，活跃委托预留可能与柜台冻结重叠。</p>
+            <p>检查时间 {{ preflightState.checked_at }}；快照不代表柜台受理。保证金按较高方向估算。{{ preflightState.margin_method || '委托与资金回报顺序未知时保守预留，可能与柜台冻结重叠。' }}</p>
           </div>
           <el-button size="small" :loading="preflightLoading" :disabled="!canSubmit" @click="loadPreflight">刷新检查</el-button>
         </details>

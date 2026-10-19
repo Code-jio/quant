@@ -5,7 +5,8 @@ test('saved live API defaults allow account/password login without a contract',a
   page.on('pageerror',error=>errors.push(error.message))
   await page.goto('/login')
   await expect(page.getByPlaceholder('如 2071')).toHaveValue('E2E_BROKER')
-  await expect(page.locator('.subtitle')).toContainText('实盘 API')
+  await expect(page.locator('.subtitle').first()).toContainText('生产版 API')
+  await expect(page.locator('.subtitle').last()).toContainText('柜台环境待独立核验')
   await expect(page.getByText('tcp://127.0.0.1:1',{exact:false}).first()).toBeVisible()
   await expect(page.getByText('tcp://127.0.0.1:2',{exact:false}).first()).toBeVisible()
   await page.locator('.advanced-toggle').click()
@@ -13,7 +14,7 @@ test('saved live API defaults allow account/password login without a contract',a
   const authCode=page.getByPlaceholder('已在后端配置，留空使用')
   await expect(authCode).toHaveValue('')
   await expect(authCode).toHaveAttribute('type','password')
-  await expect(page.getByText('实盘（生产版 API）',{exact:true}).first()).toBeVisible()
+  await expect(page.getByText('生产版 API（柜台环境待核验）',{exact:true}).first()).toBeVisible()
   await expect(page.getByText(/策略合约|开仓保证金|登录后启动策略/)).toHaveCount(0)
   expect(await page.content()).not.toContain('E2E_SERVER_ONLY_CODE')
   await page.screenshot({path:'test-results/login-defaults-desktop.png',fullPage:true})
@@ -40,7 +41,7 @@ test('saved settings load failure is visible and custom connection remains edita
   await expect(page.locator('.error-banner')).toContainText('预留连接配置读取失败')
   await expect(page.getByRole('button',{name:'连接交易账户',exact:true})).toBeEnabled()
   await expect(page.getByPlaceholder('tcp://host:port').first()).toBeEditable()
-  await expect(page.locator('.subtitle')).toContainText('实盘 API')
+  await expect(page.locator('.subtitle').first()).toContainText('生产版 API')
 })
 
 test('saved connection fields can be overridden explicitly',async({page})=>{

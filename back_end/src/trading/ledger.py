@@ -35,6 +35,8 @@ class ExecutionLedger:
             CREATE TABLE IF NOT EXISTS intents(account TEXT, id TEXT PRIMARY KEY, state TEXT, order_id TEXT, payload TEXT);
             CREATE TABLE IF NOT EXISTS baselines(account TEXT, day TEXT, balance REAL, PRIMARY KEY(account,day));
             CREATE TABLE IF NOT EXISTS settings(account TEXT, key TEXT, payload TEXT, PRIMARY KEY(account,key));
+            CREATE TABLE IF NOT EXISTS resolutions(account TEXT, id TEXT, created TEXT, payload TEXT);
+            CREATE TABLE IF NOT EXISTS conditional_orders(account TEXT, id TEXT, payload TEXT, PRIMARY KEY(account,id));
         """)
 
     def record_trade(self, trade):
@@ -101,12 +103,13 @@ class ExecutionLedger:
             orders.append(Order(**data))
         return orders
 
-    def begin_intent(self, signal):
+    def begin_intent(self, signal, trading_day=""):
         identity = uuid.uuid4().hex
         with self.lock, self.db:
             self.db.execute(
                 "INSERT INTO intents VALUES(?,?,?,?,?)",
-                (self.account_id, identity, "pending", "", json.dumps(asdict(signal), default=encode, allow_nan=False)),
+                (self.account_id, identity, "pending", "", json.dumps({**asdict(signal),
+                 "_trading_day": trading_day, "_created_at": datetime.now().astimezone().isoformat()}, default=encode, allow_nan=False)),
             )
         return identity
 
@@ -122,6 +125,25 @@ class ExecutionLedger:
             return self.db.execute(
                 "SELECT id FROM intents WHERE account=? AND state='pending'", (self.account_id,)
             ).fetchall()
+
+    def pending_intents(self):
+        with self.lock:
+            rows = self.db.execute("SELECT id,payload FROM intents WHERE account=? AND state='pending'",
+                                   (self.account_id,)).fetchall()
+            return [{"id": identity, **json.loads(payload)} for identity, payload in rows]
+
+    def resolve_intent(self, identity, order_id, evidence):
+        with self.lock, self.db:
+            changed = self.db.execute(
+                "UPDATE intents SET state=?,order_id=? WHERE id=? AND account=? AND state='pending'",
+                ("reconciled" if order_id else "confirmed_not_sent", order_id, identity, self.account_id),
+            ).rowcount
+            if not changed:
+                raise ValueError("执行意图不存在或已处理")
+            self.db.execute("INSERT INTO resolutions VALUES(?,?,?,?)", (
+                self.account_id, identity, datetime.now().astimezone().isoformat(),
+                json.dumps(evidence, ensure_ascii=False, allow_nan=False),
+            ))
 
     def read_day_baseline(self, day):
         """Read without initializing a new trading day's baseline."""
@@ -146,6 +168,17 @@ class ExecutionLedger:
                 "INSERT INTO settings VALUES(?,?,?) ON CONFLICT(account,key) DO UPDATE SET payload=excluded.payload",
                 (self.account_id, key, json.dumps(value, allow_nan=False)),
             )
+
+    def save_pre_order(self, order):
+        with self.lock, self.db:
+            self.db.execute("INSERT INTO conditional_orders VALUES(?,?,?) ON CONFLICT(account,id) DO UPDATE SET payload=excluded.payload",
+                            (self.account_id, order.pre_order_id, json.dumps(asdict(order), default=encode, allow_nan=False)))
+
+    def pre_orders(self):
+        with self.lock:
+            return [json.loads(row[0]) for row in self.db.execute(
+                "SELECT payload FROM conditional_orders WHERE account=?", (self.account_id,)
+            ).fetchall()]
 
     def load_setting(self, key, default=None):
         with self.lock:

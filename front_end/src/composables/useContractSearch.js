@@ -115,38 +115,34 @@ export function useContractSearch() {
 
   // ── 搜索 ──────────────────────────────────────────────────────────────────
   let _timer = null
+  const page = ref(1), total = ref(0), product = ref(''), products = ref({})
   let generation = 0
   let disposed = false
   onScopeDispose(() => { disposed=true; generation++; clearTimeout(_timer) })
-  onMounted(async () => {
-    try {
-      const data=await searchContracts({limit:60})
-      if (!disposed && data.code===0) HOT_CONTRACTS.splice(0,HOT_CONTRACTS.length,...data.data)
-    } catch { /* The search box reports request errors when used. */ }
-  })
+  onMounted(_doSearch)
 
   async function _doSearch() {
     const version=++generation
     const q = query.value.trim()
-    if (!q && !exchange.value) {
-      results.value = []
-      loading.value = false
-      return
-    }
 
     loading.value = true
     error.value   = ''
     selectedIndex.value = -1
 
     try {
-      const data=await searchContracts({query:q,exchange:exchange.value,limit:60})
+      const data=await searchContracts({query:q,exchange:exchange.value,product:product.value,limit:60,offset:(page.value-1)*60})
       if (disposed || version!==generation) return
 
       results.value = data.code === 0 ? (data.data ?? []) : []
+      total.value = data.code === 0 ? (data.total ?? results.value.length) : 0
+      products.value = data.products ?? {}
+      if (!q && !exchange.value && !product.value) HOT_CONTRACTS.splice(0,HOT_CONTRACTS.length,...results.value)
       if (data.code !== 0) error.value = data.msg ?? '搜索失败'
     } catch (e) {
       if (disposed || version!==generation) return
       results.value = []
+      total.value = 0
+      if (!q && !exchange.value && !product.value) HOT_CONTRACTS.splice(0)
       error.value   = '网络错误: ' + e.message
     } finally {
       if (version===generation) loading.value = false
@@ -155,6 +151,7 @@ export function useContractSearch() {
 
   /** 带防抖的触发（300ms） */
   function triggerSearch() {
+    page.value = 1
     generation++
     clearTimeout(_timer)
     _timer = setTimeout(_doSearch, 300)
@@ -162,6 +159,7 @@ export function useContractSearch() {
 
   /** 切换交易所时立即搜索（无防抖） */
   function triggerImmediate() {
+    page.value = 1
     clearTimeout(_timer)
     _doSearch()
   }
@@ -170,6 +168,8 @@ export function useContractSearch() {
   function clearSearch() {
     generation++; clearTimeout(_timer); loading.value=false
     query.value         = ''
+    product.value = ''
+    page.value = 1
     results.value       = []
     selectedIndex.value = -1
     error.value         = ''
@@ -178,6 +178,9 @@ export function useContractSearch() {
   // 监听变化
   watch(query,    triggerSearch)
   watch(exchange, triggerImmediate)
+  watch(product, triggerImmediate)
+
+  function changePage(value) { page.value = value; clearTimeout(_timer); _doSearch() }
 
   // ── 键盘导航 ──────────────────────────────────────────────────────────────
   /**
@@ -206,7 +209,7 @@ export function useContractSearch() {
 
   return {
     // 状态
-    query, exchange, results, loading, error, selectedIndex,
+    query, exchange, results, loading, error, selectedIndex, page, total, product, products, changePage,
     favorites, recent,
     // 操作
     isFavorite, toggleFavorite,

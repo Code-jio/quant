@@ -98,12 +98,15 @@ test.each([100,600])('tick alerts detect price, jump and volume at %i ms cadence
   try{
     socket.readyState=1;socket.onopen()
     watch.subscribe('FIX',['tick'])
-    const tick=(last,volume,change_rate)=>{socket.onmessage({data:JSON.stringify({type:'tick',symbol:'FIX',last,volume,change_rate})});vi.advanceTimersByTime(cadence)}
-    for(let i=0;i<5;i++)tick(100,10,0)
-    tick(104,100,4)
+    const tick=(last,volume,change_rate)=>{socket.onmessage({data:JSON.stringify({type:'tick',symbol:'FIX',last,volume,change_rate,
+      timestamp:new Date().toISOString(),trading_day:'20261008'})});vi.advanceTimersByTime(cadence)}
+    let volume=100000
+    for(let i=0;i<Math.ceil(8000/cadence);i++)tick(100,volume++,0)
+    tick(104,volume+=10000,4)
+    for(let i=0;i<Math.ceil(1200/cadence);i++)tick(104,volume++,4)
     expect(watch.alerts.map(a=>a.type)).toEqual(expect.arrayContaining(['price','price_jump','volume']))
     const count=watch.alerts.length
-    tick(108,200,8)
+    tick(108,volume+=10000,8)
     expect(watch.alerts).toHaveLength(count)
     watch.markAlertsRead();expect(watch.unreadCount.value).toBe(0)
     watch.clearAlerts();expect(watch.alerts).toHaveLength(0)

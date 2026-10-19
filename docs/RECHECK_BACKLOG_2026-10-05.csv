@@ -24,3 +24,13 @@ R22,P1,账户数据真实性,未知金额补零及默认百万本金；零盈亏
 R23,P1,敞口与权益展示,敞口遗漏合约乘数且误称保证金；权益曲线画盈亏,乘数缺失保持未知；曲线点与柜台余额比较；浏览器图表,已修复；真实空仓核验及离线有仓样本通过,新增,2026-10-15,test_dashboard_truth.py；dashboard-truth.spec.js
 R24,P2,行情来源展示,丢弃行情时间与来源；历史缺失文案不清；目录误称热门,行情年龄与来源缺失回归；空K线浏览器验证,已修复并热更新；实盘界面核对通过,新增,2026-10-15,market-provenance.spec.js；live-data-audit-20261015
 R25,P2,合约搜索范围,柜台外汇仿真合约及期权混入；截取前未过滤；代码名称导致中文检索遗漏,国内六所正例及境外期权仿真反例；收藏目录委托框浏览器回归；真实柜台只读查询,已修复并重启加载；AF空结果及黄金8合约核验通过,新增,2026-10-15,test_domestic_contract_search.py；contract-search.spec.js；domestic-contract-search.spec.js；DOMESTIC_CONTRACT_SEARCH_2026-10-15.md
+R26,P1,资金独立时效,持仓刷新掩盖旧资金,单独时钟及查询失败跨日测试,已实现；隔离验证记录见修复报告；未重启实盘,新增,2026-10-19,test_reliability_review.py；RELIABILITY_FIXES_2026-10-19.md
+R27,P1,日亏损口径,出入金混为交易亏损且盘中基准遗漏,入金出金缺字段及跨日测试,已实现；隔离验证记录见修复报告；未重启实盘,新增,2026-10-19,test_reliability_review.py；RELIABILITY_FIXES_2026-10-19.md
+R28,P1,对账与人工恢复,本地快照误作完整核对且未知意图无处理入口,完整双查询错误超时账户代次及人工确认测试,已实现；隔离验证记录见修复报告；未重启实盘,新增,2026-10-19,test_recovery_review.py；reliability-review.spec.js；RELIABILITY_FIXES_2026-10-19.md
+R29,P2,合约生命周期,统一标记可交易且到期日缺失,原生字段保留及过期未知状态测试,已实现；隔离验证记录见修复报告；未重启实盘,新增,2026-10-19,test_native_ctp_compat.py；test_recovery_review.py；RELIABILITY_FIXES_2026-10-19.md
+R30,P2,手动合约搜索,迟到响应覆盖新结果或清空输入,真实浏览器乱序响应及清空测试,已实现；隔离验证记录见修复报告；未重启实盘,新增,2026-10-19,reliability-review.spec.js；RELIABILITY_FIXES_2026-10-19.md
+R31,P2,成交量提醒,累计成交量比较无法识别短时放量,一秒增量窗口跨日重置断流及高频测试,已实现；隔离验证记录见修复报告；未重启实盘,新增,2026-10-19,volume-window.spec.js；feature-inventory.spec.js；RELIABILITY_FIXES_2026-10-19.md
+R32,P2,保证金预留,柜台已冻结的委托仍重复预留,资金请求与委托回报两种顺序测试,已实现；隔离验证记录见修复报告；未重启实盘,新增,2026-10-19,test_reliability_review.py；RELIABILITY_FIXES_2026-10-19.md
+R33,P2,柜台环境标识,API版本与真实资金环境混淆,生产版标签及环境待核验浏览器检查,已实现；隔离验证记录见修复报告；未重启实盘,新增,2026-10-19,recheck.spec.js；RELIABILITY_FIXES_2026-10-19.md
+R34,P2,国内合约目录,只能看前60条且无品种分页,分页稳定总数品种过滤和浏览器检查,已实现；隔离验证记录见修复报告；未重启实盘,新增,2026-10-19,test_domestic_contract_search.py；reliability-review.spec.js；RELIABILITY_FIXES_2026-10-19.md
+R35,P2,条件单恢复,条件状态与移动极值仅在内存,持久化暂停恢复发送前落盘及磁盘失败测试,已实现；隔离验证记录见修复报告；未重启实盘,新增,2026-10-19,test_recovery_review.py；RELIABILITY_FIXES_2026-10-19.md

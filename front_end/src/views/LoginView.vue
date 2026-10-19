@@ -14,7 +14,8 @@
           <span class="logo">⚡</span>
           <div>
             <h1 class="title">量化交易系统</h1>
-            <p class="subtitle">连接 CTP 交易/行情通道 · {{ form.environment === '实盘' ? '实盘 API' : '测试 API' }}</p>
+            <p class="subtitle">连接 CTP 交易/行情通道 · {{ form.environment === '实盘' ? '生产版 API' : '测试版 API' }}</p>
+            <p class="subtitle">API 版本不代表资金环境；请核对经纪商与前置地址，柜台环境待独立核验。</p>
           </div>
         </div>
 
@@ -149,7 +150,7 @@
               </el-form-item>
               <el-form-item label="柜台环境">
                 <el-select v-model="form.environment" :disabled="connecting" style="width:100%">
-                  <el-option label="实盘（生产版 API）" value="实盘" />
+                  <el-option label="生产版 API（柜台环境待核验）" value="实盘" />
                   <el-option label="测试" value="测试" />
                 </el-select>
               </el-form-item>

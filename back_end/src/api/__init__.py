@@ -915,6 +915,11 @@ def _account_to_dict(account: AccountInfo) -> Dict[str, Any]:
         "total_pnl": account.total_pnl if account.fields_known else None,
         "fields_known": account.fields_known,
         "trading_day": account.trading_day,
+        "collected_at": account.collected_at,
+        "source": account.source,
+        "pre_balance": account.pre_balance,
+        "deposit": account.deposit,
+        "withdraw": account.withdraw,
     }
 
 
@@ -2139,6 +2144,8 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
 
     @app.get("/trading/reconcile", summary="账户/委托/持仓对账快照", tags=["风控"])
     def trading_reconcile():
+        from ..trading.recovery import report
+        from fastapi.encoders import jsonable_encoder
         engine = trading_state.primary_engine()
         if engine is None:
             raise HTTPException(status_code=503, detail="交易引擎未连接")
@@ -2149,9 +2156,10 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         return {
             "timestamp": datetime.now().isoformat(),
             "snapshot_only": True,
-            "reconciled": bool(getattr(engine.gateway, "ready", False))
-            and not engine.missing_order_replays
-            and not bool(engine.ledger and engine.ledger.unresolved()),
+            "generation": trading_state.generation,
+            "snapshot_ready": bool(getattr(engine.gateway, "ready", False)),
+            **report(engine),
+            "conditional_orders": jsonable_encoder(list(engine.order_manager.pre_orders.values())),
             "unresolved_intents": engine.ledger.unresolved() if engine.ledger else [],
             "missing_order_replays": sorted(engine.missing_order_replays),
             "connection_state": getattr(engine.gateway, "connection_state", {}),
@@ -2966,6 +2974,8 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         query: str = "",
         exchange: Optional[str] = None,
         limit: int = 50,
+        offset: int = 0,
+        product: str = "",
     ):
         """
         搜索期货合约，支持：
@@ -2978,20 +2988,27 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         搜索结果不代表该账户已具备交易权限。
         可选 `exchange` 按交易所过滤：SHFE / DCE / CZCE / CFFEX / INE / GFEX
         """
-        from ..watch import search_contracts
+        from ..watch import matching_contracts
 
         try:
             engine = trading_state.primary_engine()
             specs = getattr(engine.gateway, "contract_specs", None) if engine else None
-            data = search_contracts(query=query, exchange=exchange, limit=min(limit, 200), contracts=specs)
+            rows = matching_contracts(query=query, exchange=exchange, contracts=specs)
+            products = {item["product_root"]: item["product_name"] for item in rows}
+            rows = [item for item in rows if not product or item["product_root"] == product.upper()]
+            offset, limit = max(0, offset), max(1, min(limit, 200))
+            data = rows[offset:offset + limit]
             # This public route is outside the account-transition lock even with a cookie.
             # Account terms are available only through the protected margin endpoint.
             data = [{k: v for k, v in item.items() if "margin" not in k} for item in data]
-            return JSONResponse({"code": 0, "data": data, "total": len(data)})
+            return JSONResponse({"code": 0, "data": data, "total": len(rows), "offset": offset,
+                                 "paginated": True, "products": products})
         except Exception as exc:
             logger.error(f"[watch/search] 搜索失败: {exc}")
             return JSONResponse({"code": 1, "data": [], "total": 0, "msg": str(exc)}, status_code=500)
 
+    from .recovery_routes import register_recovery_routes
+    register_recovery_routes(app, trading_state, _record_audit)
     return app
 
 

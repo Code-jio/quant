@@ -2,6 +2,7 @@ import { defineConfig, devices } from '@playwright/test'
 
 const port = Number(process.env.PLAYWRIGHT_PORT || 55173)
 const baseURL = `http://127.0.0.1:${port}`
+const backendPort = Number(process.env.QUANT_TEST_PORT || 58000)
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -16,12 +17,14 @@ export default defineConfig({
   },
   webServer: [{
     command: `${process.env.QUANT_TEST_PYTHON || 'python'} ../back_end/tests/e2e_backend.py`,
-    url: 'http://127.0.0.1:8000/health',
+    url: `http://127.0.0.1:${backendPort}/health`,
+    env: { QUANT_TEST_PORT: String(backendPort) },
     reuseExistingServer: false,
     timeout: 60_000,
   }, {
     command: `node node_modules/vite/bin/vite.js --host 127.0.0.1 --port ${port} --strictPort`,
     url: baseURL,
+    env: { QUANT_PROXY_TARGET: `http://127.0.0.1:${backendPort}` },
     reuseExistingServer: false,
     timeout: 60_000,
   }],

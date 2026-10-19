@@ -55,6 +55,8 @@ class TradingEngine:
         self.order_manager.on_pre_order_status_change = self._on_pre_order_status_change
 
         self.risk_manager = RiskManager()
+        self.order_manager.on_persistence_error = lambda: self.risk_manager.set_emergency_stop(
+            True, "Conditional order persistence failed; verify durable records before resuming")
         self.last_reject_reason = ""
         self._error_count = 0
         self._max_errors = 10
@@ -79,6 +81,8 @@ class TradingEngine:
             self.ledger = ExecutionLedger(
                 os.getenv("QUANT_LEDGER_PATH", default_path), f"{config.get('broker_id', '')}:{account.account_id}"
             )
+            self.order_manager.attach_ledger(self.ledger)
+            self.order_manager.has_unresolved = lambda: bool(self.ledger and self.ledger.unresolved())
             saved_risk = self.ledger.load_setting("risk")
             if saved_risk:
                 self.risk_manager.configure({"risk": saved_risk})
@@ -224,10 +228,11 @@ class TradingEngine:
         opening = signal.offset.value == "open"
         if specs is not None and opening and valid:
             margin["required"] = self._margin_requirement(spec, signal.price, signal.volume, account.trading_day)
+            needs_reservation = getattr(self.gateway, "needs_margin_reservation", lambda order, account: True)
             reservations = [
                 self._margin_requirement(specs.get(o.symbol, {}), o.price,
                                          max(0, o.volume - o.traded_volume), account.trading_day)
-                for o in orders if o.is_active() and o.offset.value == "open"
+                for o in orders if o.is_active() and o.offset.value == "open" and needs_reservation(o, account)
             ]
             if all(value is not None for value in reservations):
                 reserved = sum(reservations)
@@ -253,6 +258,7 @@ class TradingEngine:
             "allowed": not blocked, "snapshot_only": True,
             "checked_at": datetime.now().astimezone().isoformat(), "trading_day": account.trading_day,
             "reason": blocked[0]["reason"] if blocked else "", "checks": checks, "margin": margin,
+            "margin_method": "柜台可用资金 + 尚未被后续资金查询覆盖的委托预留；顺序未知时保守预留",
             "close_available": risk.close_available(signal, positions, orders) if valid and not opening else None,
         }
 
@@ -278,7 +284,7 @@ class TradingEngine:
             return ""
 
         try:
-            identity = self.ledger.begin_intent(signal) if self.ledger else None
+            identity = self.ledger.begin_intent(signal, self.gateway.account.trading_day) if self.ledger else None
             order_id = self.order_manager._submit_validated(signal)
             if self.ledger:
                 self.ledger.complete_intent(identity, order_id)

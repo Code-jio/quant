@@ -32,6 +32,12 @@ class AccountInfo:
     error_msg: str = ""
     trading_day: str = ""
     fields_known: bool = True
+    source: str = "unknown"
+    pre_balance: Optional[float] = None
+    deposit: Optional[float] = None
+    withdraw: Optional[float] = None
+    collected_at: str = ""
+    query_started_at: float = 0.0
 
 
 @dataclass

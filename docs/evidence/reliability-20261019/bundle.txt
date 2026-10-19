@@ -1,0 +1,2 @@
+vendor-echarts: 734098 / 760000 bytes
+vendor-element-plus: 882069 / 910000 bytes

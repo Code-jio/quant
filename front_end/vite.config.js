@@ -12,13 +12,13 @@ export default defineConfig({
     proxy: {
       // REST API: /api/strategies → http://localhost:8000/strategies
       '/api': {
-        target: 'http://localhost:8000',
+        target: process.env.QUANT_PROXY_TARGET || 'http://localhost:8000',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ''),
       },
       // WebSocket: /ws → ws://localhost:8000
       '/ws': {
-        target: 'ws://localhost:8000',
+        target: process.env.QUANT_PROXY_TARGET || 'ws://localhost:8000',
         ws: true,
         changeOrigin: true,
       },

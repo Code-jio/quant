@@ -4,12 +4,16 @@ Installed before connect; updates are queued on the same EventEngine as orders.
 No success is inferred from log messages. Unsupported callback APIs fail closed.
 """
 
+import time
+
 EVENT_SNAPSHOT = "eQuantSnapshot"
 
 
 def install_observer(gateway, emit):
     td, md = gateway.td_api, gateway.md_api
     raw_account = {}
+    raw_contract = {}
+    account_queries = {}
     position_keys = set()
     trading_day = {"value": ""}
 
@@ -57,16 +61,39 @@ def install_observer(gateway, emit):
     wrap(
         td,
         "onRspQryInstrument",
+        before=lambda data, *_: (raw_contract.clear(), raw_contract.update(data or {})),
         after=lambda data, error, reqid, last: (
             emit({"kind": "contracts", "ready": not error.get("ErrorID", 0)}) if last else None
         ),
     )
 
-    def account_raw(data, error, *_):
+    if hasattr(gateway, "on_contract"):
+        def attach_contract(contract):
+            contract.extra = {**(getattr(contract, "extra", None) or {}), **{
+                key: raw_contract[key] for key in ("IsTrading", "OpenDate", "ExpireDate") if key in raw_contract
+            }}
+        wrap(gateway, "on_contract", before=attach_contract)
+
+    if hasattr(td, "reqQryTradingAccount"):
+        original_account_query = td.reqQryTradingAccount
+
+        def account_query(request, reqid):
+            account_queries.clear()
+            account_queries[reqid] = time.monotonic()
+            code = original_account_query(request, reqid)
+            if code != 0:
+                emit({"kind": "account", "ready": False})
+            return code
+        td.reqQryTradingAccount = account_query
+
+    def account_raw(data, error, reqid, *_):
         raw_account.clear()
         if not error.get("ErrorID", 0):
             raw_account.update(data)
             raw_account.setdefault("TradingDay", trading_day["value"])
+            raw_account["_QueryStartedAt"] = account_queries.pop(reqid, 0.0)
+        else:
+            emit({"kind": "account", "ready": False})
 
     wrap(td, "onRspQryTradingAccount", before=account_raw)
 
@@ -96,6 +123,13 @@ def install_observer(gateway, emit):
         # These callbacks have no Python implementation in vnpy_ctp. Calling
         # their pybind virtual base methods would re-enter this override.
         setattr(td, name, margin_reply)
+
+    for name, query in (("onRspQryOrder", "orders"), ("onRspQryTrade", "trades")):
+        def reconcile_reply(data, error, reqid, last, kind=query):
+            emit({"kind": "reconcile", "query": kind, "data": dict(data or {}),
+                  "error_id": (error or {}).get("ErrorID", 0), "reqid": reqid, "last": bool(last)})
+        # Native virtual callbacks have no Python body; do not call their base.
+        setattr(td, name, reconcile_reply)
 
     def attach_day(value):
         value.extra = {**(getattr(value, "extra", None) or {}), "TradingDay": trading_day["value"]}

@@ -76,3 +76,24 @@ def test_public_api_filters_before_limit_and_excludes_account_margin(monkeypatch
             assert "margin_rate" not in result["data"][0]
     finally:
         trading_state.clear_main()
+
+
+def test_catalog_pages_have_stable_totals_and_product_filters(monkeypatch):
+    from fastapi.testclient import TestClient
+    from src.api import create_app, trading_state
+    from test_manual_trading import install_gateway, login
+    gateway = install_gateway(monkeypatch)
+    gateway.contract_specs = {f"au26{i:02}": contract(f"au26{i:02}", "SHFE") for i in range(1, 13)}
+    gateway.contract_specs["IF2612"] = contract("IF2612", "CFFEX")
+    try:
+        with TestClient(create_app()) as client:
+            login(client)
+            first = client.get("/watch/search?limit=5&product=AU").json()
+            second = client.get("/watch/search?limit=5&offset=5&product=AU").json()
+            assert first["total"] == second["total"] == 12
+            assert len(first["data"]) == len(second["data"]) == 5
+            assert not ({r["symbol"] for r in first["data"]} & {r["symbol"] for r in second["data"]})
+            assert first["products"]["AU"] == "黄金"
+            assert client.get("/watch/search?offset=10000").json()["data"] == []
+    finally:
+        trading_state.clear_main()

@@ -117,6 +117,10 @@ export const resumeTrading = () =>
   request('/risk/resume', { method: 'POST' })
 
 export const fetchTradingReconcile = () => request('/trading/reconcile')
+export const queryBrokerReconcile = () => request('/trading/reconcile/query', { method: 'POST' })
+export const importBrokerReconcile = body => request('/trading/reconcile/import', { method: 'POST', body: JSON.stringify(body) })
+export const resolveExecutionIntent = body => request('/trading/reconcile/resolve', { method: 'POST', body: JSON.stringify(body) })
+export const reviewConditionalOrder = (id, body) => request(`/trading/conditional/${encodeURIComponent(id)}/review`, { method: 'POST', body: JSON.stringify(body) })
 
 // ── 订单簿 ────────────────────────────────────────────────────────────────
 /** 所有委托单（最近 500 条） */
@@ -185,15 +189,17 @@ export const runBacktest = (body) =>
 
 // ── 行情 Watch ─────────────────────────────────────────────────────────────
 /** 期货合约搜索；query: 关键词，exchange: 可选交易所，limit: 最多返回条数 */
-export const searchContracts = async ({ query = '', exchange = '', limit = 60 } = {}) => {
+export const searchContracts = async ({ query = '', exchange = '', limit = 60, offset = 0, product = '' } = {}) => {
   const p = new URLSearchParams()
   if (query)    p.set('query',    query)
   if (exchange) p.set('exchange', exchange)
   if (limit)    p.set('limit',    String(limit))
+  if (offset) p.set('offset', String(offset))
+  if (product) p.set('product', product)
   const response = await request(`/watch/search?${p}`)
   // Also protect callers while an older backend is still serving this session.
   const data = domesticFutures(response.data)
-  return { ...response, data, total: data.length }
+  return { ...response, data, total: response.paginated && data.length === response.data?.length ? response.total : data.length }
 }
 
 /**

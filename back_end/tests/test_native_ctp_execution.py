@@ -61,7 +61,9 @@ def bridge(tmp_path, monkeypatch):
     adapter.connection_state = dict.fromkeys(adapter.connection_state, True)
     adapter.account.fields_known = True
     adapter.trading_day = "20261008"
+    adapter.account.trading_day = adapter.trading_day
     adapter._last_snapshot = time.monotonic()
+    adapter._last_account_snapshot = time.monotonic()
     adapter._main_engine = NS(
         send_order=lambda request, _name: native.send_order(request),
         cancel_order=lambda request, _name: native.cancel_order(request),

@@ -69,7 +69,7 @@ def main():
                 }
             )
             DatabaseManager().save_bars(frame, "E2E2026", "1d", data_source="e2e_fixture")
-            uvicorn.run(create_app(), host="127.0.0.1", port=8000, log_level="warning", timeout_graceful_shutdown=2)
+            uvicorn.run(create_app(), host="127.0.0.1", port=int(os.getenv("QUANT_TEST_PORT", "58000")), log_level="warning", timeout_graceful_shutdown=2)
         finally:
             os.chdir(original)
 
