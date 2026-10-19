@@ -2,6 +2,7 @@
 
 import os
 import sys
+from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -23,6 +24,22 @@ def main():
     from src.trading.types import AccountInfo, TradingStatus
     from src.trading.gateway import GatewayBase
     import src.trading
+    import src.data.edb
+
+    def fixture_edb_csv(query):
+        # Transport substitution only in this isolated fixture server. The real
+        # parser, validation, storage and HTTP routes are exercised by the UI.
+        header = 'datetime_nano,open,high,low,close,volume,open_oi,close_oi\n'
+        if query.symbol == 'ag2612':
+            return '403,EDB fixture denied'
+        if query.symbol == 'cu2612':
+            return header
+        times = pd.bdate_range(query.start_date, query.end_date) if query.timeframe == '1d' else pd.date_range(
+            str(query.start_date) + ' 09:00', periods=60, freq='min')
+        return header + ''.join(f'{t.tz_localize("Asia/Shanghai").value},{100+i},{102+i},{99+i},{101+i},10,50,51\n' for i, t in enumerate(times))
+
+    src.data.edb.fetch_csv = fixture_edb_csv
+    src.data.edb.today_shanghai = lambda: date(2026, 10, 19)
 
     class BrowserGateway(GatewayBase):
         def __init__(self):

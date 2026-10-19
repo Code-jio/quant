@@ -31,7 +31,7 @@ export async function request(path, options = {}) {
       let detail=body.detail ?? body.error ?? body.msg ?? body.message ?? `HTTP ${res.status}`
       if (typeof detail!=='string') detail=JSON.stringify(detail)
       const id=res.headers.get('x-request-id')
-      throw new Error(detail+(id ? `（请求 ${id}）` : ''))
+      throw Object.assign(new Error(detail+(id ? `（请求 ${id}）` : '')), { status: res.status })
     }
     return body
   } catch (error) {
@@ -182,6 +182,11 @@ export const fetchSystemLogs = ({ level = '', q = '', limit = 200 } = {}) => {
 // ── 回测 ──────────────────────────────────────────────────────────────────
 /** 可用策略列表及默认参数 */
 export const fetchBacktestStrategies = () => request('/backtest/strategies')
+
+export const fetchEdbCapabilities = (signal) => request('/data/history/edb', { signal })
+export const importEdbHistory = (body, signal) => request('/data/history/edb/import', {
+  method: 'POST', body: JSON.stringify(body), timeoutMs: 90000, signal,
+})
 
 /** 运行回测；body = BacktestRunRequest */
 export const runBacktest = (body) =>

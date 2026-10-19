@@ -1,6 +1,11 @@
 <template>
   <div ref="wrapRef" class="kline-wrap" :class="{ fullscreen: isFullscreen, mobile: isMobile }">
-    <span class="kline-source" style="font-size:11px;color:var(--q-muted)">历史来源：{{ historySourceLabel }} · 增量由订阅后的行情 Tick 聚合，非完整交易时段</span>
+    <div class="kline-source" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--q-muted)">
+      <span>历史来源：{{ historySourceLabel }} · 增量由订阅后的行情 Tick 聚合，非完整交易时段</span>
+      <el-button text size="small" @click="historyDownloadOpen = true">下载历史行情</el-button>
+    </div>
+    <HistoryDownload v-model="historyDownloadOpen" :symbol="symbol" :exchange="watchStore.currentSymbol?.exchange || ''"
+      :timeframe="currentInterval" @use="useDownloadedHistory" />
 
     <KlineToolbar
       :name="name"
@@ -131,6 +136,7 @@ import { useIndicatorWorker } from '@/composables/useIndicatorWorker.js'
 import { useWatchWs } from '@/composables/useWatchWs.js'
 import KlineSkeleton from '@/components/KlineSkeleton.vue'
 import KlineToolbar from '@/components/KlineToolbar.vue'
+import HistoryDownload from '@/components/HistoryDownload.vue'
 
 // ── Props ────────────────────────────────────────────────────────────────
 const props = defineProps({
@@ -191,7 +197,20 @@ const {
 
 const historySourceLabel = computed(() => ({
   missing: '未导入历史数据', unknown: '来源未确认', synthetic: '模拟样本',
+  tianqin_edb: '天勤 EDB（历史行情）', mixed: '混合来源（请核对数据质量）',
 }[provenance.value] ?? provenance.value))
+const historyDownloadOpen = ref(false)
+async function useDownloadedHistory(data) {
+  const contract = watchStore.currentSymbol?.symbol === data.symbol
+    ? watchStore.currentSymbol : { symbol: data.symbol, name: data.symbol, exchange: data.exchange, source: 'historical' }
+  historyStore.addVisit(contract, data.timeframe)
+  watchStore.clearCache(data.symbol)
+  currentInterval.value = data.timeframe
+  watchStore.setInterval(data.timeframe)
+  watchStore.setSymbol(contract)
+  await nextTick()
+  await reload()
+}
 
 const indicatorWorker = useIndicatorWorker()
 const watchWs = useWatchWs()

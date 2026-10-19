@@ -34,3 +34,4 @@ R32,P2,保证金预留,柜台已冻结的委托仍重复预留,资金请求与�
 R33,P2,柜台环境标识,API版本与真实资金环境混淆,生产版标签及环境待核验浏览器检查,已实现；隔离验证记录见修复报告；未重启实盘,新增,2026-10-19,recheck.spec.js；RELIABILITY_FIXES_2026-10-19.md
 R34,P2,国内合约目录,只能看前60条且无品种分页,分页稳定总数品种过滤和浏览器检查,已实现；隔离验证记录见修复报告；未重启实盘,新增,2026-10-19,test_domestic_contract_search.py；reliability-review.spec.js；RELIABILITY_FIXES_2026-10-19.md
 R35,P2,条件单恢复,条件状态与移动极值仅在内存,持久化暂停恢复发送前落盘及磁盘失败测试,已实现；隔离验证记录见修复报告；未重启实盘,新增,2026-10-19,test_recovery_review.py；RELIABILITY_FIXES_2026-10-19.md
+R36,P2,历史行情,缺少真实历史数据下载入口,EDB日线分钟线实际HTTPS抽查及解析入库图表回测全链路测试,已实现；加载及验证记录见接入报告,新增,2026-10-19,test_edb_history.py；edb-history.spec.js；EDB_HISTORY_2026-10-19.md

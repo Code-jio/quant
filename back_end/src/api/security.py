@@ -35,6 +35,7 @@ OPEN_PATHS: FrozenSet[str] = frozenset(
         "/watch/search",
         "/watch/kline",
         "/watch/tick",
+        "/data/history/edb",
     }
 )
 

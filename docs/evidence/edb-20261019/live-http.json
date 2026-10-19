@@ -1,0 +1,49 @@
+{
+  "verification": "Actual unauthenticated EDB HTTPS download into a temporary isolated database; no broker connection",
+  "results": [
+    {
+      "source": "tianqin_edb",
+      "data_source": "tianqin_edb",
+      "synthetic_data_used": false,
+      "symbol": "au2612",
+      "exchange": "SHFE",
+      "vendor_symbol": "SHFE.au2612",
+      "timeframe": "1d",
+      "start_date": "2026-02-02",
+      "end_date": "2026-02-06",
+      "rows": 5,
+      "sha256": "485999ab305cfadb9312b45e77a1ae51cf9d2167f87ad961544dda323c6b9d19",
+      "timezone": "Asia/Shanghai",
+      "first_datetime": "2026-02-02T00:00:00",
+      "last_datetime": "2026-02-06T00:00:00",
+      "status": "imported",
+      "message": "历史行情已保存；实际返回范围不保证覆盖请求内的全部交易时段",
+      "stored_rows": 5,
+      "stored_sources": [
+        "tianqin_edb"
+      ]
+    },
+    {
+      "source": "tianqin_edb",
+      "data_source": "tianqin_edb",
+      "synthetic_data_used": false,
+      "symbol": "au2612",
+      "exchange": "SHFE",
+      "vendor_symbol": "SHFE.au2612",
+      "timeframe": "1m",
+      "start_date": "2026-10-15",
+      "end_date": "2026-10-15",
+      "rows": 555,
+      "sha256": "e28805fd724d881a3848667bcf81ac4e7b367793a737421e2e03a392a4c8cd14",
+      "timezone": "Asia/Shanghai",
+      "first_datetime": "2026-10-15T00:00:00",
+      "last_datetime": "2026-10-15T23:59:00",
+      "status": "imported",
+      "message": "历史行情已保存；实际返回范围不保证覆盖请求内的全部交易时段",
+      "stored_rows": 555,
+      "stored_sources": [
+        "tianqin_edb"
+      ]
+    }
+  ]
+}

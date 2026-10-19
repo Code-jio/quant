@@ -1,6 +1,6 @@
 <template>
   <div class="bt-page">
-    <el-alert v-if="result" :title="'数据来源：'+result.data_source+'；周期：'+result.timeframe+(result.synthetic_data_used ? '（演示模拟数据）' : '')" :type="result.synthetic_data_used ? 'warning' : 'info'" :closable="false" />
+    <el-alert v-if="result" :title="'数据来源：'+(result.data_source === 'tianqin_edb' ? '天勤 EDB' : result.data_source)+'；周期：'+result.timeframe+(result.synthetic_data_used ? '（演示模拟数据）' : '')" :type="result.synthetic_data_used ? 'warning' : 'info'" :closable="false" />
     <el-alert v-for="warning in result?.warnings ?? []" :key="warning" :title="warning" type="warning" :closable="false" />
     <!-- ── 顶部导航栏 ───────────────────────────────────────────── -->
     <header class="bt-topbar">
@@ -11,9 +11,13 @@
         <span class="bt-title">回测与分析</span>
       </div>
       <div class="bt-topbar-right">
+        <el-button :disabled="running" @click="historyDownloadOpen = true">下载历史行情</el-button>
         <span v-if="lastRunTime" class="run-time">上次运行：{{ lastRunTime }}</span>
       </div>
     </header>
+
+    <HistoryDownload v-model="historyDownloadOpen" :symbol="form.strategy_params.symbol" :timeframe="form.strategy_params.timeframe || '1d'"
+      :start-date="form.start_date" :end-date="form.end_date" action-label="用于回测" @use="useDownloadedHistory" />
 
     <BacktestConfigForm
       v-model:form="form"
@@ -124,6 +128,7 @@ import { ArrowLeft } from '@element-plus/icons-vue'
 import { fetchBacktestStrategies, runBacktest } from '@/api/index.js'
 import { COMMON_PARAM_KEYS, DEFAULT_BACKTEST_FORM } from '@/config/backtest.js'
 import BacktestConfigForm from '@/components/BacktestConfigForm.vue'
+import HistoryDownload from '@/components/HistoryDownload.vue'
 import { loadEcharts } from '@/utils/asyncEcharts.js'
 
 const router = useRouter()
@@ -144,6 +149,17 @@ let echarts = null
 
 // ── 表单 ────────────────────────────────────────────────────────────────
 const form = ref(structuredClone(DEFAULT_BACKTEST_FORM))
+const historyDownloadOpen = ref(false)
+function useDownloadedHistory(data) {
+  form.value.strategy_params.symbol = data.symbol
+  form.value.strategy_params.timeframe = data.timeframe
+  form.value.start_date = data.first_datetime.slice(0, 10)
+  form.value.end_date = data.last_datetime.slice(0, 10)
+  form.value.allow_synthetic_data = false
+  result.value = null
+  errorMsg.value = ''
+  ElMessage.success('已选择 EDB 历史数据，请核对合约乘数、手续费和保证金后运行回测')
+}
 
 // 仅展示策略专属参数（排除 symbol 和通用字段）
 const editableStrategyParams = computed(() => {
@@ -157,7 +173,8 @@ const editableStrategyParams = computed(() => {
 function onStrategyChange(name) {
   const catalog = strategyCatalog.value.find(s => s.name === name)
   if (!catalog) return
-  form.value.strategy_params = { ...catalog.default_params }
+  form.value.strategy_params = { ...catalog.default_params,
+    symbol: form.value.strategy_params.symbol, timeframe: form.value.strategy_params.timeframe || '1d' }
 }
 
 // ── 运行回测 ──────────────────────────────────────────────────────────
@@ -722,7 +739,7 @@ onMounted(async () => {
     strategyCatalog.value = strategies ?? []
     if (strategyCatalog.value.length) {
       form.value.strategy_name = strategyCatalog.value[0].name
-      form.value.strategy_params = { ...strategyCatalog.value[0].default_params }
+      onStrategyChange(form.value.strategy_name)
     }
   } catch {
     // 离线/未登录时也可以用默认参数
@@ -883,6 +900,8 @@ onUnmounted(() => {
   .kpi-grid { grid-template-columns: repeat(2, 1fr); }
 }
 @media (max-width: 600px) {
+  .bt-topbar { flex-wrap: wrap; gap: 10px; padding: 10px 12px; }
+  .bt-title { white-space: nowrap; }
   .kpi-grid { grid-template-columns: 1fr 1fr; }
   .bt-topbar, .bt-config-card, .bt-chart-card, .kpi-grid { margin-left: 12px; margin-right: 12px; }
 }

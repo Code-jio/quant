@@ -35,6 +35,8 @@ files = [
   "src/api/recovery_routes.py",
   "src/data/cache.py",
   "src/data/governance.py",
+  "src/data/edb.py",
+  "src/api/history_routes.py",
   "src/observability.py",
   "src/runtime.py",
   "src/trading/ledger.py",

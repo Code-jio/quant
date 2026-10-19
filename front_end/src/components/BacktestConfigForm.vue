@@ -71,6 +71,13 @@
 
       <el-row :gutter="16">
         <el-col :xs="24" :sm="8" :md="4">
+          <el-form-item label="K 线周期">
+            <el-select v-model="form.strategy_params.timeframe" aria-label="回测周期">
+              <el-option label="日线" value="1d" /><el-option label="1 分钟" value="1m" />
+            </el-select>
+          </el-form-item>
+        </el-col>
+        <el-col :xs="24" :sm="8" :md="4">
           <el-form-item label="手续费率">
             <el-input-number
               v-model="form.commission_rate"

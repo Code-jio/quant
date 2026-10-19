@@ -1496,6 +1496,12 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
         path = request.url.path
         if path != "/auth/login" and is_open_path(path):
             return await call_next(request)
+        if path == "/data/history/edb/import":
+            # This authenticated operation only writes shared public OHLCV. A slow
+            # data vendor must not hold the lock used for broker/account actions.
+            if not request.state.identity:
+                return JSONResponse({"detail": "未登录或会话已失效"}, status_code=401)
+            return await call_next(request)
         async with account_lock:
             request.state.identity = session_store.identity(token)
             if path != "/auth/login" and not request.state.identity:
@@ -3009,6 +3015,8 @@ def create_app(title: str = "量化交易系统 API", version: str = "1.0.0") ->
 
     from .recovery_routes import register_recovery_routes
     register_recovery_routes(app, trading_state, _record_audit)
+    from .history_routes import register_history_routes
+    register_history_routes(app, _record_audit)
     return app
 
 
