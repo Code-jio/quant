@@ -142,7 +142,7 @@ import { storeToRefs } from 'pinia'
 import { Star, StarFilled, Clock } from '@element-plus/icons-vue'
 import { useWatchStore } from '@/stores/watch.js'
 import { useHistoryStore } from '@/stores/history.js'
-import { HOT_CONTRACTS, EXCH_COLOR } from '@/composables/useContractSearch.js'
+import { HOT_CONTRACTS } from '@/composables/useContractSearch.js'
 import { fetchTicks } from '@/api/index.js'
 
 // ── Emits ─────────────────────────────────────────────────────────────────
@@ -175,6 +175,7 @@ function collectTickSymbols() {
 }
 
 async function pollTicks() {
+  if (sessionStorage.getItem('quant_session_active')!=='1') return
   const syms = collectTickSymbols()
   if (!syms.length) return
   try {
@@ -216,7 +217,7 @@ const activeTab = ref('watch')
 
 // ── 板块 ──────────────────────────────────────────────────────────────────
 const ALL_CONTRACTS = HOT_CONTRACTS
-const SECTORS = ['全部', ...new Set(ALL_CONTRACTS.map(c => c.product_type))]
+const SECTORS = computed(() => ['全部', ...new Set(ALL_CONTRACTS.map(c => c.product_type))])
 const activeSector = ref('全部')
 
 const sectorContracts = computed(() =>

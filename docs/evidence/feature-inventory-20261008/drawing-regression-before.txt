@@ -1,0 +1,33 @@
+[WebServer] (node:55448) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+
+Running 1 test using 1 worker
+
+(node:59100) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  x  1 [chromium] › tests\e2e\feature-inventory.spec.js:26:1 › historical chart supports indicator selection drawing clearing fullscreen and PNG export (7.2s)
+
+
+  1) [chromium] › tests\e2e\feature-inventory.spec.js:26:1 › historical chart supports indicator selection drawing clearing fullscreen and PNG export
+
+    Error: expect(received).toBe(expected) // Object.is equality
+
+    Expected: 0
+    Received: 2
+
+    Call Log:
+    - Timeout 5000ms exceeded while waiting on the predicate
+
+      53 |   await toolbar.locator('.draw-tools .draw-btn').last().click()
+      54 |   await expect(toolbar.locator('.draw-tools .draw-btn')).toHaveCount(4)
+    > 55 |   await expect.poll(graphicCount).toBe(0)
+         |                                   ^
+      56 |   const iconButtons=toolbar.locator('.toolbar-right > button.icon-btn')
+      57 |   const downloadPromise=page.waitForEvent('download')
+      58 |   await iconButtons.nth(1).click()
+        at D:\mine\quant\front_end\tests\e2e\feature-inventory.spec.js:55:35
+
+    Error Context: ..\..\quant-native-verify-20261008\execution-e2e\results\feature-inventory-historic-1f94e-g-fullscreen-and-PNG-export-chromium\error-context.md
+
+  1 failed
+    [chromium] › tests\e2e\feature-inventory.spec.js:26:1 › historical chart supports indicator selection drawing clearing fullscreen and PNG export

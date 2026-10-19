@@ -1,0 +1,74 @@
+[
+  {
+    "kind": "td",
+    "address": "tcp://114.94.128.1:42205",
+    "tcp_connected": true,
+    "elapsed_ms": 62
+  },
+  {
+    "kind": "td",
+    "address": "tcp://140.206.34.161:42205",
+    "tcp_connected": true,
+    "elapsed_ms": 62
+  },
+  {
+    "kind": "td",
+    "address": "tcp://114.94.128.5:42205",
+    "tcp_connected": true,
+    "elapsed_ms": 62
+  },
+  {
+    "kind": "td",
+    "address": "tcp://140.206.34.165:42205",
+    "tcp_connected": true,
+    "elapsed_ms": 62
+  },
+  {
+    "kind": "td",
+    "address": "tcp://114.94.128.6:42205",
+    "tcp_connected": true,
+    "elapsed_ms": 62
+  },
+  {
+    "kind": "td",
+    "address": "tcp://140.206.34.166:42205",
+    "tcp_connected": true,
+    "elapsed_ms": 62
+  },
+  {
+    "kind": "md",
+    "address": "tcp://114.94.128.1:42213",
+    "tcp_connected": true,
+    "elapsed_ms": 47
+  },
+  {
+    "kind": "md",
+    "address": "tcp://140.206.34.161:42213",
+    "tcp_connected": true,
+    "elapsed_ms": 47
+  },
+  {
+    "kind": "md",
+    "address": "tcp://114.94.128.5:42213",
+    "tcp_connected": true,
+    "elapsed_ms": 78
+  },
+  {
+    "kind": "md",
+    "address": "tcp://140.206.34.165:42213",
+    "tcp_connected": true,
+    "elapsed_ms": 78
+  },
+  {
+    "kind": "md",
+    "address": "tcp://114.94.128.6:42213",
+    "tcp_connected": true,
+    "elapsed_ms": 63
+  },
+  {
+    "kind": "md",
+    "address": "tcp://140.206.34.166:42213",
+    "tcp_connected": true,
+    "elapsed_ms": 78
+  }
+]

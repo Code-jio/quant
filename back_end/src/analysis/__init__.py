@@ -8,6 +8,7 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 
+from .round_trips import completed_trades
 from .types import RiskMetrics, PerformanceMetrics, AnalysisResult, ITrade
 from .report import IReportFormatter, TextReportFormatter, JsonReportFormatter
 
@@ -48,8 +49,8 @@ class RiskAnalyzer:
     @staticmethod
     def calculate_sharpe_ratio(returns: pd.Series, risk_free_rate: float = 0.0) -> float:
         """计算夏普比率"""
-        if len(returns) == 0 or returns.std() == 0:
-            return 0.0
+        if len(returns) < 2 or returns.std() == 0:
+            return float("nan")
         excess_returns = returns - risk_free_rate / 252
         return np.sqrt(252) * excess_returns.mean() / returns.std()
 
@@ -62,8 +63,8 @@ class RiskAnalyzer:
         excess_returns = returns - risk_free_rate / 252
         downside_returns = returns[returns < 0]
 
-        if len(downside_returns) == 0 or downside_returns.std() == 0:
-            return 0.0
+        if len(downside_returns) < 2 or downside_returns.std() == 0:
+            return float("nan")
 
         return np.sqrt(252) * excess_returns.mean() / downside_returns.std()
 
@@ -71,7 +72,7 @@ class RiskAnalyzer:
     def calculate_calmar_ratio(annual_return: float, max_drawdown: float) -> float:
         """计算卡玛比率"""
         if max_drawdown == 0:
-            return 0.0
+            return float("nan")
         return annual_return / max_drawdown
 
     @staticmethod
@@ -84,12 +85,13 @@ class RiskAnalyzer:
         metrics.cvar_95 = RiskAnalyzer.calculate_cvar(returns, 0.95)
 
         metrics.max_drawdown, _, _ = RiskAnalyzer.calculate_max_drawdown(equity_curve)
-        metrics.max_drawdown_pct = metrics.max_drawdown * 100
+        metrics.max_drawdown_pct = metrics.max_drawdown
 
         metrics.sharpe_ratio = RiskAnalyzer.calculate_sharpe_ratio(returns)
         metrics.sortino_ratio = RiskAnalyzer.calculate_sortino_ratio(returns)
 
-        annual_return = (equity_curve.iloc[-1] / equity_curve.iloc[0]) ** (252 / len(equity_curve)) - 1 if len(equity_curve) > 0 else 0
+        growth = equity_curve.iloc[-1] / equity_curve.iloc[0] if len(equity_curve) and equity_curve.iloc[0] > 0 else 0
+        annual_return = growth ** (252 / len(equity_curve)) - 1 if growth > 0 else float("nan")
         metrics.calmar_ratio = RiskAnalyzer.calculate_calmar_ratio(annual_return, metrics.max_drawdown)
 
         downside_returns = returns[returns < 0]
@@ -109,19 +111,21 @@ class PerformanceAnalyzer:
         if not trades:
             return 0.0
 
-        wins = sum(1 for t in trades if t.get('pnl', 0) > 0)
+        wins = sum(1 for t in trades if t.get("pnl", 0) > 0)
         return wins / len(trades)
 
     @staticmethod
     def calculate_profit_loss_ratio(trades: List[Dict]) -> float:
         """计算盈亏比"""
         if not trades:
-            return 0.0
+            return float("nan")
 
-        wins = [t['pnl'] for t in trades if t.get('pnl', 0) > 0]
-        losses = [abs(t['pnl']) for t in trades if t.get('pnl', 0) < 0]
+        wins = [t["pnl"] for t in trades if t.get("pnl", 0) > 0]
+        losses = [abs(t["pnl"]) for t in trades if t.get("pnl", 0) < 0]
 
-        if not wins or not losses:
+        if not losses:
+            return float("nan")
+        if not wins:
             return 0.0
 
         avg_win = np.mean(wins)
@@ -141,11 +145,11 @@ class PerformanceAnalyzer:
         current_losses = 0
 
         for trade in trades:
-            if trade.get('pnl', 0) > 0:
+            if trade.get("pnl", 0) > 0:
                 current_wins += 1
                 current_losses = 0
                 max_wins = max(max_wins, current_wins)
-            elif trade.get('pnl', 0) < 0:
+            elif trade.get("pnl", 0) < 0:
                 current_losses += 1
                 current_wins = 0
                 max_losses = max(max_losses, current_losses)
@@ -164,14 +168,15 @@ class PerformanceAnalyzer:
 
         days = len(equity_curve)
         years = days / 252
-        metrics.annual_return = ((1 + metrics.cumulative_return) ** (1 / years) - 1) if years > 0 else 0
+        growth = 1 + metrics.cumulative_return
+        metrics.annual_return = growth ** (1 / years) - 1 if years > 0 and growth > 0 else float("nan")
         metrics.total_return = metrics.cumulative_return
 
         metrics.win_rate = PerformanceAnalyzer.calculate_win_rate(trades)
         metrics.profit_loss_ratio = PerformanceAnalyzer.calculate_profit_loss_ratio(trades)
 
-        wins = [t['pnl'] for t in trades if t.get('pnl', 0) > 0]
-        losses = [t['pnl'] for t in trades if t.get('pnl', 0) < 0]
+        wins = [t["pnl"] for t in trades if t.get("pnl", 0) > 0]
+        losses = [t["pnl"] for t in trades if t.get("pnl", 0) < 0]
 
         metrics.avg_win = np.mean(wins) if wins else 0
         metrics.avg_loss = np.mean(losses) if losses else 0
@@ -180,8 +185,9 @@ class PerformanceAnalyzer:
         metrics.winning_trades = len(wins)
         metrics.losing_trades = len(losses)
 
-        metrics.max_consecutive_wins, metrics.max_consecutive_losses = \
-            PerformanceAnalyzer.calculate_consecutive_trades(trades)
+        metrics.max_consecutive_wins, metrics.max_consecutive_losses = PerformanceAnalyzer.calculate_consecutive_trades(
+            trades
+        )
 
         return metrics
 
@@ -189,8 +195,7 @@ class PerformanceAnalyzer:
 class Analyzer:
     """综合分析器 - 整合风险与绩效分析"""
 
-    def __init__(self, initial_capital: float = 1000000.0,
-                 formatter: IReportFormatter = None):
+    def __init__(self, initial_capital: float = 1000000.0, formatter: IReportFormatter = None):
         self.initial_capital = initial_capital
         self.equity_curve: Optional[pd.Series] = None
         self.returns: Optional[pd.Series] = None
@@ -205,9 +210,11 @@ class Analyzer:
         """设置数据"""
         if equity_curve:
             df = pd.DataFrame(equity_curve)
-            if 'date' in df.columns:
-                df.set_index('date', inplace=True)
-            self.equity_curve = df['capital'] if 'capital' in df.columns else df.iloc[:, 0]
+            if "date" in df.columns:
+                df.set_index("date", inplace=True)
+            self.equity_curve = df["capital"] if "capital" in df.columns else df.iloc[:, 0]
+            if isinstance(self.equity_curve.index, pd.DatetimeIndex):
+                self.equity_curve = self.equity_curve.resample("B").last().dropna()
 
             self.returns = self.equity_curve.pct_change().dropna()
 
@@ -215,34 +222,51 @@ class Analyzer:
             self.trades = []
             for trade in trades:
                 if isinstance(trade, ITrade):
-                    self.trades.append({
-                        'symbol': trade.symbol,
-                        'direction': trade.direction.value,
-                        'price': trade.price,
-                        'volume': trade.volume,
-                        'pnl': getattr(trade, 'pnl', 0),
-                        'commission': trade.commission
-                    })
+                    self.trades.append(
+                        {
+                            "symbol": trade.symbol,
+                            "direction": trade.direction.value,
+                            "price": trade.price,
+                            "volume": trade.volume,
+                            "pnl": getattr(trade, "pnl", 0),
+                            "offset": getattr(getattr(trade, "offset", None), "value", None),
+                            "commission": trade.commission,
+                        }
+                    )
                 else:
-                    self.trades.append({
-                        'symbol': trade.get('symbol', ''),
-                        'direction': trade.get('direction', ''),
-                        'price': trade.get('price', 0),
-                        'volume': trade.get('volume', 0),
-                        'pnl': trade.get('pnl', 0),
-                        'commission': trade.get('commission', 0)
-                    })
+                    self.trades.append(
+                        {
+                            "symbol": trade.get("symbol", ""),
+                            "direction": trade.get("direction", ""),
+                            "price": trade.get("price", 0),
+                            "volume": trade.get("volume", 0),
+                            "pnl": trade.get("pnl", 0),
+                            "offset": trade.get("offset"),
+                            "commission": trade.get("commission", 0),
+                        }
+                    )
 
     def analyze(self) -> AnalysisResult:
         """综合分析"""
         if self.equity_curve is None or len(self.equity_curve) == 0:
-            return AnalysisResult(
-                risk=RiskMetrics(),
-                performance=PerformanceMetrics()
-            )
+            return AnalysisResult(risk=RiskMetrics(), performance=PerformanceMetrics())
 
         risk_metrics = RiskAnalyzer.analyze(self.returns, self.equity_curve)
-        perf_metrics = PerformanceAnalyzer.analyze(self.equity_curve, self.trades)
+        perf_metrics = PerformanceAnalyzer.analyze(self.equity_curve, completed_trades(self.trades))
+        if (self.equity_curve <= 0).any():
+            perf_metrics.annual_return = float("nan")
+            for field in (
+                "sharpe_ratio",
+                "sortino_ratio",
+                "calmar_ratio",
+                "volatility",
+                "var_95",
+                "cvar_95",
+                "downside_vol",
+                "skewness",
+                "kurtosis",
+            ):
+                setattr(risk_metrics, field, float("nan"))
 
         return AnalysisResult(risk=risk_metrics, performance=perf_metrics)
 

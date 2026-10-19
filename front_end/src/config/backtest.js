@@ -1,6 +1,6 @@
 export const DEFAULT_BACKTEST_FORM = {
   strategy_name: 'ma_cross',
-  strategy_params: { symbol: 'IF9999', fast_period: 10, slow_period: 20, position_ratio: 0.8 },
+  strategy_params: { symbol: 'IF9999', timeframe: '1d', fast_period: 10, slow_period: 20, position_ratio: 0.8 },
   start_date: '2023-01-01',
   end_date: '2024-12-31',
   initial_capital: 1_000_000,
@@ -13,7 +13,7 @@ export const DEFAULT_BACKTEST_FORM = {
   allow_synthetic_data: false,
 }
 
-export const COMMON_PARAM_KEYS = new Set(['symbol'])
+export const COMMON_PARAM_KEYS = new Set(['symbol', 'timeframe'])
 
 export const STRATEGY_PARAM_LABELS = {
   fast_period: '快线周期',

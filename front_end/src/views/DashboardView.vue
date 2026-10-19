@@ -1,265 +1,156 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, provide, defineAsyncComponent, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import GlobalDashboard from '@/components/GlobalDashboard.vue'
-import StrategyPanel    from '@/components/StrategyPanel.vue'
-import OrderBook        from '@/components/OrderBook.vue'
-import TradingPanel     from '@/components/TradingPanel.vue'
+import AccountStrip from '@/components/AccountStrip.vue'
+import TradingWatchlist from '@/components/TradingWatchlist.vue'
+import TradingMarket from '@/components/TradingMarket.vue'
+import WatchRightPanel from '@/components/WatchRightPanel.vue'
+import StrategyPanel from '@/components/StrategyPanel.vue'
+import OrderBook from '@/components/OrderBook.vue'
+import TradingPanel from '@/components/TradingPanel.vue'
+import ContractSearch from '@/components/ContractSearch.vue'
 import { useAuthStore } from '@/stores/auth.js'
-import { fetchStrategies, logout } from '@/api/index.js'
+import { useWatchStore } from '@/stores/watch.js'
+import { useHotkeys } from '@/composables/useHotkeys.js'
+import { useWatchWs } from '@/composables/useWatchWs.js'
+import { fetchStrategies, logout, logoutSession } from '@/api/index.js'
 
-const router    = useRouter()
+const GlobalDashboard = defineAsyncComponent(() => import('@/components/GlobalDashboard.vue'))
+const router = useRouter()
 const authStore = useAuthStore()
-
-// ── Mock 数据（后端不可用时展示）─────────────────────────────────────────
-const MOCK_STRATEGIES = [
-  { strategy_id: 'ma_cross_01', name: 'MA双均线',   status: 'running', symbol: 'rb2505',
-    pnl: 3250.00,  positions: [{ symbol: 'rb2505', direction: 'long', volume: 10, cost_price: 3520, pnl: 3250 }],
-    trade_count: 18, error_count: 0 },
-  { strategy_id: 'rsi_01',      name: 'RSI均值回归', status: 'stopped', symbol: 'IF2505',
-    pnl: -850.00,  positions: [], trade_count: 6,  error_count: 1 },
-  { strategy_id: 'breakout_01', name: '突破策略',    status: 'error',   symbol: 'au2506',
-    pnl: 0,        positions: [], trade_count: 0,  error_count: 3 },
-]
-
-const strategies        = ref([])
+const watchStore = useWatchStore()
+provide('watchWs', useWatchWs())
+const contract = computed(() => watchStore.currentSymbol)
+const searchOpen = ref(false)
+const activePanel = ref('')
+const panelOpen = computed({ get: () => Boolean(activePanel.value), set: value => { if (!value) activePanel.value = '' } })
+const strategies = ref([])
 const loadingStrategies = ref(false)
-const isMockMode        = ref(false)
-const lastRefreshTime   = ref('')
-const loggingOut        = ref(false)
+const strategyError = ref('')
+const loggingOut = ref(false)
+let refreshTimer
+let disposed = false
 
-// ── 数据加载 ──────────────────────────────────────────────────────────────
+function selectContract(value) {
+  watchStore.setSymbol(value)
+  searchOpen.value = false
+}
 async function loadStrategies() {
+  if (loadingStrategies.value) return
   loadingStrategies.value = true
   try {
-    strategies.value = await fetchStrategies()
-    isMockMode.value = false
-  } catch (err) {
-    if (err.message?.includes('401')) return
-    ElMessage.warning('无法连接后端服务，当前显示模拟数据')
-    strategies.value = MOCK_STRATEGIES
-    isMockMode.value = true
+    const result = await fetchStrategies()
+    if (!disposed) { strategies.value = result; strategyError.value = '' }
+  } catch (error) {
+    if (!disposed) strategyError.value = `策略数据暂不可用：${error.message}`
   } finally {
-    loadingStrategies.value = false
-    lastRefreshTime.value   = new Date().toLocaleTimeString('zh-CN', { hour12: false })
+    if (!disposed) loadingStrategies.value = false
   }
 }
+watch(activePanel, value => { if (value === 'strategies') loadStrategies() })
+onMounted(() => { refreshTimer = setInterval(() => { if (activePanel.value === 'strategies') loadStrategies() }, 5000) })
+onUnmounted(() => { disposed = true; clearInterval(refreshTimer) })
+useHotkeys([{ key: 'k', ctrl: true, handler: () => { searchOpen.value = true } }])
 
-// ── 定时自动刷新（每 5s）──────────────────────────────────────────────────
-let refreshTimer = null
-onMounted(() => {
-  loadStrategies()
-  refreshTimer = setInterval(loadStrategies, 5_000)
-})
-onUnmounted(() => clearInterval(refreshTimer))
-
-// ── 登出 ──────────────────────────────────────────────────────────────────
-async function handleLogout() {
+async function handleLogout(disconnectAll = false) {
   try {
-    await ElMessageBox.confirm('确认断开 CTP 连接并退出登录？', '退出', {
-      confirmButtonText: '确认断开',
-      cancelButtonText:  '取消',
-      type:              'warning',
+    await ElMessageBox.confirm(disconnectAll
+      ? '将断开交易账户，所有终端退出，后台策略停止。此操作不会自动撤销柜台已有委托。确认继续？'
+      : '退出当前浏览器会话，其他设备和后台策略继续运行；同一浏览器的标签页共享此会话。',
+    disconnectAll ? '断开全部终端' : '退出当前端', {
+      confirmButtonText: disconnectAll ? '确认断开全部' : '确认退出当前端', cancelButtonText: '取消', type: 'warning',
     })
   } catch { return }
-
   loggingOut.value = true
   try {
-    await logout()
-  } catch { /* 静默，本地清除即可 */ } finally {
+    await (disconnectAll ? logout() : logoutSession())
     authStore.clearAuth()
-    ElMessage.success('已断开连接')
+    ElMessage.success(disconnectAll ? '已断开账户，全部终端退出' : '已退出当前端，后台连接保留')
     router.push({ name: 'Login' })
-  }
+  } catch (error) {
+    ElMessage.error(`退出未完成：${error.message}。当前端未主动清除登录状态。`)
+  } finally { loggingOut.value = false }
 }
 </script>
 
 <template>
-  <div class="dashboard">
-
-    <!-- ── 顶部标题栏 ─────────────────────────────────────────────────── -->
-    <header class="app-header">
-      <div class="header-left">
-        <span class="app-icon">⚡</span>
-        <span class="app-title">量化交易系统</span>
-        <span class="app-version">v1.0.0</span>
-      </div>
-      <div class="header-center">
-        <el-tag type="success" effect="dark" size="small" v-if="authStore.accountId">
-          <el-icon><User /></el-icon>
-          {{ authStore.accountId }}
-        </el-tag>
-        <span class="refresh-info c-muted">
-          <el-icon><RefreshRight /></el-icon>
-          最后刷新：{{ lastRefreshTime || '--' }}
-        </span>
-      </div>
-      <div class="header-right">
-        <el-button
-          type="success"
-          size="small"
-          plain
-          @click="router.push('/watch')"
-        >
-          <el-icon><TrendCharts /></el-icon>
-          盯盘系统
-        </el-button>
-        <el-button
-          size="small"
-          plain
-          @click="router.push('/system')"
-        >
-          <el-icon><Monitor /></el-icon>
-          系统监控
-        </el-button>
-        <el-button
-          type="primary"
-          size="small"
-          plain
-          @click="router.push('/backtest')"
-        >
-          <el-icon><DataAnalysis /></el-icon>
-          回测分析
-        </el-button>
-        <el-button
-          :loading="loadingStrategies"
-          size="small"
-          plain
-          @click="loadStrategies"
-        >
-          <el-icon><RefreshRight /></el-icon>
-          刷新
-        </el-button>
-        <el-button
-          type="danger"
-          size="small"
-          plain
-          :loading="loggingOut"
-          @click="handleLogout"
-        >
-          <el-icon><SwitchButton /></el-icon>
-          断开退出
-        </el-button>
-      </div>
+  <div class="dashboard trading-desk">
+    <header class="desk-header">
+      <a class="desk-brand" href="/" aria-label="Quant 交易台首页"><span class="brand-mark">Q</span><span>QUANT<span class="brand-sub">交易工作台</span></span></a>
+      <nav class="desk-nav" aria-label="工作区导航">
+        <span class="nav-current" aria-current="page">交易台</span>
+        <button @click="router.push('/watch')">专注盯盘</button>
+        <button @click="activePanel = 'strategies'">策略管理</button>
+        <button @click="activePanel = 'account'">资金分析</button>
+        <button @click="router.push('/backtest')">回测</button>
+        <button @click="router.push('/system')">系统</button>
+      </nav>
+      <button class="desk-search" @click="searchOpen = true"><el-icon><Search /></el-icon><span>搜索合约</span><kbd>Ctrl K</kbd></button>
+      <el-dropdown trigger="click" @command="command => handleLogout(command === 'all')">
+        <el-button class="desk-logout" size="small" plain :loading="loggingOut">账户会话 <el-icon><ArrowDown /></el-icon></el-button>
+        <template #dropdown><el-dropdown-menu>
+          <el-dropdown-item command="current">退出当前端</el-dropdown-item>
+          <el-dropdown-item command="all" divided>断开全部终端</el-dropdown-item>
+        </el-dropdown-menu></template>
+      </el-dropdown>
     </header>
-
-    <!-- ── Mock 提示 ──────────────────────────────────────────────────── -->
-    <el-alert
-      v-if="isMockMode"
-      title="当前使用模拟数据（后端未连接）"
-      description="无法连接 API，展示内置 Mock 数据。后端就绪后点击「刷新」切换为真实数据。"
-      type="warning"
-      show-icon
-      :closable="false"
-      style="border-radius: 0; border-left: none; border-right: none"
-    />
-
-    <!-- ── 主体 ──────────────────────────────────────────────────────── -->
-    <main class="app-main">
-
-      <!-- ── 全局仪表盘 ──────────────────────────────────────────────── -->
-      <section class="section">
-        <div class="section-header">
-          <h2 class="section-title">
-            <el-icon><TrendCharts /></el-icon>
-            全局仪表盘
-            <span class="section-hint">实时 PnL · 收益率 · 夏普比率 · 最大回撤 · 仓位概览</span>
-          </h2>
-        </div>
-        <GlobalDashboard />
-      </section>
-
-      <section class="section">
-        <div class="section-header">
-          <h2 class="section-title">
-            <el-icon><DataLine /></el-icon>
-            策略管理面板
-            <span class="section-hint">启停 · 参数 · 信号 · 权重分配</span>
-          </h2>
-        </div>
-        <StrategyPanel
-          :strategies="strategies"
-          :loading="loadingStrategies"
-          @refresh="loadStrategies"
-        />
-      </section>
-
-      <section class="section">
-        <div class="section-header">
-          <h2 class="section-title">
-            <el-icon><Sell /></el-icon>
-            手动交易
-            <span class="section-hint">下单 · 撤单 · 快捷平仓</span>
-          </h2>
-        </div>
-        <TradingPanel />
-      </section>
-
-      <section class="section">
-        <div class="section-header">
-          <h2 class="section-title">
-            <el-icon><DocumentCopy /></el-icon>
-            实时订单与持仓簿
-            <span class="section-hint">委托单 · 成交记录 · 持仓明细</span>
-          </h2>
-        </div>
-        <OrderBook />
-      </section>
-
+    <AccountStrip @details="activePanel = 'account'" />
+    <main class="desk-grid">
+      <aside class="desk-watchlist desk-surface" aria-label="自选合约与行情提醒"><TradingWatchlist @select="selectContract" @search="searchOpen = true" /></aside>
+      <section class="desk-market desk-surface" aria-label="当前合约行情"><TradingMarket :contract="contract" @search="searchOpen = true" /></section>
+      <aside class="desk-depth desk-surface" aria-label="盘口与合约统计"><div class="depth-heading">盘口与合约统计</div><WatchRightPanel :contract="contract" /></aside>
+      <aside class="desk-ticket" aria-label="下单与快捷平仓"><TradingPanel compact :contract="contract" @select-contract="selectContract" /></aside>
+      <section class="desk-orders" aria-label="委托成交与持仓"><OrderBook compact /></section>
     </main>
-
-    <footer class="app-footer">
-      <span class="c-muted">量化交易系统 &copy; 2026</span>
-      <span class="c-muted">策略自动刷新：5s</span>
-    </footer>
+    <footer class="desk-footer"><span>交易台 <span class="footer-sep">/</span> {{ contract?.symbol || '未选择合约' }}</span><span>合约联动 · 限价委托 · 发送前确认</span></footer>
+    <ContractSearch v-model="searchOpen" @select="selectContract" />
+    <el-drawer v-model="panelOpen" :title="activePanel === 'strategies' ? '策略管理' : '资金分析'" size="min(1080px, 100vw)" destroy-on-close class="desk-detail-drawer">
+      <template v-if="activePanel === 'strategies'">
+        <el-alert v-if="strategyError" :title="strategyError" description="保留上次成功读取的列表；请重试，未提供模拟策略。" type="warning" :closable="false" />
+        <StrategyPanel :strategies="strategies" :loading="loadingStrategies" @refresh="loadStrategies" />
+      </template>
+      <GlobalDashboard v-else-if="activePanel === 'account'" />
+    </el-drawer>
   </div>
 </template>
 
 <style scoped>
-.dashboard { min-height: 100vh; display: flex; flex-direction: column; background: var(--q-bg); }
-
-.app-header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 12px 24px;
-  background: var(--q-panel);
-  border-bottom: 1px solid var(--q-border);
-  position: sticky; top: 0; z-index: 100;
-  gap: 12px;
+.trading-desk {
+  --q-bg: #0b111a; --q-panel: #141c27; --q-border: #293646; --q-text: #dce6f2; --q-muted: #97a8bb;
+  height: 100dvh; min-height: 680px; display: flex; flex-direction: column;
+  background: var(--q-bg); color: var(--q-text); font-family: 'Microsoft YaHei', 'PingFang SC', sans-serif;
 }
-.header-left  { display: flex; align-items: center; gap: 8px; }
-.header-center{ display: flex; align-items: center; gap: 14px; flex: 1; justify-content: center; }
-.header-right { display: flex; align-items: center; gap: 8px; }
-
-.app-icon    { font-size: 20px; }
-.app-title   { font-size: 16px; font-weight: 700; color: var(--q-blue); }
-.app-version { font-size: 11px; color: var(--q-muted); background: var(--q-border); padding: 2px 7px; border-radius: 10px; }
-
-.refresh-info { font-size: 12px; display: flex; align-items: center; gap: 4px; }
-
-.app-main {
-  flex: 1; padding: 20px 24px;
-  display: flex; flex-direction: column; gap: 20px;
-  max-width: 1600px; width: 100%; margin: 0 auto; box-sizing: border-box;
+.desk-header { min-height: 58px; padding: 0 18px; display: flex; align-items: center; gap: 24px; border-bottom: 1px solid var(--q-border); flex-shrink: 0; }
+.desk-brand { display: flex; align-items: center; gap: 9px; color: var(--q-text); text-decoration: none; font: 700 15px var(--q-font-mono); letter-spacing: 1.2px; }
+.brand-mark { display: grid; place-items: center; width: 30px; height: 30px; border: 1px solid var(--q-blue); border-radius: 5px; color: var(--q-blue); font-size: 23px; }
+.brand-sub { display: block; font: 10px 'Microsoft YaHei', sans-serif; color: var(--q-muted); letter-spacing: 2px; margin-top: 2px; }
+.desk-nav { display: flex; align-self: stretch; align-items: stretch; gap: 8px; }
+.desk-nav button, .nav-current { background: none; border: 0; border-bottom: 2px solid transparent; color: var(--q-muted); padding: 0 13px; display: flex; align-items: center; font: inherit; font-size: 13px; white-space: nowrap; }
+.desk-nav button { cursor: pointer; }.desk-nav button:hover { color: var(--q-text); background: var(--q-panel); }
+.nav-current { color: var(--q-blue); border-color: var(--q-blue); font-weight: 600; }
+.desk-search { margin-left: auto; display: flex; align-items: center; gap: 10px; background: var(--q-panel); border: 1px solid var(--q-border); border-radius: 4px; padding: 8px 12px; color: var(--q-muted); cursor: pointer; white-space: nowrap; }
+kbd { color: var(--q-muted); font: 10px var(--q-font-mono); border-left: 1px solid var(--q-border); padding-left: 14px; }
+.desk-grid { flex: 1; min-height: 0; display: grid; padding: 10px 12px 0; gap: 10px; grid-template-columns: 206px minmax(0, 1fr) 372px; grid-template-rows: minmax(330px, 1fr) minmax(250px, .48fr); grid-template-areas: 'watch market ticket' 'watch orders ticket'; }
+.desk-surface { border: 1px solid var(--q-border); border-radius: 5px; background: var(--q-panel); overflow: hidden; }
+.desk-watchlist { grid-area: watch; }.desk-market { grid-area: market; }.desk-ticket { grid-area: ticket; overflow: auto; border-radius: 5px; background: var(--q-panel); }.desk-orders { grid-area: orders; }.desk-grid > * { min-width: 0; min-height: 0; }
+.desk-depth { display: none; grid-area: depth; overflow: auto; }.depth-heading { font-size: 12px; font-weight: 600; padding: 15px 12px; border-bottom: 1px solid var(--q-border); }
+.desk-depth :deep(.wrp) { height: auto; background: var(--q-panel); }.desk-depth :deep(.section) { border-color: var(--q-border); }
+.desk-depth :deep(.section-title), .desk-depth :deep(.stat-label), .desk-depth :deep(.depth-label), .desk-depth :deep(.ch-name), .desk-depth :deep(.ch-price-empty), .desk-depth :deep(.empty-hint-sm), .desk-depth :deep(.depth-vol) { color: var(--q-muted); }
+.desk-depth :deep(.contract-header) { background: var(--q-panel); }
+.desk-footer { height: 28px; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; color: var(--q-muted); font-size: 10px; flex-shrink: 0; }.footer-sep { margin: 0 10px; color: var(--q-border); }
+button:focus-visible, a:focus-visible { outline: 2px solid var(--q-blue); outline-offset: 3px; }
+@media (min-width: 1850px) { .desk-grid { grid-template-columns: 206px minmax(0, 1fr) 210px 372px; grid-template-areas: 'watch market depth ticket' 'watch orders orders ticket'; }.desk-depth { display: block; } }
+@media (min-width: 2200px) { .desk-grid { grid-template-columns: 250px minmax(0, 1fr) 235px 410px; } }
+@media (max-width: 1500px) { .desk-grid { grid-template-columns: 176px minmax(0, 1fr) 350px; gap: 8px; padding: 8px 8px 0; grid-template-rows: minmax(350px, 1fr) minmax(200px, .4fr); }.desk-header { gap: 14px; padding: 0 12px; }.desk-nav { gap: 0; }.desk-nav button, .nav-current { padding: 0 9px; } }
+@media (max-width: 1150px) { .desk-grid { grid-template-columns: 150px minmax(0, 1fr) 340px; }.desk-search kbd, .brand-sub { display: none; }.desk-header { gap: 10px; } }
+@media (max-width: 1000px) {
+  .trading-desk { height: auto; min-height: 100dvh; }.desk-header { flex-wrap: wrap; padding: 10px 12px; gap: 10px; }.desk-nav { order: 3; width: 100%; height: 36px; overflow-x: auto; }
+  .desk-grid { grid-template-columns: minmax(0, 1fr) 350px; grid-template-rows: 480px 360px; grid-template-areas: 'market ticket' 'orders ticket'; }.desk-watchlist { display: none; }
 }
-
-.section { display: flex; flex-direction: column; gap: 10px; }
-.section-header { display: flex; align-items: center; }
-.section-title {
-  display: flex; align-items: center; gap: 8px;
-  margin: 0; font-size: 14px; font-weight: 600; color: var(--q-text);
+@media (max-width: 700px) {
+  .desk-brand { font-size: 13px; }.desk-logout { margin-left: 0; }.desk-search { padding: 7px 9px; gap: 5px; }
+  .desk-grid { display: flex; flex-direction: column; padding: 8px; }.desk-market { height: 580px; flex: none; }.desk-ticket { overflow: visible; order: 2; }.desk-orders { height: 350px; flex: none; order: 3; }
+  .desk-footer { padding: 0 10px; }.desk-footer > span:last-child { display: none; }
 }
-.section-hint {
-  font-size: 11px; font-weight: 400; color: var(--q-muted);
-  background: var(--q-border); padding: 2px 8px; border-radius: 10px;
-}
-
-.app-footer {
-  display: flex; justify-content: space-between;
-  padding: 10px 24px;
-  border-top: 1px solid var(--q-border);
-  font-size: 11px;
-}
-
-.c-muted { color: var(--q-muted); }
 </style>

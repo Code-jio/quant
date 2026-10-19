@@ -6,7 +6,9 @@ still be supplied through environment variables or ignored config files.
 
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 from typing import Dict, List
 
 
@@ -96,16 +98,42 @@ def runtime_risk_defaults() -> Dict[str, object]:
     }
 
 
-def ctp_defaults() -> Dict[str, str]:
-    """Safe CTP defaults; secret and production values must come from env/config."""
-    return {
-        "broker_id": env_text("QUANT_CTP_BROKER_ID"),
-        "td_server": env_text("QUANT_CTP_TD_SERVER"),
-        "md_server": env_text("QUANT_CTP_MD_SERVER"),
-        "app_id": env_text("QUANT_CTP_APP_ID"),
-        "auth_code": env_text("QUANT_CTP_AUTH_CODE"),
-        "vnpy_environment": env_text("QUANT_CTP_ENVIRONMENT", "测试") or "测试",
-    }
+def load_ctp_config() -> dict:
+    """Read the local trading section without importing account/strategy settings."""
+    configured_path = env_text("QUANT_CTP_CONFIG")
+    path = (
+        Path(configured_path) if configured_path
+        else Path(__file__).resolve().parents[1] / "config/config_production.json"
+    )
+    try:
+        if not configured_path and not path.exists():
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        trading = data.get("trading", {})
+        if not isinstance(trading, dict):
+            raise ValueError
+        return trading
+    except (OSError, ValueError, AttributeError, UnicodeError):
+        # JSON parser exceptions may contain fragments of credentials.
+        raise ValueError("CTP 本地配置无法读取，请检查配置文件和 trading 配置格式") from None
+
+
+def ctp_defaults(config: dict | None = None) -> Dict[str, str]:
+    """Explicit environment overrides local config; live API is the default."""
+    config = load_ctp_config() if config is None else config
+    defaults = {}
+    for key, suffix in {
+        "broker_id": "BROKER_ID", "td_server": "TD_SERVER", "md_server": "MD_SERVER",
+        "app_id": "APP_ID", "auth_code": "AUTH_CODE", "vnpy_environment": "ENVIRONMENT",
+    }.items():
+        value = os.getenv(f"QUANT_CTP_{suffix}", config.get(key, "实盘" if key == "vnpy_environment" else ""))
+        if not isinstance(value, str):
+            raise ValueError(f"CTP 配置 {key} 必须为字符串")
+        defaults[key] = value.strip()
+    defaults["vnpy_environment"] = defaults["vnpy_environment"] or "实盘"
+    if defaults["vnpy_environment"] not in {"实盘", "测试"}:
+        raise ValueError("CTP 柜台环境必须为实盘或测试")
+    return defaults
 
 
 def _parse_server_presets(raw: str) -> List[Dict[str, str]]:
@@ -127,6 +155,21 @@ def _parse_server_presets(raw: str) -> List[Dict[str, str]]:
     return presets
 
 
-def ctp_server_presets(kind: str) -> List[Dict[str, str]]:
+def ctp_server_presets(kind: str, config: dict | None = None) -> List[Dict[str, str]]:
+    config = load_ctp_config() if config is None else config
     env_name = "QUANT_CTP_TD_PRESETS" if kind.lower() == "td" else "QUANT_CTP_MD_PRESETS"
-    return _parse_server_presets(os.getenv(env_name, ""))
+    if env_name in os.environ:
+        presets = _parse_server_presets(os.environ[env_name])
+    else:
+        presets = config.get(f"{kind}_servers", [])
+        if not isinstance(presets, list) or any(
+            not isinstance(item, dict) or not isinstance(item.get("label"), str)
+            or not isinstance(item.get("value"), str) or not item["value"].strip()
+            for item in presets
+        ):
+            raise ValueError("CTP 前置预设必须包含 label 和 value")
+        presets = [{"label": item["label"], "value": item["value"]} for item in presets]
+    default = ctp_defaults(config).get(f"{kind}_server", "")
+    if default and not any(item["value"] == default for item in presets):
+        presets.insert(0, {"label": "默认前置", "value": default})
+    return presets

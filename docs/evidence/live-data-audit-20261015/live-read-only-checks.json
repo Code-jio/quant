@@ -1,0 +1,56 @@
+{
+  "verification_date": "2026-10-15",
+  "timezone": "Asia/Shanghai",
+  "read_only": true,
+  "financial_actions_sent": 0,
+  "gateway_ready_flags": {
+    "md": true,
+    "td": true,
+    "settlement": true,
+    "contracts": true,
+    "account": true,
+    "positions": true
+  },
+  "account_fields_match_broker_to_cent": [
+    "balance",
+    "available",
+    "margin",
+    "commission",
+    "position_pnl",
+    "total_pnl"
+  ],
+  "equity_curve_matches_balance_to_cent": true,
+  "account_source": "gateway",
+  "account_known": true,
+  "return_rate": null,
+  "today_return": null,
+  "initial_capital": null,
+  "history": {
+    "sqlite_bar_rows": 0,
+    "api_source": "missing",
+    "api_rows": 0
+  },
+  "tick": {
+    "symbol": "au2612",
+    "source": "vnpy",
+    "observed_times": [
+      "14:54:14",
+      "14:54:52.500",
+      "14:54:53.500"
+    ],
+    "quote_changed": true
+  },
+  "margin": {
+    "symbol": "au2612",
+    "status": "ready",
+    "source": "ctp_query",
+    "trading_day": "20261015",
+    "long_rate": 0.07,
+    "short_rate": 0.07,
+    "fixed_per_lot": 0
+  },
+  "active_orders": 0,
+  "positions": 0,
+  "unresolved_intents": 0,
+  "scope_note": "Manually minimized observation summary; no account identifiers or monetary account values. Gateway provenance does not independently attest the counter environment or exchange price."
+}

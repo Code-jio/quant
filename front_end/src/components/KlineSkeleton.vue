@@ -109,7 +109,7 @@
 <script setup>
 import { computed } from 'vue'
 
-const props = defineProps({
+defineProps({
   message: { type: String, default: '加载中…' },
 })
 

@@ -7,12 +7,12 @@
  *
  * 功能：
  *  - 通过 useSystemWs 可组合函数连接 WebSocket
- *  - 数字变化时触发 requestAnimationFrame 平滑动画
  *  - 盈亏正负自动着色；上涨/下跌时短暂闪烁
  *  - CPU / 内存进度条随数值着色
  */
 import { ref, computed, watch, onUnmounted } from 'vue'
 import { useSystemWs } from '@/composables/useSystemWs.js'
+import { formatAmount, formatSigned, formatPercent } from '@/utils/financialData.js'
 import { buildWsUrl } from '@/config/network.js'
 
 // ── Props ─────────────────────────────────────────────────────────────────
@@ -26,58 +26,24 @@ const props = defineProps({
 // ── WebSocket 数据 ────────────────────────────────────────────────────────
 const { connected, data } = useSystemWs(props.wsUrl)
 
-// ── 数字动画（P&L 主数字）────────────────────────────────────────────────
-const displayPnl = ref(0)
-let rafId = null
-
-function animateTo(target) {
-  if (rafId) cancelAnimationFrame(rafId)
-  const start     = displayPnl.value
-  const diff      = target - start
-  const duration  = 450                // ms
-  const startTime = performance.now()
-
-  function step(now) {
-    const elapsed  = Math.min(now - startTime, duration)
-    const t        = elapsed / duration
-    const ease     = 1 - (1 - t) ** 3  // cubic ease-out
-    displayPnl.value = start + diff * ease
-    if (elapsed < duration) rafId = requestAnimationFrame(step)
-    else displayPnl.value = target
-  }
-  rafId = requestAnimationFrame(step)
-}
-onUnmounted(() => { if (rafId) cancelAnimationFrame(rafId) })
+// ── 柜台盈亏────────────────────────────────────────────────
+const displayPnl = computed(() => data.totalPnl)
 
 // ── 闪烁动画 ─────────────────────────────────────────────────────────────
 const flashClass = ref('')  // '' | 'flash-up' | 'flash-down'
 let flashTimer = null
 
 watch(() => data.totalPnl, (newVal, oldVal) => {
-  animateTo(newVal)
   if (flashTimer) clearTimeout(flashTimer)
   flashClass.value = newVal > oldVal ? 'flash-up' : newVal < oldVal ? 'flash-down' : ''
   flashTimer = setTimeout(() => { flashClass.value = '' }, 700)
 })
 
 // ── 格式化工具 ────────────────────────────────────────────────────────────
-function fmtMoney(val, decimals = 2) {
-  const n = Number(val) || 0
-  return n.toLocaleString('zh-CN', {
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-  })
-}
-
-function fmtPnlSign(val) {
-  const n = Number(val) || 0
-  return (n >= 0 ? '+' : '') + fmtMoney(n)
-}
-
-function fmtRate(val) {
-  const n = Number(val) || 0
-  return (n >= 0 ? '+' : '') + n.toFixed(4) + '%'
-}
+const fmtMoney = formatAmount
+const fmtPnlSign = formatSigned
+const fmtRate = value => formatPercent(value, 4)
+onUnmounted(() => clearTimeout(flashTimer))
 
 // ── 颜色计算 ──────────────────────────────────────────────────────────────
 const pnlColor = computed(() => {
@@ -117,7 +83,7 @@ const lastUpdate = computed(() => {
       <span class="status-item">
         <span class="dot" :class="connected ? 'dot-on' : 'dot-off'"></span>
         <span :class="connected ? 'c-green' : 'c-muted'">
-          {{ connected ? 'WebSocket 已连接' : '正在连接…' }}
+          {{ connected ? (data.accountKnown ? '柜台账户回报' : '柜台数据未就绪') : '推送已断开' }}
         </span>
       </span>
       <span class="status-item">
@@ -144,7 +110,7 @@ const lastUpdate = computed(() => {
 
       <!-- 总盈亏（主角） -->
       <div class="stat-card stat-card--large">
-        <div class="stat-label">总浮动盈亏（¥）</div>
+        <div class="stat-label">持仓 + 平仓盈亏（未扣手续费）</div>
         <div
           class="stat-value stat-value--xl mono"
           :class="flashClass"
@@ -159,7 +125,7 @@ const lastUpdate = computed(() => {
 
       <!-- 收益率 -->
       <div class="stat-card stat-card--large">
-        <div class="stat-label">收益率</div>
+        <div class="stat-label">收益率（缺少日终基准及出入金）</div>
         <div
           class="stat-value stat-value--xl mono"
           :style="{ color: rateColor }"

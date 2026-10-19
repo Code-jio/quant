@@ -1,0 +1,38 @@
+{
+  "last_successful_login_time": "2026-10-08T15:14:07.426",
+  "audit_login_success": true,
+  "login_http_200": true,
+  "gateway_status": "connected",
+  "active_sessions": 1,
+  "native_log_stages": {
+    "交易服务器登录成功": true,
+    "行情服务器登录成功": true,
+    "授权验证成功": true,
+    "结算信息确认成功": true,
+    "合约信息查询成功": true
+  },
+  "read_only_endpoints": {
+    "/trading/snapshot": {
+      "http_200_count": 3
+    },
+    "/positions": {
+      "http_200_count": 6
+    },
+    "/risk/status": {
+      "http_200_count": 6
+    },
+    "/strategies": {
+      "http_200_count": 6
+    },
+    "/trading/reconcile": {
+      "http_200_count": 6
+    }
+  },
+  "tracebacks": 0,
+  "server_errors": 0,
+  "unauthorized_relogin_409": 14,
+  "orders_submitted_by_verification": 0,
+  "account_identity_included": false,
+  "live_ticks_verified": false,
+  "readiness_at_login": "inferred from successful VnpyGateway.connect readiness gate"
+}

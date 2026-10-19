@@ -1,0 +1,28 @@
+Local runtime:
+Python = C:/Users/HP/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe
+Node = C:/Users/HP/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node.exe
+npm CLI = D:/mine/quant-audit-20261004/node_modules/npm/bin/npm-cli.js
+Prepend Python path: D:/mine/quant-audit-20261004/python-deps
+Prepend PATH for npm scripts: Node directory and D:/mine/quant-audit-20261004/bin
+
+Baseline backend (cwd D:/mine/quant/back_end):
+QUANT_ENV=test, QUANT_ALLOW_SYNTHETIC_DATA=0, PYTHONUTF8=1
+python -m pytest -o addopts='' -p no:cacheprovider --basetemp D:/mine/quant-recheck-20261005/pytest-fresh -q
+Use a NEW dedicated basetemp directory for subsequent runs: pytest cleans its given basetemp.
+python -m ruff check main.py server.py src tests
+python -m mypy
+
+Baseline frontend (cwd D:/mine/quant/front_end):
+node <npm CLI> run quality
+QUANT_TEST_PYTHON=<Python>, PYTHONPATH=<Python dependencies>
+node node_modules/@playwright/test/cli.js test
+Ports 8000 and 55173 must be free. The E2E fixture exclusively uses FakeGateway.
+
+Defect probes:
+python D:/mine/quant-recheck-20261005/backend_probes.py
+node D:/mine/quant-recheck-20261005/indicator_probe.mjs
+cwd D:/mine/quant/front_end:
+node node_modules/vitest/vitest.mjs run --config D:/mine/quant-recheck-20261005/vitest.config.mjs --pool=threads --maxWorkers=1 --no-file-parallelism
+The last command intentionally exits 1: the filled-order invariant currently fails.
+Source snapshots are included in this evidence directory. Their absolute paths target this machine's isolated probe workspace; copy them there when reproducing locally.
+No native CTP connect() or broker send was performed; all submission probes use RecordingGateway.

@@ -1,0 +1,4 @@
+{
+  "exchanges": ["SHFE", "DCE", "CZCE", "CFFEX", "INE", "GFEX"],
+  "cffex_futures": ["IF", "IH", "IC", "IM", "T", "TF", "TS", "TL"]
+}

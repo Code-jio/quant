@@ -1,0 +1,13 @@
+
+Running 8 tests using 1 worker
+
+  ok 1 [chromium] › tests\e2e\recheck.spec.js:3:1 › saved live API defaults allow account/password login without a contract (1.5s)
+  ok 2 [chromium] › tests\e2e\recheck.spec.js:37:1 › saved settings load failure is visible and custom connection remains editable (521ms)
+  ok 3 [chromium] › tests\e2e\recheck.spec.js:46:1 › saved connection fields can be overridden explicitly (1.9s)
+  ok 4 [chromium] › tests\e2e\recheck.spec.js:75:1 › trading panel shows queried account margin and clears it when contract changes (2.7s)
+  ok 5 [chromium] › tests\e2e\remediation.spec.js:3:1 › offline backtest runs with explicit synthetic data and renders result charts (1.1s)
+  ok 6 [chromium] › tests\e2e\remediation.spec.js:23:1 › stored historical bars render through the real worker without auth sockets (784ms)
+  ok 7 [chromium] › tests\e2e\remediation.spec.js:40:1 › authenticated sockets close on logout and trading data loses access (1.2s)
+  ok 8 [chromium] › tests\e2e\smoke.spec.js:3:1 › public pages render without a hard crash (544ms)
+
+  8 passed (12.9s)

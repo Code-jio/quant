@@ -5,20 +5,20 @@ import { resolve } from 'path'
 export default defineConfig({
   plugins: [vue()],
   resolve: {
-    alias: { '@': resolve(__dirname, 'src') },
+    alias: { '@': resolve(import.meta.dirname, 'src') },
   },
   server: {
     port: 5173,
     proxy: {
       // REST API: /api/strategies → http://localhost:8000/strategies
       '/api': {
-        target: 'http://localhost:8000',
+        target: process.env.QUANT_PROXY_TARGET || 'http://localhost:8000',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ''),
       },
       // WebSocket: /ws → ws://localhost:8000
       '/ws': {
-        target: 'ws://localhost:8000',
+        target: process.env.QUANT_PROXY_TARGET || 'ws://localhost:8000',
         ws: true,
         changeOrigin: true,
       },

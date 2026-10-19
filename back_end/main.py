@@ -19,6 +19,12 @@ from src.settings import ctp_defaults
 
 
 logger = logging.getLogger(__name__)
+_CTP_DEFAULTS = ctp_defaults()
+
+
+def configure_logging():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
 
 DEFAULT_CONFIG_PATH = "config/config_production.json"
 
@@ -31,7 +37,7 @@ DEFAULT_CONFIG = {
         "commission_rate": 0.0003,
         "slip_rate": 0.0001,
         "margin_rate": 0.12,
-        "contract_multiplier": 1
+        "contract_multiplier": 1,
     },
     "strategy": {
         "name": "ma_cross",
@@ -39,7 +45,7 @@ DEFAULT_CONFIG = {
         "fast_period": 10,
         "slow_period": 20,
         "position_ratio": 0.8,
-        "max_errors": 10
+        "max_errors": 10,
     },
     "trading": {
         "gateway": "vnpy",
@@ -51,7 +57,7 @@ DEFAULT_CONFIG = {
         "app_id": _CTP_DEFAULTS["app_id"],
         "auth_code": _CTP_DEFAULTS["auth_code"],
         "vnpy_environment": _CTP_DEFAULTS["vnpy_environment"],
-        "initial_capital": 1000000
+        "initial_capital": 1000000,
     },
     "risk": {
         "enabled": True,
@@ -60,10 +66,10 @@ DEFAULT_CONFIG = {
         "max_active_orders": 200,
         "max_orders_per_minute": 120,
         "max_daily_loss_ratio": 0.10,
-        "allow_market_orders": True,
+        "allow_market_orders": False,
         "allowed_symbols": [],
-        "blocked_symbols": []
-    }
+        "blocked_symbols": [],
+    },
 }
 
 
@@ -71,54 +77,24 @@ def load_config(config_path: str = DEFAULT_CONFIG_PATH) -> dict:
     """加载配置文件，不存在时使用默认配置"""
     if not os.path.exists(config_path):
         logger.warning(f"配置文件不存在: {config_path}，使用内置默认配置")
-        return DEFAULT_CONFIG.copy()
-    with open(config_path, 'r', encoding='utf-8') as f:
+        import copy
+
+        return copy.deepcopy(DEFAULT_CONFIG)
+    with open(config_path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
 def run_backtest(config: dict):
-    """运行回测"""
-    logger.info("=" * 60)
-    logger.info("开始回测")
-    logger.info("=" * 60)
+    """Use the same validated research service as the API."""
+    from src.api import BacktestRunRequest
+    from src.api.backtest_service import run_backtest_sync
 
-    bt_config = BacktestConfig(
-        start_date=config['backtest']['start_date'],
-        end_date=config['backtest']['end_date'],
-        initial_capital=config['backtest']['initial_capital'],
-        commission_rate=config['backtest']['commission_rate'],
-        slip_rate=config['backtest']['slip_rate'],
-        margin_rate=config['backtest']['margin_rate'],
-        contract_multiplier=config['backtest'].get('contract_multiplier', 1)
-    )
-
-    data_manager = DataManager()
-    symbol = config['strategy']['symbol']
-    logger.info(f"生成/加载 {symbol} 模拟数据...")
-    data_manager.generate_sample_data(symbol, days=500)
-
-    strategy = create_strategy(config['strategy']['name'], config['strategy'])
-
-    engine = BacktestEngine(bt_config)
-    engine.set_data_manager(data_manager)
-    engine.set_strategy(strategy)
-
-    result = engine.run()
-
-    logger.info("\n" + "=" * 60)
-    logger.info("回测结果")
-    logger.info("=" * 60)
-    logger.info(f"总收益率:   {result.total_return:.2%}")
-    logger.info(f"年化收益率: {result.annual_return:.2%}")
-    logger.info(f"夏普比率:   {result.sharpe_ratio:.2f}")
-    logger.info(f"最大回撤:   {result.max_drawdown_pct:.2%}")
-    logger.info(f"胜率:      {result.win_rate:.2%}")
-    logger.info(f"总交易次数: {result.total_trades}")
-
-    analyzer = Analyzer(initial_capital=bt_config.initial_capital)
-    analyzer.set_data(list(engine.equity_curve.values()), result.trades)
-    print(analyzer.generate_report())
-
+    params = {key: value for key, value in config["strategy"].items() if key != "name"}
+    request = BacktestRunRequest(strategy_name=config["strategy"]["name"], strategy_params=params, **config["backtest"])
+    result = run_backtest_sync(request)
+    print(json.dumps(result, ensure_ascii=False, allow_nan=False, indent=2))
+    if not result.get("success"):
+        raise RuntimeError(result.get("error", "Backtest failed"))
     return result
 
 
@@ -128,19 +104,27 @@ def run_live_trading(config: dict):
     logger.info("开始实盘交易")
     logger.info("=" * 60)
 
-    trading_config = dict(config.get('trading', {}))
-    if 'risk' in config:
-        trading_config['risk'] = config['risk']
-    gateway_type = trading_config.get('gateway', 'vnpy')
+    trading_config = dict(config.get("trading", {}))
+    if "risk" in config:
+        trading_config["risk"] = config["risk"]
+    gateway_type = trading_config.get("gateway", "vnpy")
     logger.info(f"使用交易网关: {gateway_type}")
 
     gateway = create_gateway(gateway_type)
     trading_engine = TradingEngine(gateway)
 
-    strategy = create_strategy(config['strategy']['name'], config['strategy'])
-    strategy.initial_capital = trading_config.get('initial_capital', 1000000)
+    strategy = create_strategy(config["strategy"]["name"], {k: v for k, v in config["strategy"].items() if k != "name"})
+    strategy.initial_capital = trading_config.get("initial_capital", 1000000)
     trading_engine.set_strategy(strategy)
 
+    from src.runtime import InstanceLock
+
+    instance = InstanceLock(os.getenv("QUANT_INSTANCE_LOCK", "data/runtime/executor.lock"))
+    instance.acquire()
+    import atexit
+
+    atexit.register(trading_engine.close)
+    atexit.register(instance.release)
     success = trading_engine.start(trading_config)
     if not success:
         logger.error("实盘交易启动失败")
@@ -151,29 +135,30 @@ def run_live_trading(config: dict):
     try:
         while True:
             import time
+
             time.sleep(1)
     except KeyboardInterrupt:
         pass
 
-    trading_engine.stop()
+    trading_engine.close()
 
 
 def main():
     configure_logging()
 
-    parser = argparse.ArgumentParser(description='量化交易系统')
-    parser.add_argument('--config', '-c', default=DEFAULT_CONFIG_PATH, help='配置文件路径')
-    parser.add_argument('--mode', '-m', choices=['backtest', 'live'], help='运行模式')
+    parser = argparse.ArgumentParser(description="量化交易系统")
+    parser.add_argument("--config", "-c", default=DEFAULT_CONFIG_PATH, help="配置文件路径")
+    parser.add_argument("--mode", "-m", choices=["backtest", "live"], help="运行模式")
     args = parser.parse_args()
 
     config = load_config(args.config)
     if args.mode:
-        config['mode'] = args.mode
+        config["mode"] = args.mode
 
-    mode = config.get('mode', 'backtest')
-    if mode == 'backtest':
+    mode = config.get("mode", "backtest")
+    if mode == "backtest":
         run_backtest(config)
-    elif mode == 'live':
+    elif mode == "live":
         run_live_trading(config)
     else:
         logger.error(f"未知模式: {mode}")

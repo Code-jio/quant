@@ -134,7 +134,8 @@ def test_generate_sample_data_marks_synthetic_source(monkeypatch):
         metadata = manager.db.get_metadata("rb2505")
 
         assert len(generated) == 10
-        assert metadata["data_source"] == "synthetic"
+        assert metadata is None
+        assert generated["data_source"].eq("synthetic").all()
     finally:
         db_path.unlink(missing_ok=True)
 

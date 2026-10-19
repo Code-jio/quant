@@ -1,0 +1,197 @@
+[
+  {
+    "package": "annotated-doc",
+    "version": "0.0.5",
+    "vulnerabilities": []
+  },
+  {
+    "package": "annotated-types",
+    "version": "0.8.0",
+    "vulnerabilities": []
+  },
+  {
+    "package": "anyio",
+    "version": "4.15.1",
+    "vulnerabilities": []
+  },
+  {
+    "package": "ast-serialize",
+    "version": "0.12.1",
+    "vulnerabilities": []
+  },
+  {
+    "package": "certifi",
+    "version": "2026.7.22",
+    "vulnerabilities": []
+  },
+  {
+    "package": "click",
+    "version": "8.5.0",
+    "vulnerabilities": []
+  },
+  {
+    "package": "colorama",
+    "version": "0.4.6",
+    "vulnerabilities": []
+  },
+  {
+    "package": "coverage",
+    "version": "7.16.2",
+    "vulnerabilities": []
+  },
+  {
+    "package": "fastapi",
+    "version": "0.142.2",
+    "vulnerabilities": []
+  },
+  {
+    "package": "h11",
+    "version": "0.16.0",
+    "vulnerabilities": []
+  },
+  {
+    "package": "httpcore",
+    "version": "1.0.9",
+    "vulnerabilities": []
+  },
+  {
+    "package": "httpx",
+    "version": "0.28.1",
+    "vulnerabilities": []
+  },
+  {
+    "package": "idna",
+    "version": "3.20",
+    "vulnerabilities": []
+  },
+  {
+    "package": "iniconfig",
+    "version": "2.3.0",
+    "vulnerabilities": []
+  },
+  {
+    "package": "librt",
+    "version": "0.16.0",
+    "vulnerabilities": []
+  },
+  {
+    "package": "loguru",
+    "version": "0.7.3",
+    "vulnerabilities": []
+  },
+  {
+    "package": "mypy",
+    "version": "2.4.0",
+    "vulnerabilities": []
+  },
+  {
+    "package": "mypy-extensions",
+    "version": "1.1.0",
+    "vulnerabilities": []
+  },
+  {
+    "package": "numpy",
+    "version": "2.3.5",
+    "vulnerabilities": []
+  },
+  {
+    "package": "opentelemetry-api",
+    "version": "1.45.0",
+    "vulnerabilities": []
+  },
+  {
+    "package": "packaging",
+    "version": "26.3",
+    "vulnerabilities": []
+  },
+  {
+    "package": "pandas",
+    "version": "3.0.1",
+    "vulnerabilities": []
+  },
+  {
+    "package": "pathspec",
+    "version": "1.1.1",
+    "vulnerabilities": []
+  },
+  {
+    "package": "pluggy",
+    "version": "1.6.0",
+    "vulnerabilities": []
+  },
+  {
+    "package": "psutil",
+    "version": "7.2.2",
+    "vulnerabilities": []
+  },
+  {
+    "package": "pydantic",
+    "version": "2.13.5",
+    "vulnerabilities": []
+  },
+  {
+    "package": "pydantic-core",
+    "version": "2.46.5",
+    "vulnerabilities": []
+  },
+  {
+    "package": "pygments",
+    "version": "2.21.0",
+    "vulnerabilities": []
+  },
+  {
+    "package": "pytest",
+    "version": "9.1.1",
+    "vulnerabilities": []
+  },
+  {
+    "package": "python-dateutil",
+    "version": "2.9.0.post0",
+    "vulnerabilities": []
+  },
+  {
+    "package": "ruff",
+    "version": "0.16.10",
+    "vulnerabilities": []
+  },
+  {
+    "package": "six",
+    "version": "1.17.0",
+    "vulnerabilities": []
+  },
+  {
+    "package": "starlette",
+    "version": "1.7.0",
+    "vulnerabilities": []
+  },
+  {
+    "package": "typing-extensions",
+    "version": "4.16.0",
+    "vulnerabilities": []
+  },
+  {
+    "package": "typing-inspection",
+    "version": "0.4.4",
+    "vulnerabilities": []
+  },
+  {
+    "package": "tzdata",
+    "version": "2026.4",
+    "vulnerabilities": []
+  },
+  {
+    "package": "uvicorn",
+    "version": "0.54.0",
+    "vulnerabilities": []
+  },
+  {
+    "package": "websockets",
+    "version": "16.0",
+    "vulnerabilities": []
+  },
+  {
+    "package": "win32-setctime",
+    "version": "1.2.0",
+    "vulnerabilities": []
+  }
+]

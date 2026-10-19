@@ -8,40 +8,42 @@
  */
 
 import { buildApiUrl } from '@/config/network.js'
+import { domesticFutures } from '@/utils/domesticFutures.js'
 
-async function request(path, options = {}) {
-  const headers = {
-    'Content-Type': 'application/json',
-    ...options.headers,
-  }
-
-  let res
+export async function request(path, options = {}) {
+  const {timeoutMs=15000,signal:outerSignal,...rest}=options
+  const controller=new AbortController()
+  const abort=()=>controller.abort()
+  if (outerSignal?.aborted) abort()
+  outerSignal?.addEventListener('abort',abort,{once:true})
+  const timer=setTimeout(abort,timeoutMs)
   try {
-    res = await fetch(buildApiUrl(path), { ...options, headers, credentials: 'include' })
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e)
-    throw new Error(`网络请求失败: ${message}`, { cause: e })
+    const res=await fetch(buildApiUrl(path),{...rest,signal:controller.signal,
+      headers:{'Content-Type':'application/json',...options.headers},credentials:'include'})
+    let body
+    try { body=await res.json() } catch { body={} }
+    if (res.status===401) {
+      sessionStorage.removeItem('quant_account_id');sessionStorage.removeItem('quant_session_active')
+      window.dispatchEvent(new CustomEvent('quant-auth-change'))
+      if (path!=='/auth/login') window.location.href='/login'
+    }
+    if (!res.ok) {
+      let detail=body.detail ?? body.error ?? body.msg ?? body.message ?? `HTTP ${res.status}`
+      if (typeof detail!=='string') detail=JSON.stringify(detail)
+      const id=res.headers.get('x-request-id')
+      throw Object.assign(new Error(detail+(id ? `（请求 ${id}）` : '')), { status: res.status })
+    }
+    return body
+  } catch (error) {
+    if (controller.signal.aborted && !outerSignal?.aborted) throw new Error('请求超时，请检查连接状态后重试',{cause:error})
+    throw error
+  } finally {
+    clearTimeout(timer)
+    outerSignal?.removeEventListener('abort',abort)
   }
-
-  // 401：清除凭证并跳转登录页
-  if (res.status === 401) {
-    let detail = '未登录或登录失败'
-    try { detail = (await res.json()).detail ?? detail } catch { /* ignore */ }
-    sessionStorage.removeItem('quant_account_id')
-    sessionStorage.removeItem('quant_session_active')
-    localStorage.removeItem('quant_account_id')
-    if (path !== '/auth/login') window.location.href = '/login'
-    throw new Error(detail)
-  }
-
-  if (!res.ok) {
-    let detail = `HTTP ${res.status}`
-    try { detail = (await res.json()).detail ?? detail } catch { /* ignore */ }
-    throw new Error(detail)
-  }
-
-  return res.json()
 }
+
+export const fetchMarginRate = (symbol) => request(`/trading/margin-rate?symbol=${encodeURIComponent(symbol)}`)
 
 // ── Auth ──────────────────────────────────────────────────────────────────
 /** 获取预设服务器列表 */
@@ -52,11 +54,15 @@ export const fetchAuthStatus = () => request('/auth/status')
 
 /** CTP 登录 */
 export const login = (body) =>
-  request('/auth/login', { method: 'POST', body: JSON.stringify(body) })
+  request('/auth/login', { method: 'POST', body: JSON.stringify(body),timeoutMs:45000 })
 
 /** 断开连接 */
 export const logout = () =>
   request('/auth/logout', { method: 'POST' })
+
+/** 注销当前浏览器会话，保留其他设备和柜台连接。 */
+export const logoutSession = () =>
+  request('/auth/session/logout', { method: 'POST' })
 
 // ── 行情 ──────────────────────────────────────────────────────────────────
 /** 批量查询实时 tick（轮询接口） */
@@ -111,6 +117,10 @@ export const resumeTrading = () =>
   request('/risk/resume', { method: 'POST' })
 
 export const fetchTradingReconcile = () => request('/trading/reconcile')
+export const queryBrokerReconcile = () => request('/trading/reconcile/query', { method: 'POST' })
+export const importBrokerReconcile = body => request('/trading/reconcile/import', { method: 'POST', body: JSON.stringify(body) })
+export const resolveExecutionIntent = body => request('/trading/reconcile/resolve', { method: 'POST', body: JSON.stringify(body) })
+export const reviewConditionalOrder = (id, body) => request(`/trading/conditional/${encodeURIComponent(id)}/review`, { method: 'POST', body: JSON.stringify(body) })
 
 // ── 订单簿 ────────────────────────────────────────────────────────────────
 /** 所有委托单（最近 500 条） */
@@ -136,6 +146,10 @@ export const cancelOrder = (orderId) =>
  */
 export const placeOrder = (body) =>
   request('/orders', { method: 'POST', body: JSON.stringify(body) })
+
+/** 只读快照检查，不发送委托；实际下单仍由后端重新校验。 */
+export const preflightOrder = (body) =>
+  request('/orders/preflight', { method: 'POST', body: JSON.stringify(body) })
 
 /** 一键撤销所有活跃委托 */
 export const cancelAllOrders = () =>
@@ -169,18 +183,28 @@ export const fetchSystemLogs = ({ level = '', q = '', limit = 200 } = {}) => {
 /** 可用策略列表及默认参数 */
 export const fetchBacktestStrategies = () => request('/backtest/strategies')
 
+export const fetchEdbCapabilities = (signal) => request('/data/history/edb', { signal })
+export const importEdbHistory = (body, signal) => request('/data/history/edb/import', {
+  method: 'POST', body: JSON.stringify(body), timeoutMs: 90000, signal,
+})
+
 /** 运行回测；body = BacktestRunRequest */
 export const runBacktest = (body) =>
-  request('/backtest/run', { method: 'POST', body: JSON.stringify(body) })
+  request('/backtest/run', { method: 'POST', body: JSON.stringify(body),timeoutMs:130000 })
 
 // ── 行情 Watch ─────────────────────────────────────────────────────────────
 /** 期货合约搜索；query: 关键词，exchange: 可选交易所，limit: 最多返回条数 */
-export const searchContracts = ({ query = '', exchange = '', limit = 60 } = {}) => {
+export const searchContracts = async ({ query = '', exchange = '', limit = 60, offset = 0, product = '' } = {}) => {
   const p = new URLSearchParams()
   if (query)    p.set('query',    query)
   if (exchange) p.set('exchange', exchange)
   if (limit)    p.set('limit',    String(limit))
-  return request(`/watch/search?${p}`)
+  if (offset) p.set('offset', String(offset))
+  if (product) p.set('product', product)
+  const response = await request(`/watch/search?${p}`)
+  // Also protect callers while an older backend is still serving this session.
+  const data = domesticFutures(response.data)
+  return { ...response, data, total: response.paginated && data.length === response.data?.length ? response.total : data.length }
 }
 
 /**
@@ -192,11 +216,12 @@ export const searchContracts = ({ query = '', exchange = '', limit = 60 } = {}) 
  * @param {string} opts.indicators 逗号分隔指标，如 "ma20,ma60,macd,rsi14"
  * @param {string} [opts.since]    ISO datetime，仅返回该时刻之后的 bar
  */
-export const fetchKline = ({ symbol, interval = '1d', limit = 100, indicators = '', since } = {}) => {
+export const fetchKline = ({ symbol, interval = '1d', limit = 100, indicators = '', since, before, signal } = {}) => {
   const p = new URLSearchParams({ symbol, interval, limit: String(limit) })
   if (indicators) p.set('indicators', indicators)
   if (since)      p.set('since',      since)
-  return request(`/watch/kline?${p}`)
+  if (before) p.set('before', before)
+  return request(`/watch/kline?${p}`,{signal})
 }
 
 /** 清除服务端 K 线缓存（可选指定合约） */
@@ -204,3 +229,5 @@ export const clearKlineCache = (symbol = '') => {
   const p = symbol ? `?symbol=${symbol}` : ''
   return request(`/watch/kline/cache${p}`, { method: 'DELETE' })
 }
+
+export const fetchTradingSnapshot=()=>request('/trading/snapshot')

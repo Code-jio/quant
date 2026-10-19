@@ -42,6 +42,7 @@ __pycache__/
 dist/
 build/
 .venv/
+.venv-live/
 venv/
 env/
 .Python
@@ -90,3 +91,9 @@ front_end/test-results/
 
 # ── 系统 ─────────────────────────────────────────────────────
 desktop.ini
+
+# Local secrets and durable runtime state
+back_end/config/config_production.json
+back_end/data/runtime/
+output/playwright/
+back_end/backups/

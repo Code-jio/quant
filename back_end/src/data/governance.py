@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any
 
 import pandas as pd
+import numpy as np
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,7 @@ class GapReport:
     first_missing: str | None
     last_missing: str | None
     sample_missing: list[str]
+    calendar_verified: bool = False
 
     @property
     def has_gaps(self) -> bool:
@@ -67,7 +69,7 @@ def _datetime_index(df: pd.DataFrame) -> pd.DatetimeIndex:
     return pd.DatetimeIndex(values).dropna().sort_values().unique()
 
 
-def detect_bar_gaps(df: pd.DataFrame, timeframe: str = "1d", sample_limit: int = 20) -> GapReport:
+def detect_bar_gaps(df: pd.DataFrame, timeframe: str = "1d", sample_limit: int = 20, expected_index=None) -> GapReport:
     """Detect missing timestamps using a deterministic baseline calendar.
 
     Daily bars use business days. Intraday bars use a continuous interval
@@ -78,7 +80,11 @@ def detect_bar_gaps(df: pd.DataFrame, timeframe: str = "1d", sample_limit: int =
     if len(actual) == 0:
         return GapReport(timeframe, 0, 0, 0, None, None, [])
 
-    expected = pd.date_range(actual[0], actual[-1], freq=timeframe_to_pandas_freq(timeframe))
+    expected = (
+        pd.DatetimeIndex(expected_index)
+        if expected_index is not None
+        else pd.date_range(actual[0], actual[-1], freq=timeframe_to_pandas_freq(timeframe))
+    )
     missing = expected.difference(actual)
     return GapReport(
         timeframe=timeframe,
@@ -88,6 +94,7 @@ def detect_bar_gaps(df: pd.DataFrame, timeframe: str = "1d", sample_limit: int =
         first_missing=missing[0].isoformat() if len(missing) else None,
         last_missing=missing[-1].isoformat() if len(missing) else None,
         sample_missing=[ts.isoformat() for ts in missing[:sample_limit]],
+        calendar_verified=expected_index is not None,
     )
 
 
@@ -115,9 +122,39 @@ def summarize_ohlcv_quality(df: pd.DataFrame) -> dict[str, Any]:
         )
     return {
         "rows": int(len(indexed)),
+        "nonfinite_cells": int((~np.isfinite(indexed[present].to_numpy(dtype=float))).sum()),
+        "negative_volume_rows": int((indexed["volume"] < 0).sum()) if "volume" in indexed else 0,
+        "missing_columns": sorted(set(required) - set(present)),
         "duplicate_timestamps": int(indexed.index.duplicated().sum()),
         "null_cells": null_cells,
         "invalid_ohlc_rows": invalid_ohlc,
+    }
+
+
+def validate_bars(df):
+    """Reject corrupt input before it can replace an existing historical row."""
+    required = {"open", "high", "low", "close", "volume"}
+    if not required.issubset(df.columns):
+        raise ValueError("Missing OHLCV columns")
+    timestamps = pd.to_datetime(df["datetime"] if "datetime" in df else df.index, errors="raise")
+    if pd.isna(timestamps).any() or pd.Index(timestamps).duplicated().any():
+        raise ValueError("Invalid or duplicate timestamps")
+    values = df[list(required)].to_numpy(dtype=float)
+    if not np.isfinite(values).all() or (df["volume"] < 0).any():
+        raise ValueError("Nonfinite OHLCV or negative volume")
+    if (
+        (df["high"] < df[["open", "close", "low"]].max(axis=1))
+        | (df["low"] > df[["open", "close", "high"]].min(axis=1))
+    ).any():
+        raise ValueError("Invalid OHLC price range")
+
+
+def data_provenance(df):
+    sources = sorted(set(df["data_source"].fillna("unknown"))) if "data_source" in df else ["unknown"]
+    return {
+        "data_source": sources[0] if len(sources) == 1 else "mixed",
+        "sources": sources,
+        "synthetic_data_used": any(s in ("synthetic", "simulated") for s in sources),
     }
 
 

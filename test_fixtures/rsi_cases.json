@@ -1,0 +1,8 @@
+[
+  {"name":"rising","period":3,"closes":[100,101,102,103,104,105],"expected":[null,null,null,100,100,100]},
+  {"name":"falling","period":3,"closes":[105,104,103,102,101,100],"expected":[null,null,null,0,0,0]},
+  {"name":"flat","period":3,"closes":[100,100,100,100,100,100],"expected":[null,null,null,50,50,50]},
+  {"name":"reversal","period":3,"closes":[100,101,102,103,102,101,100,100],"expected":[null,null,null,100,66.66666666666667,44.44444444444444,29.62962962962963,29.62962962962963]},
+  {"name":"warmup","period":3,"closes":[100,101,102],"expected":[null,null,null]},
+  {"name":"period_one","period":1,"closes":[100,101,100,100],"expected":[null,100,0,50]}
+]

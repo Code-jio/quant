@@ -10,6 +10,7 @@ from typing import Dict, Any, List, Optional, Callable
 
 class TradingStatus(Enum):
     """交易状态"""
+
     STOPPED = "stopped"
     CONNECTING = "connecting"
     CONNECTED = "connected"
@@ -20,6 +21,7 @@ class TradingStatus(Enum):
 @dataclass
 class AccountInfo:
     """账户信息"""
+
     account_id: str = ""
     balance: float = 0.0
     available: float = 0.0
@@ -28,11 +30,20 @@ class AccountInfo:
     position_pnl: float = 0.0
     total_pnl: float = 0.0
     error_msg: str = ""
+    trading_day: str = ""
+    fields_known: bool = True
+    source: str = "unknown"
+    pre_balance: Optional[float] = None
+    deposit: Optional[float] = None
+    withdraw: Optional[float] = None
+    collected_at: str = ""
+    query_started_at: float = 0.0
 
 
 @dataclass
 class MarketData:
     """行情数据"""
+
     symbol: str
     last_price: float
     bid_price_1: float
@@ -43,3 +54,4 @@ class MarketData:
     turnover: float
     timestamp: datetime = field(default_factory=datetime.now)
     error_msg: str = ""
+    trading_day: str = ""

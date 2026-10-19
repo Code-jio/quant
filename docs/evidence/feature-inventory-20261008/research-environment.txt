@@ -1,0 +1,7 @@
+Python 3.12.14 AMD64
+fastapi 0.142.2
+pandas 3.0.1
+numpy 2.3.5
+uvicorn 0.54.0
+websockets 16.0
+Offline runtime available. Native CTP and broker acceptance are separate checks.

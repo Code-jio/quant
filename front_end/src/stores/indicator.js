@@ -8,7 +8,7 @@
  *  - 所有配置持久化到 localStorage
  */
 
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { defineStore } from 'pinia'
 
 // ── localStorage 键 ───────────────────────────────────────────────────────
@@ -62,6 +62,8 @@ export const useIndicatorStore = defineStore('indicator', () => {
 
   // ── 均线列表 ──────────────────────────────────────────────────────────
   const maList = ref(readLS(LS_MA_LIST, DEFAULT_MA_LIST.map(m => ({ ...m }))))
+  // Toolbar switches and color selectors also edit nested entries directly.
+  watch(maList, value => writeLS(LS_MA_LIST, value), { deep: true })
 
   /** 所有可见均线 */
   const visibleMas = computed(() => maList.value.filter(m => m.visible))

@@ -5,25 +5,21 @@
  * 支持指数退避自动重连、页面可见性感知暂停。
  */
 import { reactive, ref, onUnmounted } from 'vue'
+import { finiteAmount } from '@/utils/financialData.js'
 import { buildWsUrl } from '@/config/network.js'
 
+const FINANCIAL_FIELDS = {
+  totalPnl: 'total_pnl', positionPnl: 'position_pnl', returnRate: 'return_rate', todayReturn: 'today_return',
+  balance: 'balance', available: 'available', margin: 'margin', commission: 'commission',
+  initialCapital: 'initial_capital', sharpeRatio: 'sharpe_ratio', maxDrawdownPct: 'max_drawdown_pct',
+  totalExposure: 'total_exposure', exposurePct: 'exposure_pct', sessionStartBalance: 'session_start_balance',
+  sessionBalanceChangePct: 'session_balance_change_pct',
+}
 const DEFAULT_DATA = {
-  accountId:       '',
-  totalPnl:        0,
-  returnRate:      0,
-  todayReturn:     0,
-  balance:         0,
-  available:       0,
-  margin:          0,
-  initialCapital:  1_000_000,
-  sharpeRatio:     0,
-  maxDrawdownPct:  0,
-  totalExposure:   0,
-  exposurePct:     0,
-  positions:       [],
-  equityCurve:     [],
-  activeStrategies: 0,
-  timestamp:       '',
+  ...Object.fromEntries(Object.keys(FINANCIAL_FIELDS).map(key => [key, null])),
+  accountId: '', accountKnown: false, accountSource: 'unavailable', positionsKnown: false,
+  tradingDay: '', performanceNote: '', exposureBasis: '', positions: [], equityCurve: [],
+  activeStrategies: 0, timestamp: '',
 }
 
 const MAX_BACKOFF = 30_000
@@ -43,22 +39,19 @@ export function useDashboardWs(url) {
 
   function applyPayload(payload) {
     if (!payload || payload.type !== 'dashboard_metrics') return
-    data.accountId        = payload.account_id       ?? data.accountId
-    data.totalPnl         = payload.total_pnl        ?? data.totalPnl
-    data.returnRate       = payload.return_rate      ?? data.returnRate
-    data.todayReturn      = payload.today_return     ?? data.todayReturn
-    data.balance          = payload.balance          ?? data.balance
-    data.available        = payload.available        ?? data.available
-    data.margin           = payload.margin           ?? data.margin
-    data.initialCapital   = payload.initial_capital  ?? data.initialCapital
-    data.sharpeRatio      = payload.sharpe_ratio     ?? data.sharpeRatio
-    data.maxDrawdownPct   = payload.max_drawdown_pct ?? data.maxDrawdownPct
-    data.totalExposure    = payload.total_exposure   ?? data.totalExposure
-    data.exposurePct      = payload.exposure_pct     ?? data.exposurePct
-    data.positions        = payload.positions        ?? data.positions
-    data.equityCurve      = payload.equity_curve     ?? data.equityCurve
-    data.activeStrategies = payload.active_strategies ?? data.activeStrategies
-    data.timestamp        = payload.timestamp        ?? data.timestamp
+    for (const [key, source] of Object.entries(FINANCIAL_FIELDS)) data[key] = payload.account_known === true ? finiteAmount(payload[source]) : null
+    data.accountId = payload.account_id ?? ''
+    data.accountKnown = payload.account_known === true
+    data.accountSource = payload.account_source ?? 'unavailable'
+    data.positionsKnown = payload.positions_known === true
+    data.tradingDay = payload.trading_day ?? ''
+    data.performanceNote = payload.performance_note ?? ''
+    data.exposureBasis = payload.exposure_basis ?? ''
+    data.positions = payload.positions ?? []
+    data.equityCurve = payload.equity_curve ?? []
+    data.activeStrategies = payload.active_strategies ?? 0
+    data.timestamp = payload.timestamp ?? ''
+
   }
 
   function startPing() {
@@ -73,7 +66,7 @@ export function useDashboardWs(url) {
   }
 
   function connect() {
-    if (destroyed) return
+    if (destroyed || sessionStorage.getItem('quant_session_active')!=='1') return
     ws = new WebSocket(wsUrl)
 
     ws.onopen = () => {
@@ -86,10 +79,11 @@ export function useDashboardWs(url) {
       try { applyPayload(JSON.parse(e.data)) } catch { /* ignore */ }
     }
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       connected.value = false
+      Object.assign(data, DEFAULT_DATA)
       stopPing()
-      if (!destroyed) scheduleRetry()
+      if (!destroyed && event.code!==1008) scheduleRetry()
     }
 
     ws.onerror = () => {

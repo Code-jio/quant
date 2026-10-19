@@ -1,0 +1,46 @@
+
+> quant-front-end@0.0.0 e2e
+> playwright test
+
+[WebServer] (node:10860) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+
+Running 33 tests using 1 worker
+
+(node:51964) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ok  1 [chromium] › tests\e2e\dashboard-truth.spec.js:5:1 › account views distinguish broker zero, unknown metrics, equity and cost notional (1.8s)
+  ok  2 [chromium] › tests\e2e\domestic-contract-search.spec.js:3:1 › domestic scope applies to discovery, saved choices, search and the order form (3.9s)
+  ok  3 [chromium] › tests\e2e\edb-history.spec.js:30:1 › daily import flows through real parser and database into backtest with provenance (2.6s)
+  ok  4 [chromium] › tests\e2e\edb-history.spec.js:51:1 › minute import can be applied to chart and source remains visible after refresh (2.4s)
+  ok  5 [chromium] › tests\e2e\edb-history.spec.js:67:1 › upstream refusal and empty history are visible without fabricated fallback (1.8s)
+  ok  6 [chromium] › tests\e2e\edb-history.spec.js:80:1 › mobile download form stays usable and long minute requests are rejected before download (1.7s)
+  ok  7 [chromium] › tests\e2e\edb-history.spec.js:95:1 › older backend is reported explicitly and cannot start an unsupported download (865ms)
+  ok  8 [chromium] › tests\e2e\feature-inventory.spec.js:3:1 › authenticated dashboard and system monitoring expose account views and log controls (1.2s)
+  ok  9 [chromium] › tests\e2e\feature-inventory.spec.js:26:1 › historical chart supports indicator selection drawing clearing fullscreen and PNG export (2.1s)
+  ok 10 [chromium] › tests\e2e\feature-inventory.spec.js:70:1 › unsupported custom chart period is reported instead of showing fabricated bars (811ms)
+  ok 11 [chromium] › tests\e2e\market-provenance.spec.js:5:1 › missing history and quote provenance are visible without invented bars or popularity rankings (2.1s)
+  ok 12 [chromium] › tests\e2e\multi-device.spec.js:20:1 › independent devices join one account, restore tabs, leave individually and disconnect explicitly (5.7s)
+  ok 13 [chromium] › tests\e2e\multi-device.spec.js:80:1 › failed per-device logout never silently falls back to global disconnect (1.8s)
+  ok 14 [chromium] › tests\e2e\order-preflight.spec.js:26:1 › preflight blocks submission, explains unknown data and network failures (1.6s)
+  ok 15 [chromium] › tests\e2e\order-preflight.spec.js:49:1 › confirmation submits exactly the frozen ticket once despite form updates (1.8s)
+  ok 16 [chromium] › tests\e2e\order-preflight.spec.js:73:1 › late preview cannot replace the result for the latest ticket (2.1s)
+  ok 17 [chromium] › tests\e2e\order-preflight.spec.js:96:1 › quick close freezes explicit quantity and offset before confirmation (1.5s)
+  ok 18 [chromium] › tests\e2e\recheck.spec.js:3:1 › saved live API defaults allow account/password login without a contract (1.1s)
+  ok 19 [chromium] › tests\e2e\recheck.spec.js:38:1 › saved settings load failure is visible and custom connection remains editable (500ms)
+  ok 20 [chromium] › tests\e2e\recheck.spec.js:47:1 › saved connection fields can be overridden explicitly (1.9s)
+  ok 21 [chromium] › tests\e2e\recheck.spec.js:76:1 › trading panel shows queried account margin and clears it when contract changes (2.9s)
+  ok 22 [chromium] › tests\e2e\reliability-review.spec.js:11:1 › manual search ignores obsolete responses and clear invalidates pending results (3.9s)
+  ok 23 [chromium] › tests\e2e\reliability-review.spec.js:36:1 › domestic catalog pages and product filters retain total and lifecycle context (2.4s)
+  ok 24 [chromium] › tests\e2e\reliability-review.spec.js:60:1 › recovery requires evidence and confirmation and never resumes automatically (2.7s)
+  ok 25 [chromium] › tests\e2e\remediation.spec.js:3:1 › offline backtest runs with explicit synthetic data and renders result charts (1.7s)
+  ok 26 [chromium] › tests\e2e\remediation.spec.js:23:1 › stored historical bars render through the real worker without auth sockets (768ms)
+  ok 27 [chromium] › tests\e2e\remediation.spec.js:40:1 › authenticated sockets close on logout and trading data loses access (1.4s)
+  ok 28 [chromium] › tests\e2e\smoke.spec.js:3:1 › public pages render without a hard crash (903ms)
+  ok 29 [chromium] › tests\e2e\trading-layout.spec.js:19:1 › desktop desk keeps market ticket and order book in one screen (1.8s)
+  ok 30 [chromium] › tests\e2e\trading-layout.spec.js:70:1 › contract linking clears the old limit price and trading actions retain confirmation (2.9s)
+  ok 31 [chromium] › tests\e2e\trading-layout.spec.js:107:1 › search keyboard navigation and analysis panels preserve the trading ticket (2.9s)
+  ok 32 [chromium] › tests\e2e\trading-layout.spec.js:138:1 › dense order rows scroll inside the dock while the ticket stays visible (2.2s)
+  ok 33 [chromium] › tests\e2e\trading-layout.spec.js:154:1 › tablet and narrow screens have reachable controls without page-wide overflow (1.5s)
+
+  33 passed (1.2m)

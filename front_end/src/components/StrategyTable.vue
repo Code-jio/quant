@@ -14,7 +14,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { sendStrategyAction } from '@/api/index.js'
 
 // ── Props & Emits ─────────────────────────────────────────────────────────
-const props = defineProps({
+defineProps({
   strategies: { type: Array,   default: () => [] },
   loading:    { type: Boolean, default: false     },
 })

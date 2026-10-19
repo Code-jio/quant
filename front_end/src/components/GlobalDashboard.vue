@@ -9,51 +9,33 @@
  */
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useDashboardWs } from '@/composables/useDashboardWs.js'
+import { formatAmount, formatSigned, formatPercent } from '@/utils/financialData.js'
 import { loadEcharts } from '@/utils/asyncEcharts.js'
 
 // ── WebSocket ───────────────────────────────────────────────────────────────
 const { connected, data } = useDashboardWs()
 
-// ── P&L 数字动画 ─────────────────────────────────────────────────────────────
-const displayPnl = ref(0)
-let rafId = null
-
-function animateTo(target) {
-  if (rafId) cancelAnimationFrame(rafId)
-  const start    = displayPnl.value
-  const diff     = target - start
-  const dur      = 500
-  const t0       = performance.now()
-  const step = (now) => {
-    const p = Math.min((now - t0) / dur, 1)
-    const ease = 1 - (1 - p) ** 3
-    displayPnl.value = start + diff * ease
-    if (p < 1) rafId = requestAnimationFrame(step)
-    else displayPnl.value = target
-  }
-  rafId = requestAnimationFrame(step)
-}
-onUnmounted(() => { if (rafId) cancelAnimationFrame(rafId) })
+// ── 柜台持仓盈亏 ─────────────────────────────────────────────────────────────
+const displayPnl = computed(() => data.positionPnl)
 
 // ── 闪烁 ────────────────────────────────────────────────────────────────────
 const flashCls = ref('')
 let flashTimer = null
 
-watch(() => data.totalPnl, (nv, ov) => {
-  animateTo(nv)
+watch(() => data.positionPnl, (nv, ov) => {
   if (flashTimer) clearTimeout(flashTimer)
   flashCls.value = nv > ov ? 'flash-up' : nv < ov ? 'flash-down' : ''
   flashTimer = setTimeout(() => { flashCls.value = '' }, 700)
 })
 
+onUnmounted(() => clearTimeout(flashTimer))
+
 // ── 格式化工具 ────────────────────────────────────────────────────────────────
 const fmt = {
-  money:  (v, d = 2) => (Number(v) || 0).toLocaleString('zh-CN', { minimumFractionDigits: d, maximumFractionDigits: d }),
-  signed: (v, d = 2) => { const n = Number(v) || 0; return (n >= 0 ? '+' : '') + fmt.money(n, d) },
-  rate:   (v, d = 4) => { const n = Number(v) || 0; return (n >= 0 ? '+' : '') + n.toFixed(d) + '%' },
-  pct:    (v, d = 2) => (Number(v) || 0).toFixed(d) + '%',
-  num:    (v, d = 3) => (Number(v) || 0).toFixed(d),
+  money: formatAmount, signed: formatSigned, rate: formatPercent, pct: formatPercent,
+  num: (value, digits = 3) => formatAmount(value, digits),
 }
+
 
 const lastUpdate = computed(() => {
   if (!data.timestamp) return '--'
@@ -68,6 +50,7 @@ function pnlCss(v) {
 }
 
 function sharpeLevel(v) {
+  if (v==null) return {cls:'',label:'需日终权益样本'}
   if (v >= 2)  return { cls: 'level-excellent', label: '优秀' }
   if (v >= 1)  return { cls: 'level-good',      label: '良好' }
   if (v >= 0)  return { cls: 'level-fair',       label: '一般' }
@@ -75,21 +58,14 @@ function sharpeLevel(v) {
 }
 
 function ddLevel(v) {
-  if (v < 3)   return { cls: 'level-excellent', label: '健康' }
-  if (v < 7)   return { cls: 'level-fair',      label: '警戒' }
-  return             { cls: 'level-poor',        label: '危险' }
-}
-
-function expLevel(v) {
-  if (v < 50)  return { cls: 'level-excellent', label: '轻仓' }
-  if (v < 80)  return { cls: 'level-good',      label: '中仓' }
-  return             { cls: 'level-fair',        label: '重仓' }
+  return {cls: '', label: v == null ? '有效样本不足' : '监控窗口样本'}
 }
 
 // ── ECharts 权益曲线 ──────────────────────────────────────────────────────────
 const lineRef  = ref(null)
 let lineChart  = null
 let echarts    = null
+let disposed = false
 
 function buildLineOption(curve) {
   const xs = curve.map(p => p.ts)
@@ -102,6 +78,7 @@ function buildLineOption(curve) {
 
   return {
     backgroundColor: 'transparent',
+    title: {text: curve.length ? '' : '等待有效账户样本', left: 'center', top: 'middle', textStyle: {color: '#6e7681', fontSize: 14}},
     grid:   { top: 14, right: 12, bottom: 28, left: 52 },
     tooltip: {
       trigger: 'axis',
@@ -110,8 +87,7 @@ function buildLineOption(curve) {
       textStyle: { color: '#c9d1d9', fontSize: 12 },
       formatter: (params) => {
         const p = params[0]
-        const sign = p.data >= 0 ? '+' : ''
-        return `${p.axisValue}<br/><b style="color:${lineColor}">${sign}${(p.data || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2 })}</b>`
+        return `${p.axisValue}<br/><b style="color:${lineColor}">${(p.data || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2 })}</b>`
       },
     },
     xAxis: {
@@ -125,12 +101,12 @@ function buildLineOption(curve) {
       axisLine:  { show: false },
       axisLabel: {
         color: '#6e7681', fontSize: 10,
-        formatter: v => v >= 0 ? `+${v.toLocaleString()}` : v.toLocaleString(),
+        formatter: v => v.toLocaleString(),
       },
       splitLine: { lineStyle: { color: '#21262d', type: 'dashed' } },
     },
     series: [{
-      type: 'line', data: ys, smooth: true, symbol: 'none',
+      type: 'line', data: ys, smooth: false, symbol: 'none',
       lineStyle: { color: lineColor, width: 2 },
       areaStyle: {
         color: new echarts.graphic.LinearGradient(0, 0, 0, 1, areaColor),
@@ -142,7 +118,8 @@ function buildLineOption(curve) {
 async function initLineChart() {
   if (!lineRef.value) return
   echarts = await loadEcharts()
-  lineChart = echarts.init(lineRef.value, null, { renderer: 'svg' })
+  if (disposed || !lineRef.value) return
+  lineChart = echarts.init(lineRef.value, null, { renderer: 'canvas' })
   lineChart.setOption(buildLineOption(data.equityCurve))
 }
 
@@ -156,11 +133,11 @@ const donutRef  = ref(null)
 let donutChart  = null
 
 function buildDonutOption(positions) {
-  if (!positions?.length) {
+  if (!data.positionsKnown || positions.some(p => p.notional == null) || !positions.length) {
     return {
       backgroundColor: 'transparent',
       title: {
-        text: '暂无持仓', left: 'center', top: 'middle',
+        text: !data.positionsKnown ? '持仓快照未就绪' : positions.length ? '合约乘数或成本缺失' : '暂无持仓', left: 'center', top: 'middle',
         textStyle: { color: '#6e7681', fontSize: 14 },
       },
     }
@@ -168,7 +145,7 @@ function buildDonutOption(positions) {
 
   const seriesData = positions.map(p => ({
     name:  `${p.symbol} ${p.direction === 'long' ? '多' : '空'}`,
-    value: Math.abs(p.cost * p.volume) || Math.abs(p.volume),
+    value: p.notional,
     itemStyle: {
       color: p.direction === 'long' ? '#3fb950' : '#f85149',
       borderColor: '#0d1117', borderWidth: 2,
@@ -208,7 +185,8 @@ function buildDonutOption(positions) {
 async function initDonutChart() {
   if (!donutRef.value) return
   echarts = echarts || await loadEcharts()
-  donutChart = echarts.init(donutRef.value, null, { renderer: 'svg' })
+  if (disposed || !donutRef.value) return
+  donutChart = echarts.init(donutRef.value, null, { renderer: 'canvas' })
   donutChart.setOption(buildDonutOption(data.positions))
 }
 
@@ -229,12 +207,14 @@ const resizeObs = typeof ResizeObserver !== 'undefined'
 onMounted(async () => {
   await nextTick()
   await Promise.all([initLineChart(), initDonutChart()])
+  if (disposed) return
   if (resizeObs && lineRef.value)  resizeObs.observe(lineRef.value)
   if (resizeObs && donutRef.value) resizeObs.observe(donutRef.value)
   window.addEventListener('resize', resizeCharts)
 })
 
 onUnmounted(() => {
+  disposed = true
   lineChart?.dispose()
   donutChart?.dispose()
   resizeObs?.disconnect()
@@ -252,9 +232,9 @@ function dirType(dir)  { return dir === 'long' ? 'success' : 'danger' }
     <!-- ── 顶部状态栏 ─────────────────────────────────────────────────────── -->
     <div class="gd-statusbar">
       <span class="sb-item">
-        <span class="ws-dot" :class="connected ? 'ws-on' : 'ws-off'"></span>
-        <span :class="connected ? 'c-green' : 'c-muted'">
-          {{ connected ? '实时数据' : '连接中…' }}
+        <span class="ws-dot" :class="connected && data.accountKnown ? 'ws-on' : 'ws-off'"></span>
+        <span :class="connected && data.accountKnown ? 'c-green' : 'c-muted'">
+          {{ connected ? (data.accountKnown ? '柜台账户回报' : '柜台数据未就绪') : '推送已断开' }}
         </span>
       </span>
       <span class="sb-item">账户 <b class="c-text">{{ data.accountId || '--' }}</b></span>
@@ -263,39 +243,41 @@ function dirType(dir)  { return dir === 'long' ? 'success' : 'danger' }
       <span class="sb-item c-muted">更新 {{ lastUpdate }}</span>
     </div>
 
+    <div class="data-note">{{ data.performanceNote || '等待带来源信息的柜台快照；未知指标显示为 —' }}</div>
+
     <!-- ── KPI 卡片网格 ───────────────────────────────────────────────────── -->
     <div class="kpi-grid">
 
       <!-- 实时浮盈 -->
       <div class="kpi-card kpi-main">
-        <div class="kpi-label">实时浮盈 ¥</div>
+        <div class="kpi-label">持仓盈亏 ¥</div>
         <div class="kpi-val mono" :class="flashCls" :style="{ color: pnlCss(displayPnl) }">
           {{ fmt.signed(displayPnl) }}
         </div>
         <div class="kpi-sub">账户余额 <span class="mono c-text">{{ fmt.money(data.balance, 0) }}</span></div>
       </div>
 
-      <!-- 当日收益率 -->
+      <!-- 会话权益变动 -->
       <div class="kpi-card">
-        <div class="kpi-label">当日收益率</div>
-        <div class="kpi-val mono" :style="{ color: pnlCss(data.todayReturn) }">
-          {{ fmt.rate(data.todayReturn) }}
+        <div class="kpi-label">会话权益变动</div>
+        <div class="kpi-val mono" :style="{ color: pnlCss(data.sessionBalanceChangePct) }">
+          {{ fmt.rate(data.sessionBalanceChangePct) }}
         </div>
         <div class="kpi-sub">可用 <span class="mono">{{ fmt.money(data.available, 0) }}</span></div>
       </div>
 
-      <!-- 累计收益率 -->
+      <!-- 持仓 + 平仓盈亏 -->
       <div class="kpi-card">
-        <div class="kpi-label">累计收益率</div>
-        <div class="kpi-val mono" :style="{ color: pnlCss(data.returnRate) }">
-          {{ fmt.rate(data.returnRate) }}
+        <div class="kpi-label">持仓 + 平仓盈亏</div>
+        <div class="kpi-val mono" :style="{ color: pnlCss(data.totalPnl) }">
+          {{ fmt.signed(data.totalPnl) }}
         </div>
-        <div class="kpi-sub">初始资金 <span class="mono c-text">{{ fmt.money(data.initialCapital, 0) }}</span></div>
+        <div class="kpi-sub">未扣手续费 · 手续费 <span class="mono c-text">{{ fmt.money(data.commission) }}</span></div>
       </div>
 
       <!-- 夏普比率 -->
       <div class="kpi-card">
-        <div class="kpi-label">夏普比率（滚动）</div>
+        <div class="kpi-label">夏普比率（日终）</div>
         <div class="kpi-val mono" :class="sharpeLevel(data.sharpeRatio).cls">
           {{ fmt.num(data.sharpeRatio) }}
         </div>
@@ -309,12 +291,12 @@ function dirType(dir)  { return dir === 'long' ? 'success' : 'danger' }
 
       <!-- 最大回撤 -->
       <div class="kpi-card">
-        <div class="kpi-label">最大回撤</div>
+        <div class="kpi-label">窗口权益回撤</div>
         <div class="kpi-val mono" :class="ddLevel(data.maxDrawdownPct).cls">
           {{ fmt.pct(data.maxDrawdownPct) }}
         </div>
         <div class="kpi-sub">
-          <el-tag :type="data.maxDrawdownPct < 3 ? 'success' : data.maxDrawdownPct < 7 ? 'warning' : 'danger'"
+          <el-tag type="info"
             size="small" effect="dark">
             {{ ddLevel(data.maxDrawdownPct).label }}
           </el-tag>
@@ -323,15 +305,10 @@ function dirType(dir)  { return dir === 'long' ? 'success' : 'danger' }
 
       <!-- 仓位暴露 -->
       <div class="kpi-card">
-        <div class="kpi-label">仓位暴露度</div>
-        <div class="kpi-val mono" :class="expLevel(data.exposurePct).cls">
+        <div class="kpi-label">成本敞口 / 权益</div>
+        <div class="kpi-val mono" >
           {{ fmt.pct(data.exposurePct) }}
         </div>
-        <el-progress
-          :percentage="Math.min(data.exposurePct, 100)"
-          :color="data.exposurePct < 50 ? 'var(--q-green)' : data.exposurePct < 80 ? 'var(--q-yellow)' : 'var(--q-red)'"
-          :stroke-width="5" :show-text="false" class="kpi-bar"
-        />
         <div class="kpi-sub">占用保证金 <span class="mono">{{ fmt.money(data.margin, 0) }}</span></div>
       </div>
 
@@ -343,8 +320,8 @@ function dirType(dir)  { return dir === 'long' ? 'success' : 'danger' }
       <!-- 权益曲线 -->
       <div class="chart-card chart-card--line">
         <div class="chart-title">
-          <span>权益曲线（近 5 分钟）</span>
-          <span class="chart-hint c-muted">浮动 PnL</span>
+          <span>账户权益曲线（监控窗口）</span>
+          <span class="chart-hint c-muted">柜台余额 · 含出入金</span>
         </div>
         <div ref="lineRef" class="chart-canvas"></div>
       </div>
@@ -353,7 +330,7 @@ function dirType(dir)  { return dir === 'long' ? 'success' : 'danger' }
       <div class="chart-card chart-card--donut">
         <div class="chart-title">
           <span>仓位分布</span>
-          <span class="chart-hint c-muted">按保证金占比</span>
+          <span class="chart-hint c-muted">按成本名义金额占比</span>
         </div>
         <div ref="donutRef" class="chart-canvas"></div>
       </div>
@@ -371,7 +348,7 @@ function dirType(dir)  { return dir === 'long' ? 'success' : 'danger' }
         :data="data.positions"
         size="small"
         class="pos-table"
-        :empty-text="'暂无持仓'"
+        :empty-text="data.positionsKnown ? '暂无持仓' : '持仓快照未就绪'"
         :row-class-name="r => r.row.direction === 'long' ? 'pos-row-long' : 'pos-row-short'"
       >
         <el-table-column prop="symbol"    label="品种"   width="110" />
@@ -395,9 +372,9 @@ function dirType(dir)  { return dir === 'long' ? 'success' : 'danger' }
             </span>
           </template>
         </el-table-column>
-        <el-table-column label="保证金占用" align="right">
+        <el-table-column label="成本名义金额" align="right">
           <template #default="{ row }">
-            <span class="mono c-muted">{{ fmt.money(row.cost * row.volume, 0) }}</span>
+            <span class="mono c-muted">{{ fmt.money(row.notional, 0) }}</span>
           </template>
         </el-table-column>
       </el-table>
@@ -407,6 +384,7 @@ function dirType(dir)  { return dir === 'long' ? 'success' : 'danger' }
 </template>
 
 <style scoped>
+.data-note {padding: 10px 20px; color: var(--q-muted); font-size: 12px; line-height: 1.6; border-bottom: 1px solid var(--q-border);}
 /* ── 外层容器 ── */
 .gd-wrap {
   background: var(--q-panel);

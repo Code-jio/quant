@@ -1,0 +1,10 @@
+usage: main.py [-h] [--config CONFIG] [--mode {backtest,live}]
+
+量化交易系统
+
+options:
+  -h, --help            show this help message and exit
+  --config CONFIG, -c CONFIG
+                        配置文件路径
+  --mode {backtest,live}, -m {backtest,live}
+                        运行模式

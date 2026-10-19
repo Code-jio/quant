@@ -35,6 +35,9 @@
       </el-button>
     </div>
 
+    <p class="cs-scope">仅显示国内期货 · 不含期权、组合及外汇仿真品种</p>
+    <p class="cs-scope">目录不代表账户权限；合约状态未知时开仓检查会阻止发送。</p>
+
     <!-- ── 交易所筛选条 ───────────────────────────────────────────────── -->
     <div class="cs-exch-bar">
       <button
@@ -52,12 +55,17 @@
     </div>
 
     <!-- ── 无搜索词：热门 / 最近 / 收藏 ──────────────────────────────── -->
-    <div v-if="!query.trim() && !exchange" class="cs-discover">
+    <el-select v-model="product" placeholder="全部品种" clearable filterable aria-label="品种筛选">
+      <el-option v-for="(name, root) in products" :key="root" :value="root" :label="`${root} · ${name}`" />
+    </el-select>
+    <p v-if="error && !query.trim() && !exchange && !product" class="cs-error">{{ error }}</p>
+    <div v-if="!query.trim() && !exchange && !product" class="cs-discover">
 
       <!-- 热门品种 -->
       <div class="discover-section">
         <div class="ds-label">
-          <span class="ds-icon">🔥</span>热门品种
+          <span class="ds-icon">⌕</span>合约目录（非成交量排名）
+          <span class="ds-count">共 {{ total }} 条，每页 60 条</span>
         </div>
         <div class="hot-grid">
           <button
@@ -69,15 +77,17 @@
           >
             <span class="chip-sym">{{ c.symbol }}</span>
             <span class="chip-name">{{ c.name }}</span>
+            <span class="chip-name">{{ c.expiry_date || '到期日未知' }}</span>
           </button>
         </div>
+        <div v-if="!HOT_CONTRACTS.length" class="cs-empty-tip">暂无国内期货合约，请确认柜台已连接，或输入品种名称搜索</div>
       </div>
 
       <!-- 最近查看 -->
       <div v-if="recent.length" class="discover-section">
         <div class="ds-label">
           <span class="ds-icon">🕒</span>最近查看
-          <button class="ds-clear" @click="recent.splice(0)">清空</button>
+          <button class="ds-clear" @click="clearRecent">清空</button>
         </div>
         <div class="mini-list">
           <div
@@ -153,13 +163,13 @@
 
       <!-- 空结果 -->
       <div v-else-if="!results.length" class="cs-no-result">
-        <el-empty description="未找到匹配合约" :image-size="72" />
+        <el-empty description="未找到匹配的国内期货合约" :image-size="72" />
       </div>
 
       <!-- 结果表格 -->
       <template v-else>
         <div class="result-header">
-          <span class="result-count">找到 <em>{{ results.length }}</em> 个合约</span>
+          <span class="result-count">找到 <em>{{ total }}</em> 个合约</span>
           <span class="result-hint">↑ ↓ 导航 &nbsp;·&nbsp; Enter 确认 &nbsp;·&nbsp; Esc 清空</span>
         </div>
 
@@ -189,6 +199,7 @@
                 </td>
                 <td>
                   <span class="rs-name">{{ row.name }}</span>
+                  <small class="cs-scope"> · {{ row.expiry_date || '到期日未知' }} · {{ row.tradable === true ? '挂牌状态已核对，权限待确认' : '交易状态未知' }}</small>
                 </td>
                 <td>
                   <span class="rs-exch" :class="`ec-${row.exchange?.toLowerCase()}`">
@@ -214,28 +225,31 @@
         </div>
       </template>
     </div>
+    <el-pagination v-if="total > 60" :current-page="page" :page-size="60" :total="total"
+      layout="prev, pager, next" @current-change="changePage" />
   </el-dialog>
 </template>
 
 <script setup>
 import { ref, watch, nextTick } from 'vue'
 import { Search, Close, WarningFilled } from '@element-plus/icons-vue'
+import { isDomesticFuture } from '@/utils/domesticFutures.js'
 import {
   useContractSearch,
   EXCHANGES, HOT_CONTRACTS, TYPE_COLOR,
 } from '../composables/useContractSearch.js'
 
 // ── Props & Emits ────────────────────────────────────────────────────────
-const props = defineProps({
+defineProps({
   modelValue: { type: Boolean, default: false },
 })
 const emit = defineEmits(['update:modelValue', 'select'])
 
 // ── Composable ───────────────────────────────────────────────────────────
 const {
-  query, exchange, results, loading, error, selectedIndex,
+  query, exchange, results, loading, error, selectedIndex, page, total, product, products, changePage,
   favorites, recent,
-  isFavorite, toggleFavorite, addToRecent, removeRecent,
+  isFavorite, toggleFavorite, addToRecent, removeRecent, clearRecent,
   handleKeydown, clearSearch,
 } = useContractSearch()
 
@@ -259,6 +273,7 @@ function onClosed() {
 
 // ── 选中合约 ──────────────────────────────────────────────────────────────
 function selectContract(contract) {
+  if (!isDomesticFuture(contract)) return
   addToRecent(contract)
   emit('select', contract)
   emit('update:modelValue', false)
@@ -282,6 +297,7 @@ watch(selectedIndex, (idx) => {
 </script>
 
 <style scoped>
+.cs-scope { margin: 0 0 12px; color: var(--text-secondary, #8b949e); font-size: 12px; }
 /* ── Dialog 覆盖 ──────────────────────────────────────────────────────── */
 :deep(.cs-dialog) {
   --el-dialog-bg-color: #0d1117;

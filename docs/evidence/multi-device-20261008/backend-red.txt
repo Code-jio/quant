@@ -1,0 +1,141 @@
+FF........FFFFFF                                                         [100%]
+================================== FAILURES ===================================
+_____ test_two_devices_share_engine_ledger_and_risk_without_reconnecting ______
+
+devices = (<starlette.testclient.TestClient object at 0x0000000005D08AD0>, <starlette.testclient.TestClient object at 0x0000000039952D50>, [<test_api_auth.FakeVnpyGateway object at 0x00000000399827B0>])
+
+    def test_two_devices_share_engine_ledger_and_risk_without_reconnecting(devices):
+        first, second, created = devices
+        assert login(first).status_code == 200
+        token = first.cookies[SESSION_COOKIE_NAME]
+        engine = api.trading_state.primary_engine()
+        generation = api.trading_state.generation
+        engine.risk_manager.emergency_stop = True
+        response = login(second)
+>       assert response.status_code == 200
+E       assert 409 == 200
+E        +  where 409 = <Response [409 Conflict]>.status_code
+
+D:\mine\quant\back_end\tests\test_multi_device_auth.py:45: AssertionError
+_ test_join_cannot_authenticate_or_reconfigure_with_invalid_credentials[changes0-401] _
+
+devices = (<starlette.testclient.TestClient object at 0x000000003A580410>, <starlette.testclient.TestClient object at 0x0000000039873E10>, [<test_api_auth.FakeVnpyGateway object at 0x0000000039953D90>])
+changes = {'password': 'incorrect'}, expected = 401
+
+    @pytest.mark.parametrize('changes, expected', [
+        ({'password': 'incorrect'}, 401),
+        ({'username': 'another-account'}, 409),
+        ({'broker_id': 'other-broker'}, 409),
+        ({'environment': '测试'}, 409),
+        ({'td_server': 'tcp://other:1'}, 409),
+        ({'app_id': 'another-app'}, 409),
+        ({'auth_code': 'another-code'}, 409),
+        ({'risk': {'max_order_volume': 1}}, 409),
+        ({'auto_start_strategy': True, 'strategy_params': {'symbol': 'FIXTURE'}}, 409),
+    ])
+    def test_join_cannot_authenticate_or_reconfigure_with_invalid_credentials(devices, changes, expected):
+        first, second, created = devices
+        assert login(first).status_code == 200
+        engine = api.trading_state.primary_engine()
+>       assert login(second, **changes).status_code == expected
+E       AssertionError: assert 409 == 401
+E        +  where 409 = <Response [409 Conflict]>.status_code
+E        +    where <Response [409 Conflict]> = login(<starlette.testclient.TestClient object at 0x0000000039873E10>, **{'password': 'incorrect'})
+
+D:\mine\quant\back_end\tests\test_multi_device_auth.py:73: AssertionError
+___ test_device_logout_closes_own_socket_only_and_last_logout_keeps_account ___
+
+devices = (<starlette.testclient.TestClient object at 0x000000003A59FBD0>, <starlette.testclient.TestClient object at 0x000000003A59FDF0>, [<test_api_auth.FakeVnpyGateway object at 0x000000003A5BCB90>])
+
+    def test_device_logout_closes_own_socket_only_and_last_logout_keeps_account(devices):
+        first, second, created = devices
+>       assert login(first).status_code == login(second).status_code == 200
+E       assert 200 == 409
+E        +  where 200 = <Response [200 OK]>.status_code
+E        +    where <Response [200 OK]> = login(<starlette.testclient.TestClient object at 0x000000003A59FBD0>)
+E        +  and   409 = <Response [409 Conflict]>.status_code
+E        +    where <Response [409 Conflict]> = login(<starlette.testclient.TestClient object at 0x000000003A59FDF0>)
+
+D:\mine\quant\back_end\tests\test_multi_device_auth.py:81: AssertionError
+_________ test_global_disconnect_revokes_every_device_and_credential __________
+
+devices = (<starlette.testclient.TestClient object at 0x00000000398C79B0>, <starlette.testclient.TestClient object at 0x00000000398C7BD0>, [<test_api_auth.FakeVnpyGateway object at 0x000000003A35CC80>])
+
+    def test_global_disconnect_revokes_every_device_and_credential(devices):
+        first, second, _ = devices
+>       assert login(first).status_code == login(second).status_code == 200
+E       assert 200 == 409
+E        +  where 200 = <Response [200 OK]>.status_code
+E        +    where <Response [200 OK]> = login(<starlette.testclient.TestClient object at 0x00000000398C79B0>)
+E        +  and   409 = <Response [409 Conflict]>.status_code
+E        +    where <Response [409 Conflict]> = login(<starlette.testclient.TestClient object at 0x00000000398C7BD0>)
+
+D:\mine\quant\back_end\tests\test_multi_device_auth.py:104: AssertionError
+___ test_relogin_rotates_only_current_cookie_and_expired_session_can_rejoin ___
+
+devices = (<starlette.testclient.TestClient object at 0x0000000039A4DBF0>, <starlette.testclient.TestClient object at 0x0000000039A4DD00>, [<test_api_auth.FakeVnpyGateway object at 0x0000000039ABC590>])
+
+    def test_relogin_rotates_only_current_cookie_and_expired_session_can_rejoin(devices):
+        first, second, created = devices
+>       assert login(first).status_code == login(second).status_code == 200
+E       assert 200 == 409
+E        +  where 200 = <Response [200 OK]>.status_code
+E        +    where <Response [200 OK]> = login(<starlette.testclient.TestClient object at 0x0000000039A4DBF0>)
+E        +  and   409 = <Response [409 Conflict]>.status_code
+E        +    where <Response [409 Conflict]> = login(<starlette.testclient.TestClient object at 0x0000000039A4DD00>)
+
+D:\mine\quant\back_end\tests\test_multi_device_auth.py:114: AssertionError
+_ test_failed_password_attempts_are_limited_and_do_not_lock_existing_session __
+
+devices = (<starlette.testclient.TestClient object at 0x000000003A59F570>, <starlette.testclient.TestClient object at 0x00000000398C7130>, [<test_api_auth.FakeVnpyGateway object at 0x000000003A3CEDD0>])
+
+    def test_failed_password_attempts_are_limited_and_do_not_lock_existing_session(devices):
+        first, second, _ = devices
+        assert login(first).status_code == 200
+        for _ in range(5):
+>           assert login(second, password='wrong').status_code == 401
+E           AssertionError: assert 409 == 401
+E            +  where 409 = <Response [409 Conflict]>.status_code
+E            +    where <Response [409 Conflict]> = login(<starlette.testclient.TestClient object at 0x00000000398C7130>, password='wrong')
+
+D:\mine\quant\back_end\tests\test_multi_device_auth.py:130: AssertionError
+______ test_session_limit_allows_rotation_but_not_unbounded_new_devices _______
+
+devices = (<starlette.testclient.TestClient object at 0x00000000398C7460>, <starlette.testclient.TestClient object at 0x00000000399FD7B0>, [])
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000000003974FE30>
+
+    def test_session_limit_allows_rotation_but_not_unbounded_new_devices(devices, monkeypatch):
+        first, second, _ = devices
+>       monkeypatch.setattr(session_store, 'max_sessions', 1)
+E       AttributeError: <src.api.security.SessionStore object at 0x00000000396EDD30> has no attribute 'max_sessions'
+
+D:\mine\quant\back_end\tests\test_multi_device_auth.py:139: AttributeError
+____ test_anonymous_logout_and_oversized_password_do_not_touch_connection _____
+
+devices = (<starlette.testclient.TestClient object at 0x000000003A407240>, <starlette.testclient.TestClient object at 0x000000003A407130>, [<test_api_auth.FakeVnpyGateway object at 0x000000003A342270>])
+
+    def test_anonymous_logout_and_oversized_password_do_not_touch_connection(devices):
+        first, second, created = devices
+        assert login(first).status_code == 200
+        assert second.post('/auth/session/logout').status_code == 401
+>       assert login(second, password='x' * 1025).status_code == 422
+E       AssertionError: assert 409 == 422
+E        +  where 409 = <Response [409 Conflict]>.status_code
+E        +    where <Response [409 Conflict]> = login(<starlette.testclient.TestClient object at 0x000000003A407130>, password=('x' * 1025))
+
+D:\mine\quant\back_end\tests\test_multi_device_auth.py:150: AssertionError
+============================== warnings summary ===============================
+.venv-live\Lib\site-packages\fastapi\testclient.py:1
+  D:\mine\quant\back_end\.venv-live\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_multi_device_auth.py::test_two_devices_share_engine_ledger_and_risk_without_reconnecting
+FAILED tests/test_multi_device_auth.py::test_join_cannot_authenticate_or_reconfigure_with_invalid_credentials[changes0-401]
+FAILED tests/test_multi_device_auth.py::test_device_logout_closes_own_socket_only_and_last_logout_keeps_account
+FAILED tests/test_multi_device_auth.py::test_global_disconnect_revokes_every_device_and_credential
+FAILED tests/test_multi_device_auth.py::test_relogin_rotates_only_current_cookie_and_expired_session_can_rejoin
+FAILED tests/test_multi_device_auth.py::test_failed_password_attempts_are_limited_and_do_not_lock_existing_session
+FAILED tests/test_multi_device_auth.py::test_session_limit_allows_rotation_but_not_unbounded_new_devices
+FAILED tests/test_multi_device_auth.py::test_anonymous_logout_and_oversized_password_do_not_touch_connection
